@@ -6559,7 +6559,7 @@ ProcXkbGetDeviceInfo(ClientPtr client)
         return BadLength;
     }
 
-    WriteToClient(client, sizeof(buf), &buf);
+    WriteToClient(client, sz, buf);
     return Success;
 }
 
