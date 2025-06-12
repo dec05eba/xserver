@@ -594,7 +594,7 @@ ProcXvMCListSubpictureTypes(ClientPtr client)
         .type = X_Reply,
         .sequenceNumber = client->sequence,
         .num = num,
-        .length = bytes_to_int32(sizeof(info)),
+        .length = bytes_to_int32(num * sizeof(xvImageFormatInfo)),
     };
 
     WriteToClient(client, sizeof(xvmcListSubpictureTypesReply), &rep);

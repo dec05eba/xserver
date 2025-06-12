@@ -341,7 +341,7 @@ ProcXResQueryClientResources(ClientPtr client)
     free(counts);
 
     WriteToClient(client, sizeof(xXResQueryClientResourcesReply), &rep);
-    WriteToClient(client, sizeof(scratch), scratch);
+    WriteToClient(client, num_types * sizeof(xXResType), scratch);
     free(scratch);
     return Success;
 }
