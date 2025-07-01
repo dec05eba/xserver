@@ -1,0 +1,2 @@
+The removed ReplySize functions added other data than just calculating size. See removed XkbComputeGetCompatMapReplySize.
+    Do these same things again.

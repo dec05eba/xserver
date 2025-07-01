@@ -36,6 +36,7 @@ THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #include "inputstr.h"
 #include "xkbstr.h"
 #include "extnsionst.h"
+#include "reply.h"
 #include "xkb-procs.h"
 
         /*
@@ -203,7 +204,7 @@ SProcXkbSetControls(ClientPtr client)
 }
 
 static int _X_COLD
-SProcXkbGetMap(ClientPtr client)
+SProcXkbGetMap(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetMapReq);
     REQUEST_SIZE_MATCH(xkbGetMapReq);
@@ -211,7 +212,7 @@ SProcXkbGetMap(ClientPtr client)
     swaps(&stuff->full);
     swaps(&stuff->partial);
     swaps(&stuff->virtualMods);
-    return ProcXkbGetMap(client);
+    return ProcXkbGetMap(client, reply);
 }
 
 static int _X_COLD
@@ -229,14 +230,14 @@ SProcXkbSetMap(ClientPtr client)
 }
 
 static int _X_COLD
-SProcXkbGetCompatMap(ClientPtr client)
+SProcXkbGetCompatMap(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetCompatMapReq);
     REQUEST_SIZE_MATCH(xkbGetCompatMapReq);
     swaps(&stuff->deviceSpec);
     swaps(&stuff->firstSI);
     swaps(&stuff->nSI);
-    return ProcXkbGetCompatMap(client);
+    return ProcXkbGetCompatMap(client, reply);
 }
 
 static int _X_COLD
@@ -260,13 +261,13 @@ SProcXkbGetIndicatorState(ClientPtr client)
 }
 
 static int _X_COLD
-SProcXkbGetIndicatorMap(ClientPtr client)
+SProcXkbGetIndicatorMap(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetIndicatorMapReq);
     REQUEST_SIZE_MATCH(xkbGetIndicatorMapReq);
     swaps(&stuff->deviceSpec);
     swapl(&stuff->which);
-    return ProcXkbGetIndicatorMap(client);
+    return ProcXkbGetIndicatorMap(client, reply);
 }
 
 static int _X_COLD
@@ -306,13 +307,13 @@ SProcXkbSetNamedIndicator(ClientPtr client)
 }
 
 static int _X_COLD
-SProcXkbGetNames(ClientPtr client)
+SProcXkbGetNames(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetNamesReq);
     REQUEST_SIZE_MATCH(xkbGetNamesReq);
     swaps(&stuff->deviceSpec);
     swapl(&stuff->which);
-    return ProcXkbGetNames(client);
+    return ProcXkbGetNames(client, reply);
 }
 
 static int _X_COLD
@@ -329,13 +330,13 @@ SProcXkbSetNames(ClientPtr client)
 }
 
 static int _X_COLD
-SProcXkbGetGeometry(ClientPtr client)
+SProcXkbGetGeometry(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetGeometryReq);
     REQUEST_SIZE_MATCH(xkbGetGeometryReq);
     swaps(&stuff->deviceSpec);
     swapl(&stuff->name);
-    return ProcXkbGetGeometry(client);
+    return ProcXkbGetGeometry(client, reply);
 }
 
 static int _X_COLD
@@ -379,18 +380,18 @@ SProcXkbListComponents(ClientPtr client)
 }
 
 static int _X_COLD
-SProcXkbGetKbdByName(ClientPtr client)
+SProcXkbGetKbdByName(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetKbdByNameReq);
     REQUEST_AT_LEAST_SIZE(xkbGetKbdByNameReq);
     swaps(&stuff->deviceSpec);
     swaps(&stuff->want);
     swaps(&stuff->need);
-    return ProcXkbGetKbdByName(client);
+    return ProcXkbGetKbdByName(client, reply);
 }
 
 static int _X_COLD
-SProcXkbGetDeviceInfo(ClientPtr client)
+SProcXkbGetDeviceInfo(ClientPtr client, Reply *reply)
 {
     REQUEST(xkbGetDeviceInfoReq);
     REQUEST_SIZE_MATCH(xkbGetDeviceInfoReq);
@@ -398,7 +399,7 @@ SProcXkbGetDeviceInfo(ClientPtr client)
     swaps(&stuff->wanted);
     swaps(&stuff->ledClass);
     swaps(&stuff->ledID);
-    return ProcXkbGetDeviceInfo(client);
+    return ProcXkbGetDeviceInfo(client, reply);
 }
 
 static int _X_COLD
@@ -429,60 +430,94 @@ int _X_COLD
 SProcXkbDispatch(ClientPtr client)
 {
     REQUEST(xReq);
+    Reply reply;
+    ReplyInit(&reply, client);
+
+    int result = BadRequest;
     switch (stuff->data) {
     case X_kbUseExtension:
-        return SProcXkbUseExtension(client);
+        result = SProcXkbUseExtension(client);
+        break;
     case X_kbSelectEvents:
-        return SProcXkbSelectEvents(client);
+        result = SProcXkbSelectEvents(client);
+        break;
     case X_kbBell:
-        return SProcXkbBell(client);
+        result = SProcXkbBell(client);
+        break;
     case X_kbGetState:
-        return SProcXkbGetState(client);
+        result = SProcXkbGetState(client);
+        break;
     case X_kbLatchLockState:
-        return SProcXkbLatchLockState(client);
+        result = SProcXkbLatchLockState(client);
+        break;
     case X_kbGetControls:
-        return SProcXkbGetControls(client);
+        result = SProcXkbGetControls(client);
+        break;
     case X_kbSetControls:
-        return SProcXkbSetControls(client);
+        result = SProcXkbSetControls(client);
+        break;
     case X_kbGetMap:
-        return SProcXkbGetMap(client);
+        result = SProcXkbGetMap(client, &reply);
+        break;
     case X_kbSetMap:
-        return SProcXkbSetMap(client);
+        result = SProcXkbSetMap(client);
+        break;
     case X_kbGetCompatMap:
-        return SProcXkbGetCompatMap(client);
+        result = SProcXkbGetCompatMap(client, &reply);
+        break;
     case X_kbSetCompatMap:
-        return SProcXkbSetCompatMap(client);
+        result = SProcXkbSetCompatMap(client);
+        break;
     case X_kbGetIndicatorState:
-        return SProcXkbGetIndicatorState(client);
+        result = SProcXkbGetIndicatorState(client);
+        break;
     case X_kbGetIndicatorMap:
-        return SProcXkbGetIndicatorMap(client);
+        result = SProcXkbGetIndicatorMap(client, &reply);
+        break;
     case X_kbSetIndicatorMap:
-        return SProcXkbSetIndicatorMap(client);
+        result = SProcXkbSetIndicatorMap(client);
+        break;
     case X_kbGetNamedIndicator:
-        return SProcXkbGetNamedIndicator(client);
+        result = SProcXkbGetNamedIndicator(client);
+        break;
     case X_kbSetNamedIndicator:
-        return SProcXkbSetNamedIndicator(client);
+        result = SProcXkbSetNamedIndicator(client);
+        break;
     case X_kbGetNames:
-        return SProcXkbGetNames(client);
+        result = SProcXkbGetNames(client, &reply);
+        break;
     case X_kbSetNames:
-        return SProcXkbSetNames(client);
+        result = SProcXkbSetNames(client);
+        break;
     case X_kbGetGeometry:
-        return SProcXkbGetGeometry(client);
+        result = SProcXkbGetGeometry(client, &reply);
+        break;
     case X_kbSetGeometry:
-        return SProcXkbSetGeometry(client);
+        result = SProcXkbSetGeometry(client);
+        break;
     case X_kbPerClientFlags:
-        return SProcXkbPerClientFlags(client);
+        result = SProcXkbPerClientFlags(client);
+        break;
     case X_kbListComponents:
-        return SProcXkbListComponents(client);
+        result = SProcXkbListComponents(client);
+        break;
     case X_kbGetKbdByName:
-        return SProcXkbGetKbdByName(client);
+        result = SProcXkbGetKbdByName(client, &reply);
+        break;
     case X_kbGetDeviceInfo:
-        return SProcXkbGetDeviceInfo(client);
+        result = SProcXkbGetDeviceInfo(client, &reply);
+        break;
     case X_kbSetDeviceInfo:
-        return SProcXkbSetDeviceInfo(client);
+        result = SProcXkbSetDeviceInfo(client);
+        break;
     case X_kbSetDebuggingFlags:
-        return SProcXkbSetDebuggingFlags(client);
+        result = SProcXkbSetDebuggingFlags(client);
+        break;
     default:
-        return BadRequest;
+        result = BadRequest;
+        break;
     }
+
+    ReplyDeinit(&reply);
+    return result;
 }

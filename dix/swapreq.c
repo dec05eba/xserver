@@ -115,6 +115,22 @@ SwapShorts(short *list, unsigned long count)
     }
 }
 
+CARD16
+Swap16ToClient(CARD16 value, ClientPtr client)
+{
+    if (client->swapped)
+        value = bswap_16(value);
+    return value;
+}
+
+CARD32
+Swap32ToClient(CARD32 value, ClientPtr client)
+{
+    if (client->swapped)
+        value = bswap_32(value);
+    return value;
+}
+
 /* The following is used for all requests that have
    no fields to be swapped (except "length") */
 int _X_COLD

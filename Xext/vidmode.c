@@ -1265,7 +1265,8 @@ ProcVidModeGetMonitor(ClientPtr client, Reply *reply)
         .modelLength = modelLength,
     };
 
-    if (!ReplyAppendReplyStruct(reply, &rep, sizeof(rep)))
+    ReplyStruct replyStruct = {0};
+    if (!ReplyAppendReplyStruct(reply, &rep, sizeof(rep), &replyStruct))
         return BadAlloc;
 
     for (int i = 0; i < nHsync; i++) {
@@ -1290,6 +1291,7 @@ ProcVidModeGetMonitor(ClientPtr client, Reply *reply)
     if (!ReplyAppendBuffer(reply, modelStr, modelLength))
         return BadAlloc;
 
+    ReplyFinalizeReplyStruct(reply, &replyStruct);
     ReplyWriteToClient(reply);
     return Success;
 }
