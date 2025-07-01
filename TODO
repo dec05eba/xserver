@@ -1,0 +1,22 @@
+The removed ReplySize functions added other data than just calculating size. See removed XkbComputeGetCompatMapReplySize.
+    Do these same things again.
+Maybe instead of creating a struct and appending it with ReplyAppendBuffer, add a method that allocates the data and returns a pointer
+    and the callee can set the data then, for example instead of:
+        const xkbModsWireDesc modsWire = {
+            .mask = compat->groups[i].mask,
+            .realMods = compat->groups[i].real_mods,
+            .virtualMods = Swap16ToClient(compat->groups[i].vmods, reply->client),
+        };
+
+        if (!ReplyAppendBuffer(reply, &modsWire, sizeof(modsWire)))
+            return false;
+    do:
+        xkbModsWireDesc *modsWire = ReplyAppendBuffer(reply, &modsWire, sizeof(xkbModsWireDesc));
+        if (!modsWire)
+            return false;
+
+        *modsWire = (xkbModsWireDesc) {
+            .mask = compat->groups[i].mask,
+            .realMods = compat->groups[i].real_mods,
+            .virtualMods = Swap16ToClient(compat->groups[i].vmods, reply->client),
+        };

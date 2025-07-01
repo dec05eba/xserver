@@ -321,6 +321,9 @@ extern _X_EXPORT void SwapLongs(CARD32 *list, unsigned long count);
 
 extern _X_EXPORT void SwapShorts(short *list, unsigned long count);
 
+CARD16 Swap16ToClient(CARD16 value, ClientPtr client);
+CARD32 Swap32ToClient(CARD32 value, ClientPtr client);
+
 typedef struct _xPoint *DDXPointPtr;
 typedef struct pixman_box16 *BoxPtr;
 typedef struct _xEvent *xEventPtr;
