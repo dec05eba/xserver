@@ -33,6 +33,7 @@ srcs_dix = [
     'screen.c',
     'swaprep.c',
     'swapreq.c',
+    'reply.c',
     'tables.c',
     'touch.c',
     'window.c',

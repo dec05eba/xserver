@@ -38,6 +38,7 @@ from Kaleb S. KEITHLEY
 #include <X11/extensions/xf86vmproto.h>
 
 #include "os/log_priv.h"
+#include "os/bug_priv.h"
 
 #include "misc.h"
 #include "dixstruct.h"
@@ -45,6 +46,7 @@ from Kaleb S. KEITHLEY
 #include "scrnintstr.h"
 #include "servermd.h"
 #include "vidmodestr.h"
+#include "reply.h"
 #include "globals.h"
 #include "protocol-versions.h"
 
@@ -1229,18 +1231,8 @@ ProcVidModeLockModeSwitch(ClientPtr client)
     return Success;
 }
 
-static inline CARD32 _combine_f(vidMonitorValue a, vidMonitorValue b, Bool swapped)
-{
-    CARD32 buf =
-        ((unsigned short) a.f) |
-        ((unsigned short) b.f << 16);
-    if (swapped)
-        swapl(&buf);
-    return buf;
-}
-
 static int
-ProcVidModeGetMonitor(ClientPtr client)
+ProcVidModeGetMonitor(ClientPtr client, Reply *reply)
 {
     REQUEST(xXF86VidModeGetMonitorReq);
 
@@ -1265,62 +1257,40 @@ ProcVidModeGetMonitor(ClientPtr client)
     const int vendorLength = (vendorStr ? strlen(vendorStr) : 0);
     const int modelLength = (modelStr ? strlen(modelStr) : 0);
 
-    const int nVendorItems = bytes_to_int32(pad_to_int32(vendorLength));
-    const int nModelItems = bytes_to_int32(pad_to_int32(modelLength));
-
     xXF86VidModeGetMonitorReply rep = {
         .type = X_Reply,
-        .sequenceNumber = client->sequence,
         .nhsync = nHsync,
         .nvsync = nVrefresh,
         .vendorLength = vendorLength,
         .modelLength = modelLength,
-        .length = bytes_to_int32(sizeof(xXF86VidModeGetMonitorReply) -
-                                 sizeof(xGenericReply))
-                  + nHsync + nVrefresh + nVendorItems + nModelItems
     };
 
-    const int buflen = nHsync * nVrefresh + nVendorItems + nModelItems;
-
-    CARD32 *sendbuf = calloc(buflen, sizeof(CARD32));
-    if (!sendbuf)
+    if (!ReplyAppendReplyStruct(reply, &rep, sizeof(rep)))
         return BadAlloc;
 
-    CARD32 *bufwalk = sendbuf;
-
     for (int i = 0; i < nHsync; i++) {
-        *bufwalk = _combine_f(pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_HSYNC_LO, i),
-                              pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_HSYNC_HI, i),
-                              client->swapped);
-        bufwalk++;
+        const CARD32 hsyncdata =
+            (unsigned short) (pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_HSYNC_LO, i).f) |
+            (unsigned short) (pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_HSYNC_HI, i).f) << 16;
+        if (!ReplyAppendCARD32(reply, hsyncdata))
+            return BadAlloc;
     }
 
     for (int i = 0; i < nVrefresh; i++) {
-        *bufwalk = _combine_f(pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_VREFRESH_LO, i),
-                              pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_VREFRESH_HI, i),
-                              client->swapped);
-        bufwalk++;
+        const CARD32 vsyncdata =
+            (unsigned short) (pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_VREFRESH_LO, i).f) |
+            (unsigned short) (pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_VREFRESH_HI, i).f) << 16;
+        if (!ReplyAppendCARD32(reply, vsyncdata))
+            return BadAlloc;
     }
 
-    memcpy(sendbuf,
-           pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_VENDOR, 0).ptr,
-           vendorLength);
-    sendbuf += nVendorItems;
+    if (!ReplyAppendBuffer(reply, vendorStr, vendorLength))
+        return BadAlloc;
 
-    memcpy(sendbuf,
-           pVidMode->GetMonitorValue(pScreen, VIDMODE_MON_MODEL, 0).ptr,
-           modelLength);
-    sendbuf += nModelItems;
+    if (!ReplyAppendBuffer(reply, modelStr, modelLength))
+        return BadAlloc;
 
-    if (client->swapped) {
-        swaps(&rep.sequenceNumber);
-        swapl(&rep.length);
-    }
-
-    WriteToClient(client, SIZEOF(xXF86VidModeGetMonitorReply), &rep);
-    WriteToClient(client, buflen * sizeof(CARD32), sendbuf);
-
-    free(sendbuf);
+    ReplyWriteToClient(reply);
     return Success;
 }
 
@@ -1712,52 +1682,81 @@ static int
 ProcVidModeDispatch(ClientPtr client)
 {
     REQUEST(xReq);
+    Reply reply;
+    ReplyInit(&reply, client);
+
+    int result = BadRequest;
     switch (stuff->data) {
     case X_XF86VidModeQueryVersion:
-        return ProcVidModeQueryVersion(client);
+        result = ProcVidModeQueryVersion(client);
+        break;
     case X_XF86VidModeGetModeLine:
-        return ProcVidModeGetModeLine(client);
+        result = ProcVidModeGetModeLine(client);
+        break;
     case X_XF86VidModeGetMonitor:
-        return ProcVidModeGetMonitor(client);
+        result = ProcVidModeGetMonitor(client, &reply);
+        break;
     case X_XF86VidModeGetAllModeLines:
-        return ProcVidModeGetAllModeLines(client);
+        result = ProcVidModeGetAllModeLines(client);
+        break;
     case X_XF86VidModeValidateModeLine:
-        return ProcVidModeValidateModeLine(client);
+        result = ProcVidModeValidateModeLine(client);
+        break;
     case X_XF86VidModeGetViewPort:
-        return ProcVidModeGetViewPort(client);
+        result = ProcVidModeGetViewPort(client);
+        break;
     case X_XF86VidModeGetDotClocks:
-        return ProcVidModeGetDotClocks(client);
+        result = ProcVidModeGetDotClocks(client);
+        break;
     case X_XF86VidModeSetClientVersion:
-        return ProcVidModeSetClientVersion(client);
+        result = ProcVidModeSetClientVersion(client);
+        break;
     case X_XF86VidModeGetGamma:
-        return ProcVidModeGetGamma(client);
+        result = ProcVidModeGetGamma(client);
+        break;
     case X_XF86VidModeGetGammaRamp:
-        return ProcVidModeGetGammaRamp(client);
+        result = ProcVidModeGetGammaRamp(client);
+        break;
     case X_XF86VidModeGetGammaRampSize:
-        return ProcVidModeGetGammaRampSize(client);
+        result = ProcVidModeGetGammaRampSize(client);
+        break;
     case X_XF86VidModeGetPermissions:
-        return ProcVidModeGetPermissions(client);
+        result = ProcVidModeGetPermissions(client);
+        break;
     case X_XF86VidModeAddModeLine:
-        return ProcVidModeAddModeLine(client);
+        result = ProcVidModeAddModeLine(client);
+        break;
     case X_XF86VidModeDeleteModeLine:
-        return ProcVidModeDeleteModeLine(client);
+        result = ProcVidModeDeleteModeLine(client);
+        break;
     case X_XF86VidModeModModeLine:
-        return ProcVidModeModModeLine(client);
+        result = ProcVidModeModModeLine(client);
+        break;
     case X_XF86VidModeSwitchMode:
-        return ProcVidModeSwitchMode(client);
+        result = ProcVidModeSwitchMode(client);
+        break;
     case X_XF86VidModeSwitchToMode:
-        return ProcVidModeSwitchToMode(client);
+        result = ProcVidModeSwitchToMode(client);
+        break;
     case X_XF86VidModeLockModeSwitch:
-        return ProcVidModeLockModeSwitch(client);
+        result = ProcVidModeLockModeSwitch(client);
+        break;
     case X_XF86VidModeSetViewPort:
-        return ProcVidModeSetViewPort(client);
+        result = ProcVidModeSetViewPort(client);
+        break;
     case X_XF86VidModeSetGamma:
-        return ProcVidModeSetGamma(client);
+        result = ProcVidModeSetGamma(client);
+        break;
     case X_XF86VidModeSetGammaRamp:
-        return ProcVidModeSetGammaRamp(client);
+        result = ProcVidModeSetGammaRamp(client);
+        break;
     default:
-        return BadRequest;
+        result = BadRequest;
+        break;
     }
+
+    ReplyDeinit(&reply);
+    return result;
 }
 
 static int _X_COLD
@@ -1985,7 +1984,11 @@ SProcVidModeGetMonitor(ClientPtr client)
     REQUEST(xXF86VidModeGetMonitorReq);
     REQUEST_SIZE_MATCH(xXF86VidModeGetMonitorReq);
     swaps(&stuff->screen);
-    return ProcVidModeGetMonitor(client);
+    Reply reply;
+    ReplyInit(&reply, client);
+    const int result = ProcVidModeGetMonitor(client, &reply);
+    ReplyDeinit(&reply);
+    return result;
 }
 
 static int _X_COLD
