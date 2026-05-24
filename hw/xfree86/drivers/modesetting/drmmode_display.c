@@ -643,7 +643,12 @@ drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
 
     *fb_id = 0;
 
-    if (drmmode_crtc->prime_pixmap) {
+    if (drmmode_crtc->present_per_crtc_flipping &&
+        drmmode_crtc->present_flip_fb_id) {
+        *fb_id = drmmode_crtc->present_flip_fb_id;
+        *x = *y = 0;
+    }
+    else if (drmmode_crtc->prime_pixmap) {
         if (!drmmode->reverse_prime_offload_mode) {
             msPixmapPrivPtr ppriv =
                 msGetPixmapPriv(drmmode, drmmode_crtc->prime_pixmap);
@@ -3548,9 +3553,10 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_r
         }
     }
 
-    ms->is_connector_vrr_capable |=
-	         drmmode_connector_check_vrr_capable(drmmode->fd,
-                                                  drmmode_output->output_id);
+    drmmode_output->vrr_capable =
+        drmmode_connector_check_vrr_capable(drmmode->fd,
+                                            drmmode_output->output_id);
+    ms->is_connector_vrr_capable |= drmmode_output->vrr_capable;
     return 1;
 
  out_free_encoders:

@@ -232,6 +232,10 @@ typedef struct {
 
     Bool vrr_enabled;
     Bool use_gamma_lut;
+
+    Bool present_per_crtc_flipping;
+    uint32_t present_flip_fb_id;
+    WindowPtr present_flip_window;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
 
 typedef struct {
@@ -258,6 +262,7 @@ typedef struct {
     xf86CrtcPtr current_crtc;
     Atom ctm_atom;
     struct drm_color_ctm ctm;
+    Bool vrr_capable;
 } drmmode_output_private_rec, *drmmode_output_private_ptr;
 
 typedef struct {

@@ -1479,25 +1479,32 @@ PreInit(ScrnInfoPtr pScrn, int flags)
     xf86DrvMsg(pScrn->scrnIndex, X_INFO,
                "Atomic modesetting %sabled\n", ms->atomic_modeset ? "en" : "dis");
 
-    /* TearFree requires glamor and, if PageFlip is enabled, universal planes */
-    if (xf86ReturnOptValBool(ms->drmmode.Options, OPTION_TEARFREE, TRUE)) {
-        if (pScrn->is_gpu) {
-            xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                       "TearFree cannot synchronize PRIME; use 'PRIME Synchronization' instead\n");
-        } else if (ms->drmmode.glamor) {
-            /* Atomic modesetting implicitly enables universal planes */
-            if (!ms->drmmode.pageflip || ms->atomic_modeset ||
-                !drmSetClientCap(ms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
-                ms->drmmode.tearfree_enable = TRUE;
-                xf86DrvMsg(pScrn->scrnIndex, X_INFO, "TearFree: enabled\n");
-            } else {
-                xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                           "TearFree requires either universal planes, or setting 'Option \"PageFlip\" \"off\"'\n");
-            }
-        } else {
-            xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                       "TearFree requires Glamor acceleration\n");
-        }
+    if (pScrn->is_gpu) {
+        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+                   "Per-monitor framebuffer disabled on PRIME secondary GPU; "
+                   "use 'PRIME Synchronization' instead\n");
+    } else if (!xf86ReturnOptValBool(ms->drmmode.Options,
+                                     OPTION_TEARFREE, TRUE)) {
+        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+                   "Per-monitor framebuffer explicitly disabled "
+                   "(Option \"TearFree\" \"off\"); falling back to shared "
+                   "framebuffer.\n");
+    } else if (!ms->drmmode.glamor) {
+        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+                   "Per-monitor framebuffer requires Glamor acceleration; "
+                   "falling back to shared framebuffer.\n");
+    } else if (ms->drmmode.pageflip &&
+               /* Atomic modesetting implicitly enables universal planes */
+               !ms->atomic_modeset &&
+               drmSetClientCap(ms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
+        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+                   "Per-monitor framebuffer requires either universal planes "
+                   "or 'Option \"PageFlip\" \"off\"'; falling back to shared "
+                   "framebuffer.\n");
+    } else {
+        ms->drmmode.tearfree_enable = TRUE;
+        xf86DrvMsg(pScrn->scrnIndex, X_INFO,
+                   "Per-monitor framebuffer: enabled (TearFree)\n");
     }
 
     ms->kms_has_modifiers = FALSE;

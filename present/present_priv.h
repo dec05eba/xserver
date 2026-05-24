@@ -161,6 +161,20 @@ typedef void (*present_priv_abort_vblank_ptr)(ScreenPtr screen,
                                               uint64_t msc);
 typedef void (*present_priv_flip_destroy_ptr)(ScreenPtr screen);
 
+typedef struct present_flip_slot_rec {
+    struct xorg_list    entry;
+    RRCrtcPtr           crtc;
+    present_vblank_ptr  flip_pending;
+    uint64_t            unflip_event_id;
+
+    /* Currently active flipped pixmap and fence */
+    WindowPtr           flip_window;
+    uint32_t            flip_serial;
+    PixmapPtr           flip_pixmap;
+    present_fence_ptr   flip_idle_fence;
+    Bool                flip_sync;
+} present_flip_slot_rec, *present_flip_slot_ptr;
+
 struct present_screen_priv {
     ScreenPtr                   pScreen;
     CloseScreenProcPtr          CloseScreen;
@@ -168,18 +182,9 @@ struct present_screen_priv {
     DestroyWindowProcPtr        DestroyWindow;
     ClipNotifyProcPtr           ClipNotify;
 
-    present_vblank_ptr          flip_pending;
-    uint64_t                    unflip_event_id;
+    struct xorg_list            flip_slots;
 
     uint32_t                    fake_interval;
-
-    /* Currently active flipped pixmap and fence */
-    RRCrtcPtr                   flip_crtc;
-    WindowPtr                   flip_window;
-    uint32_t                    flip_serial;
-    PixmapPtr                   flip_pixmap;
-    present_fence_ptr           flip_idle_fence;
-    Bool                        flip_sync;
 
     present_screen_info_ptr     info;
 

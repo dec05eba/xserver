@@ -125,13 +125,17 @@ typedef Bool (*present_wnmd_flip_ptr) (WindowPtr window,
 typedef void (*present_unflip_ptr) (ScreenPtr screen,
                                     uint64_t event_id);
 
+typedef void (*present_unflip_crtc_ptr) (ScreenPtr screen,
+                                         RRCrtcPtr crtc,
+                                         uint64_t event_id);
+
 /* Doing flips has been discontinued.
  *
  * Inform driver for potential cleanup on its side.
  */
 typedef void (*present_wnmd_flips_stop_ptr) (WindowPtr window);
 
-#define PRESENT_SCREEN_INFO_VERSION        1
+#define PRESENT_SCREEN_INFO_VERSION        2
 
 typedef struct present_screen_info {
     uint32_t                            version;
@@ -146,6 +150,7 @@ typedef struct present_screen_info {
     present_flip_ptr                    flip;
     present_unflip_ptr                  unflip;
     present_check_flip2_ptr             check_flip2;
+    present_unflip_crtc_ptr             unflip_crtc;
 
 } present_screen_info_rec, *present_screen_info_ptr;
 

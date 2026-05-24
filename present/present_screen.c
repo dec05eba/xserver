@@ -189,6 +189,7 @@ present_screen_priv_init(ScreenPtr screen)
 
     dixSetPrivate(&screen->devPrivates, &present_screen_private_key, screen_priv);
     screen_priv->pScreen = screen;
+    xorg_list_init(&screen_priv->flip_slots);
 
     return screen_priv;
 }

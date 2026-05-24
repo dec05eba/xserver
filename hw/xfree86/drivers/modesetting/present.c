@@ -70,18 +70,33 @@ ms_present_get_ust_msc(RRCrtcPtr crtc, CARD64 *ust, CARD64 *msc)
     return ms_get_crtc_ust_msc(xf86_crtc, ust, msc);
 }
 
-/*
- * Changes the variable refresh state for every CRTC on the screen.
- */
+static Bool
+ms_crtc_has_vrr_capable_output(xf86CrtcPtr crtc)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    int i;
+
+    for (i = 0; i < config->num_output; i++) {
+        xf86OutputPtr output = config->output[i];
+        drmmode_output_private_ptr drmmode_output = output->driver_private;
+
+        if (output->crtc == crtc && drmmode_output->vrr_capable)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 void
 ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled)
 {
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
-    xf86CrtcPtr crtc;
     int i;
 
     for (i = 0; i < config->num_crtc; i++) {
-        crtc = config->crtc[i];
+        xf86CrtcPtr crtc = config->crtc[i];
+
+        if (vrr_enabled && !ms_crtc_has_vrr_capable_output(crtc))
+            continue;
         drmmode_crtc_set_vrr(crtc, vrr_enabled);
     }
 }
@@ -337,6 +352,11 @@ ms_present_check_flip(RRCrtcPtr crtc,
         goto no_flip;
 
     ms->flip_window = window;
+    if (crtc && ms_pixmap_is_per_crtc_size(scrn, pixmap)) {
+        xf86CrtcPtr xf86_crtc = crtc->devPrivate;
+        drmmode_crtc_private_ptr drmmode_crtc = xf86_crtc->driver_private;
+        drmmode_crtc->present_flip_window = window;
+    }
 
     return TRUE;
 
@@ -398,15 +418,12 @@ ms_present_flip(RRCrtcPtr crtc,
                               ms_present_flip_handler, ms_present_flip_abort,
                               "Present-TearFree-flip");
 
-    /* A window can only flip if it covers the entire X screen.
-     * Only one window can flip at a time.
-     *
-     * If the window also has the variable refresh property then
-     * variable refresh supported can be enabled on every CRTC.
-     */
-    if (ms->vrr_support && ms->is_connector_vrr_capable &&
+    if (ms->vrr_support &&
           ms_window_has_variable_refresh(ms, ms->flip_window)) {
-        ms_present_set_screen_vrr(scrn, TRUE);
+        if (ms_pixmap_is_per_crtc_size(scrn, pixmap))
+            drmmode_crtc_set_vrr(xf86_crtc, TRUE);
+        else if (ms->is_connector_vrr_capable)
+            ms_present_set_screen_vrr(scrn, TRUE);
     }
 
     ret = ms_do_pageflip(screen, pixmap, event, xf86_crtc, !sync_flip,
@@ -418,27 +435,74 @@ ms_present_flip(RRCrtcPtr crtc,
     return ret;
 }
 
+static xf86CrtcPtr
+ms_find_per_crtc_flip(ScrnInfoPtr scrn)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++) {
+        xf86CrtcPtr crtc = config->crtc[i];
+        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+        if (drmmode_crtc->present_per_crtc_flipping)
+            return crtc;
+    }
+    return NULL;
+}
+
+static void
+ms_unflip_per_crtc(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    /* Has to be cleared before set_mode_major so it scans out TearFree again */
+    drmmode_crtc->present_per_crtc_flipping = FALSE;
+    drmmode_crtc->present_flip_window = NULL;
+    drmmode_crtc_set_vrr(crtc, FALSE);
+
+    if (drmmode_crtc->dpms_mode == DPMSModeOn)
+        crtc->funcs->set_mode_major(crtc, &crtc->mode, crtc->rotation,
+                                    crtc->x, crtc->y);
+    else
+        drmmode_crtc->need_modeset = TRUE;
+
+    if (drmmode_crtc->present_flip_fb_id) {
+        drmModeRmFB(drmmode_crtc->drmmode->fd,
+                    drmmode_crtc->present_flip_fb_id);
+        drmmode_crtc->present_flip_fb_id = 0;
+    }
+}
+
+static void
+ms_present_unflip_per_crtc(ScrnInfoPtr scrn, xf86CrtcPtr crtc,
+                           uint64_t event_id)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+
+    ms_unflip_per_crtc(crtc);
+    if (!ms_find_per_crtc_flip(scrn))
+        ms->drmmode.present_flipping = FALSE;
+    present_event_notify(event_id, 0, 0);
+}
+
 /*
  * Queue a flip back to the normal frame buffer
  */
 static void
-ms_present_unflip(ScreenPtr screen, uint64_t event_id)
+ms_present_unflip_screen(ScreenPtr screen, uint64_t event_id)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     modesettingPtr ms = modesettingPTR(scrn);
     PixmapPtr pixmap = screen->GetScreenPixmap(screen);
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    struct ms_present_vblank_event *event;
     int i;
 
     ms_present_set_screen_vrr(scrn, FALSE);
 
-    if (ms_present_check_unflip(NULL, screen->root, pixmap, TRUE, NULL)) {
-        struct ms_present_vblank_event *event;
-
-        event = calloc(1, sizeof(struct ms_present_vblank_event));
-        if (!event)
-            return;
-
+    if (ms_present_check_unflip(NULL, screen->root, pixmap, TRUE, NULL) &&
+        (event = calloc(1, sizeof(struct ms_present_vblank_event)))) {
         event->event_id = event_id;
         event->unflip = TRUE;
 
@@ -476,6 +540,35 @@ ms_present_unflip(ScreenPtr screen, uint64_t event_id)
 
     present_event_notify(event_id, 0, 0);
 }
+
+static void
+ms_present_unflip(ScreenPtr screen, uint64_t event_id)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    xf86CrtcPtr per_crtc_flip = ms_find_per_crtc_flip(scrn);
+
+    if (per_crtc_flip)
+        ms_present_unflip_per_crtc(scrn, per_crtc_flip, event_id);
+    else
+        ms_present_unflip_screen(screen, event_id);
+}
+
+static void
+ms_present_unflip_crtc(ScreenPtr screen, RRCrtcPtr rrcrtc, uint64_t event_id)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    modesettingPtr ms = modesettingPTR(scrn);
+    xf86CrtcPtr xf86_crtc = rrcrtc ? rrcrtc->devPrivate : NULL;
+    drmmode_crtc_private_ptr drmmode_crtc =
+        xf86_crtc ? xf86_crtc->driver_private : NULL;
+
+    if (drmmode_crtc && drmmode_crtc->present_per_crtc_flipping)
+        ms_present_unflip_per_crtc(scrn, xf86_crtc, event_id);
+    else if (ms->drmmode.present_flipping && !ms_find_per_crtc_flip(scrn))
+        ms_present_unflip_screen(screen, event_id);
+    else
+        present_event_notify(event_id, 0, 0);
+}
 #endif
 
 static present_screen_info_rec ms_present_screen_info = {
@@ -493,6 +586,7 @@ static present_screen_info_rec ms_present_screen_info = {
     .check_flip2 = ms_present_check_flip,
     .flip = ms_present_flip,
     .unflip = ms_present_unflip,
+    .unflip_crtc = ms_present_unflip_crtc,
 #endif
 };
 

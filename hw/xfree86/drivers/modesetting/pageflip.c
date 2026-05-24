@@ -215,12 +215,11 @@ enum queue_flip_status {
 };
 
 static int
-queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc,
-                   struct ms_flipdata *flipdata,
-                   xf86CrtcPtr ref_crtc, uint32_t flags)
+queue_flip_on_crtc_with_fb(ScreenPtr screen, xf86CrtcPtr crtc,
+                           struct ms_flipdata *flipdata,
+                           xf86CrtcPtr ref_crtc, uint32_t flags,
+                           uint32_t fb_id, int fb_x, int fb_y)
 {
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
-    modesettingPtr ms = modesettingPTR(scrn);
     struct ms_crtc_pageflip *flip;
     uint32_t seq;
 
@@ -244,12 +243,24 @@ queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc,
     /* take a reference on flipdata for use in flip */
     flipdata->flip_count++;
 
-    if (do_queue_flip_on_crtc(screen, crtc, flags, seq, ms->drmmode.fb_id,
-                              crtc->x, crtc->y))
+    if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, fb_x, fb_y))
         return QUEUE_FLIP_DRM_FLUSH_FAILED;
 
     /* The page flip succeeded. */
     return QUEUE_FLIP_SUCCESS;
+}
+
+static int
+queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc,
+                   struct ms_flipdata *flipdata,
+                   xf86CrtcPtr ref_crtc, uint32_t flags)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    modesettingPtr ms = modesettingPTR(scrn);
+
+    return queue_flip_on_crtc_with_fb(screen, crtc, flipdata, ref_crtc,
+                                      flags, ms->drmmode.fb_id,
+                                      crtc->x, crtc->y);
 }
 
 
@@ -382,6 +393,117 @@ ms_tearfree_dri_flip(modesettingPtr ms, xf86CrtcPtr crtc, void *event,
 }
 
 Bool
+ms_pixmap_is_per_crtc_size(ScrnInfoPtr scrn, PixmapPtr pixmap)
+{
+    return pixmap->drawable.width != scrn->virtualX ||
+           pixmap->drawable.height != scrn->virtualY;
+}
+
+static Bool
+ms_import_flip_fb(ScreenPtr screen, PixmapPtr pixmap, uint32_t *fb_id,
+                  const char *log_prefix)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    modesettingPtr ms = modesettingPTR(scrn);
+    drmmode_bo bo;
+    int ret, err;
+
+    bo.gbm = ms->glamor.gbm_bo_from_pixmap(screen, pixmap);
+    bo.dumb = NULL;
+    if (!bo.gbm) {
+        xf86DrvMsg(scrn->scrnIndex, X_ERROR,
+                   "%s: Failed to get GBM BO for flip to new front.\n",
+                   log_prefix);
+        return FALSE;
+    }
+
+    bo.width = pixmap->drawable.width;
+    bo.height = pixmap->drawable.height;
+    ret = drmmode_bo_import(&ms->drmmode, &bo, fb_id);
+    err = errno;
+    drmmode_bo_destroy(&ms->drmmode, &bo);
+
+    if (ret) {
+        if (!ms->drmmode.flip_bo_import_failed) {
+            xf86DrvMsg(scrn->scrnIndex, X_WARNING, "%s: Import BO failed: %s\n",
+                       log_prefix, strerror(err));
+            ms->drmmode.flip_bo_import_failed = TRUE;
+        }
+        return FALSE;
+    }
+
+    if (pixmap != screen->GetScreenPixmap(screen))
+        ms->drmmode.flip_bo_import_failed = FALSE;
+    return TRUE;
+}
+
+static Bool
+ms_do_pageflip_per_crtc(ScreenPtr screen,
+                        PixmapPtr new_front,
+                        void *event,
+                        xf86CrtcPtr crtc,
+                        Bool async,
+                        ms_pageflip_handler_proc pageflip_handler,
+                        ms_pageflip_abort_proc pageflip_abort,
+                        const char *log_prefix)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    modesettingPtr ms = modesettingPTR(scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    struct ms_flipdata *flipdata;
+    enum queue_flip_status flip_status;
+    uint32_t flags;
+    uint32_t fb_id;
+
+    ms->glamor.block_handler(screen);
+
+    if (!ms_import_flip_fb(screen, new_front, &fb_id, log_prefix))
+        goto error_free_event;
+
+    flipdata = calloc(1, sizeof(struct ms_flipdata));
+    if (!flipdata) {
+        xf86DrvMsg(scrn->scrnIndex, X_ERROR,
+                   "%s: Failed to allocate flipdata.\n", log_prefix);
+        goto error_rm_fb;
+    }
+    flipdata->event = event;
+    flipdata->screen = screen;
+    flipdata->event_handler = pageflip_handler;
+    flipdata->abort_handler = pageflip_abort;
+    flipdata->old_fb_id = drmmode_crtc->present_flip_fb_id;
+    flipdata->flip_count = 1;
+
+    flags = DRM_MODE_PAGE_FLIP_EVENT;
+    if (ms->drmmode.can_async_flip && async)
+        flags |= DRM_MODE_PAGE_FLIP_ASYNC;
+
+    flip_status = queue_flip_on_crtc_with_fb(screen, crtc, flipdata, crtc,
+                                             flags, fb_id, 0, 0);
+    if (flip_status != QUEUE_FLIP_SUCCESS) {
+        if (flip_status == QUEUE_FLIP_DRM_FLUSH_FAILED)
+            ms_print_pageflip_error(scrn->scrnIndex, log_prefix,
+                                    drmmode_crtc->vblank_pipe, flags, errno);
+        else
+            xf86DrvMsg(scrn->scrnIndex, X_WARNING,
+                       "%s: queue flip on CRTC %d failed.\n",
+                       log_prefix, drmmode_crtc->vblank_pipe);
+        free(flipdata);
+        goto error_rm_fb;
+    }
+
+    drmmode_crtc->present_flip_fb_id = fb_id;
+    drmmode_crtc->present_per_crtc_flipping = TRUE;
+    ms->drmmode.present_flipping = TRUE;
+    return TRUE;
+
+ error_rm_fb:
+    drmModeRmFB(ms->fd, fb_id);
+ error_free_event:
+    free(event);
+    return FALSE;
+}
+
+Bool
 ms_do_pageflip(ScreenPtr screen,
                PixmapPtr new_front,
                void *event,
@@ -394,7 +516,6 @@ ms_do_pageflip(ScreenPtr screen,
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     modesettingPtr ms = modesettingPTR(scrn);
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
-    drmmode_bo new_front_bo;
     uint32_t flags;
     int i;
     struct ms_flipdata *flipdata;
@@ -414,21 +535,15 @@ ms_do_pageflip(ScreenPtr screen,
         return TRUE;
     }
 
+    if (ref_crtc && ms_pixmap_is_per_crtc_size(scrn, new_front))
+        return ms_do_pageflip_per_crtc(screen, new_front, event, ref_crtc,
+                                       async, pageflip_handler,
+                                       pageflip_abort, log_prefix);
+
     ms->glamor.block_handler(screen);
-
-    new_front_bo.gbm = ms->glamor.gbm_bo_from_pixmap(screen, new_front);
-    new_front_bo.dumb = NULL;
-
-    if (!new_front_bo.gbm) {
-        xf86DrvMsg(scrn->scrnIndex, X_ERROR,
-                   "%s: Failed to get GBM BO for flip to new front.\n",
-                   log_prefix);
-        goto error_free_event;
-    }
 
     flipdata = calloc(1, sizeof(struct ms_flipdata));
     if (!flipdata) {
-        drmmode_bo_destroy(&ms->drmmode, &new_front_bo);
         xf86DrvMsg(scrn->scrnIndex, X_ERROR,
                    "%s: Failed to allocate flipdata.\n", log_prefix);
         goto error_free_event;
@@ -451,21 +566,8 @@ ms_do_pageflip(ScreenPtr screen,
     /* Create a new handle for the back buffer */
     flipdata->old_fb_id = ms->drmmode.fb_id;
 
-    new_front_bo.width = new_front->drawable.width;
-    new_front_bo.height = new_front->drawable.height;
-    if (drmmode_bo_import(&ms->drmmode, &new_front_bo,
-                          &ms->drmmode.fb_id)) {
-        if (!ms->drmmode.flip_bo_import_failed) {
-            xf86DrvMsg(scrn->scrnIndex, X_WARNING, "%s: Import BO failed: %s\n",
-                       log_prefix, strerror(errno));
-            ms->drmmode.flip_bo_import_failed = TRUE;
-        }
+    if (!ms_import_flip_fb(screen, new_front, &ms->drmmode.fb_id, log_prefix))
         goto error_out;
-    } else {
-        if (ms->drmmode.flip_bo_import_failed &&
-            new_front != screen->GetScreenPixmap(screen))
-            ms->drmmode.flip_bo_import_failed = FALSE;
-    }
 
     /* Queue flips on all enabled CRTCs.
      *
@@ -524,8 +626,6 @@ ms_do_pageflip(ScreenPtr screen,
         }
     }
 
-    drmmode_bo_destroy(&ms->drmmode, &new_front_bo);
-
     /*
      * Do we have more than our local reference,
      * if so and no errors, then drop our local
@@ -549,7 +649,6 @@ error_undo:
     }
 
 error_out:
-    drmmode_bo_destroy(&ms->drmmode, &new_front_bo);
     /* if only the local reference - free the structure,
      * else drop the local reference and return */
     if (flipdata->flip_count == 1) {
@@ -695,6 +794,9 @@ ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+
+    if (drmmode_crtc->present_per_crtc_flipping)
+        return FALSE;
 
     /* If TearFree is enabled, XServer owns the VT, and the CRTC is active */
     return trf->buf[0].px && crtc->scrn->vtSema && xf86_crtc_on(crtc);
