@@ -1268,6 +1268,8 @@ glamor_egl_init(ScrnInfoPtr scrn, int fd)
                                 "EGL_EXT_image_dma_buf_import") &&
         epoxy_has_egl_extension(glamor_egl->display,
                                 "EGL_EXT_image_dma_buf_import_modifiers")) {
+        const GLubyte *vendor = glGetString(GL_VENDOR);
+
         if (xf86Info.debug != NULL)
             glamor_egl->dmabuf_capable = !!strstr(xf86Info.debug,
                                                   "dmabuf_capable");
@@ -1276,6 +1278,10 @@ glamor_egl_init(ScrnInfoPtr scrn, int fd)
         else if (strstr((const char *)renderer, "zink"))
             glamor_egl->dmabuf_capable = TRUE;
         else if (strstr((const char *)renderer, "radeonsi"))
+            glamor_egl->dmabuf_capable = TRUE;
+        /* GL_RENDERER doesn't contain "NVIDIA" on older NVIDIA drivers */
+        else if ((vendor && strstr((const char *)vendor, "NVIDIA")) ||
+                 strstr((const char *)renderer, "NVIDIA"))
             glamor_egl->dmabuf_capable = TRUE;
         else
             glamor_egl->dmabuf_capable = FALSE;
