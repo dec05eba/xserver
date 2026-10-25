@@ -44,6 +44,9 @@ Switching between the two doesn't change the display mode, so it's instant.
 Turning HDR on or off for a monitor does change the mode, so the monitor goes
 black for a moment. HDR is off by default.
 
+HDR support works without the "Depth 30" config option set, so programs function
+and look correct.
+
 HDR needs:
 
 - the modesetting driver
@@ -65,6 +68,9 @@ the Device section of xorg.conf, for example in
 
 `SDRWhiteLevel` is the brightness in nits that SDR content, such as the
 desktop, is shown at in HDR mode. The default is 203.
+
+You also have to turn off your compositor to make HDR display at the moment
+and for proper multimonitor support.
 
 These options only set the starting values. Each output has RandR properties
 that can be changed while the X server runs:
