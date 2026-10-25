@@ -297,6 +297,7 @@ typedef struct {
     Bool vrr_capable;
     Bool hdr_pq_supported;
     Atom hdr_atom;
+    Atom hdr_capable_atom;
     Atom sdr_white_level_atom;
     Bool hdr_enabled;
     int sdr_white_level;

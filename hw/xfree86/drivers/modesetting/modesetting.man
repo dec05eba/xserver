@@ -145,6 +145,9 @@ output property, which can be changed per output with
 .BR xrandr ,
 for example
 .BR "xrandr --output DP-1 --set HDR 1" .
+The read-only
+.B HDR capable
+output property shows whether the monitor supports HDR10.
 The default is
 .B off.
 .TP

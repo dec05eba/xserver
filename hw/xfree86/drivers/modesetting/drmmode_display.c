@@ -3003,6 +3003,25 @@ drmmode_output_add_gtf_modes(xf86OutputPtr output, DisplayModePtr Modes)
     return xf86ModesAdd(Modes, m);
 }
 
+static void
+drmmode_output_update_hdr_capable(xf86OutputPtr output)
+{
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+    drmModePropertyBlobPtr edid = drmmode_output->edid_blob;
+    INT32 capable = edid && ms_hdr_edid_supports_pq(edid->data, edid->length);
+
+    if (capable == drmmode_output->hdr_pq_supported)
+        return;
+
+    drmmode_output->hdr_pq_supported = capable;
+    modesettingPTR(output->scrn)->hdr_dirty = TRUE;
+
+    if (drmmode_output->hdr_capable_atom)
+        RRChangeOutputProperty(output->randr_output,
+                               drmmode_output->hdr_capable_atom, XA_INTEGER, 32,
+                               PropModeReplace, 1, &capable, TRUE, FALSE);
+}
+
 static DisplayModePtr
 drmmode_output_get_modes(xf86OutputPtr output)
 {
@@ -3022,17 +3041,14 @@ drmmode_output_get_modes(xf86OutputPtr output)
     drmmode_output->edid_blob =
         koutput_get_prop_blob(drmmode->fd, koutput, "EDID");
 
-    drmmode_output->hdr_pq_supported = FALSE;
     if (drmmode_output->edid_blob) {
         mon = xf86InterpretEDID(output->scrn->scrnIndex,
                                 drmmode_output->edid_blob->data);
         if (mon && drmmode_output->edid_blob->length > 128)
             mon->flags |= MONITOR_EDID_COMPLETE_RAWDATA;
-        drmmode_output->hdr_pq_supported =
-            ms_hdr_edid_supports_pq(drmmode_output->edid_blob->data,
-                                    drmmode_output->edid_blob->length);
     }
     xf86OutputSetEDID(output, mon);
+    drmmode_output_update_hdr_capable(output);
 
     drmmode_output_attach_tile(output);
 
@@ -3136,7 +3152,8 @@ drmmode_property_ignore(drmModePropertyPtr prop)
 
 static Atom
 drmmode_output_create_range_property(xf86OutputPtr output, const char *name,
-                                     INT32 min, INT32 max, INT32 value)
+                                     INT32 min, INT32 max, INT32 value,
+                                     Bool immutable)
 {
     Atom atom = MakeAtom(name, strlen(name), TRUE);
     INT32 prop_range[2] = { min, max };
@@ -3146,7 +3163,7 @@ drmmode_output_create_range_property(xf86OutputPtr output, const char *name,
         return None;
 
     err = RRConfigureOutputProperty(output->randr_output, atom, FALSE, TRUE,
-                                    FALSE, 2, prop_range);
+                                    immutable, 2, prop_range);
     if (err == 0)
         err = RRChangeOutputProperty(output->randr_output, atom, XA_INTEGER, 32,
                                      PropModeReplace, 1, &value, FALSE, FALSE);
@@ -3239,11 +3256,17 @@ drmmode_output_create_resources(xf86OutputPtr output)
         drmmode_output->sdr_white_level = drmmode->sdr_white_level_default;
         drmmode_output->hdr_atom =
             drmmode_output_create_range_property(output, "HDR", 0, 1,
-                                                 drmmode_output->hdr_enabled);
+                                                 drmmode_output->hdr_enabled,
+                                                 FALSE);
+        drmmode_output->hdr_capable_atom =
+            drmmode_output_create_range_property(output, "HDR capable", 0, 1,
+                                                 drmmode_output->hdr_pq_supported,
+                                                 TRUE);
         drmmode_output->sdr_white_level_atom =
             drmmode_output_create_range_property(output, "SDR white level",
                                                  1, 10000,
-                                                 drmmode_output->sdr_white_level);
+                                                 drmmode_output->sdr_white_level,
+                                                 FALSE);
     }
 
     for (i = 0; i < drmmode_output->num_props; i++) {
