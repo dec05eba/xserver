@@ -222,6 +222,7 @@ typedef struct {
     unsigned prime_pixmap_x;
 
     int src_x, src_y;
+    uint32_t scanout_format;
 
     /**
      * @{ MSC (vblank count) handling for the PRESENT extension.

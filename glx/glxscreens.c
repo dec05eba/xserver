@@ -389,11 +389,18 @@ __glXScreenInit(__GLXscreen * pGlxScreen, ScreenPtr pScreen)
         }
 #endif
         /* Make sure that our FBconfig's depth can actually be displayed
-         * (corresponds to an existing visual).
+         * (corresponds to an existing visual). Composite alternate visuals
+         * only count for the configs duplicated for them.
          */
         for (i = 0; i < pScreen->numVisuals; i++) {
-            if (depth == pScreen->visuals[i].nplanes)
-                break;
+            if (depth != pScreen->visuals[i].nplanes)
+                continue;
+#ifdef COMPOSITE
+            if (!noCompositeExtension && !config->duplicatedForComp &&
+                compIsAlternateVisual(pScreen, pScreen->visuals[i].vid))
+                continue;
+#endif
+            break;
         }
         /* if it can't, fix up the fbconfig to not advertise window support */
         if (i == pScreen->numVisuals)

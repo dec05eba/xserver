@@ -110,6 +110,8 @@ static uint32_t
 get_opaque_format(uint32_t format)
 {
     switch (format) {
+    case DRM_FORMAT_ARGB1555:
+        return DRM_FORMAT_XRGB1555;
     case DRM_FORMAT_ARGB8888:
         return DRM_FORMAT_XRGB8888;
     case DRM_FORMAT_ARGB2101010:
@@ -839,6 +841,19 @@ drmmode_set_ctm(xf86CrtcPtr crtc, const struct drm_color_ctm *ctm)
     drmModeDestroyPropertyBlob(drmmode->fd, blob_id);
 }
 
+static uint32_t
+drmmode_fb_get_format(int fd, uint32_t fb_id)
+{
+    drmModeFB2Ptr fb = fb_id ? drmModeGetFB2(fd, fb_id) : NULL;
+    uint32_t format = 0;
+
+    if (fb) {
+        format = fb->pixel_format;
+        drmModeFreeFB2(fb);
+    }
+    return format;
+}
+
 static int
 drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
 {
@@ -912,6 +927,8 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
             ret = drmModeAtomicCommit(ms->fd, req, flags, NULL);
 
         if (ret == 0 && !test_only) {
+            drmmode_crtc->scanout_format =
+                drmmode_fb_get_format(ms->fd, active ? fb_id : 0);
             for (i = 0; i < xf86_config->num_output; i++) {
                 xf86OutputPtr output = xf86_config->output[i];
                 drmmode_output_private_ptr drmmode_output = output->driver_private;
@@ -953,6 +970,7 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
     if (!ret && !ms->atomic_modeset) {
         drmmode_crtc->src_x = x;
         drmmode_crtc->src_y = y;
+        drmmode_crtc->scanout_format = drmmode_fb_get_format(drmmode->fd, fb_id);
     }
 
     drmmode_set_ctm(crtc, ctm);
@@ -967,7 +985,13 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint32_t format = drmmode_fb_get_format(ms->fd, fb_id);
+    Bool format_changed = format != drmmode_crtc->scanout_format;
     int ret;
+
+    /* The kernel rejects async flips that change the frame buffer format */
+    if (format_changed)
+        flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
     if (ms->atomic_modeset) {
         drmModeAtomicReq *req = drmModeAtomicAlloc();
@@ -980,14 +1004,17 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         if (ret == 0)
             ret = drmModeAtomicCommit(ms->fd, req, flags, data);
         drmModeAtomicFree(req);
+        if (ret == 0)
+            drmmode_crtc->scanout_format = format;
         return ret;
     }
 
-    /* The frame buffer source coordinates may change when switching between the
-     * primary frame buffer and a per-CRTC frame buffer. Set the correct source
-     * coordinates if they differ for this flip.
+    /* Legacy page flips can't change the frame buffer format or the source
+     * coordinates, which change when switching between the primary frame
+     * buffer and a per-CRTC frame buffer.
      */
-    if (drmmode_crtc->src_x != x || drmmode_crtc->src_y != y) {
+    if (format_changed ||
+        drmmode_crtc->src_x != x || drmmode_crtc->src_y != y) {
         ret = drmModeSetPlane(ms->fd, drmmode_crtc->plane_id,
                               drmmode_crtc->mode_crtc->crtc_id, fb_id, 0,
                               0, 0, crtc->mode.HDisplay, crtc->mode.VDisplay,
@@ -995,12 +1022,13 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                               crtc->mode.VDisplay << 16);
         if (ret) {
             xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
-                       "error changing fb src coordinates for flip: %d\n", ret);
+                       "error changing fb for flip: %d\n", ret);
             return ret;
         }
 
         drmmode_crtc->src_x = x;
         drmmode_crtc->src_y = y;
+        drmmode_crtc->scanout_format = format;
     }
 
     return drmModePageFlip(ms->fd, drmmode_crtc->mode_crtc->crtc_id,
@@ -1119,6 +1147,17 @@ drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
                                               offsets, modifiers, fb_id,
                                               DRM_MODE_FB_MODIFIERS);
         }
+    }
+#endif
+#ifdef HAVE_GBM
+    if (bo->gbm) {
+        uint32_t handles[4] = { drmmode_bo_get_handle(bo) };
+        uint32_t strides[4] = { drmmode_bo_get_pitch(bo) };
+        uint32_t offsets[4] = { 0 };
+
+        return drmModeAddFB2(drmmode->fd, bo->width, bo->height,
+                             get_opaque_format(gbm_bo_get_format(bo->gbm)),
+                             handles, strides, offsets, fb_id, 0);
     }
 #endif
     return drmModeAddFB(drmmode->fd, bo->width, bo->height,

@@ -215,12 +215,11 @@ CompositeRegisterAlternateVisuals(ScreenPtr pScreen, VisualID * vids,
     return compRegisterAlternateVisuals(cs, vids, nVisuals);
 }
 
-Bool
-CompositeRegisterImplicitRedirectionException(ScreenPtr pScreen,
-                                              VisualID parentVisual,
-                                              VisualID winVisual)
+static Bool
+compRegisterImplicitRedirectionException(CompScreenPtr cs,
+                                         VisualID parentVisual,
+                                         VisualID winVisual)
 {
-    CompScreenPtr cs = GetCompScreen(pScreen);
     CompImplicitRedirectException *p;
 
     p = reallocarray(cs->implicitRedirectExceptions,
@@ -237,16 +236,34 @@ CompositeRegisterImplicitRedirectionException(ScreenPtr pScreen,
     return TRUE;
 }
 
+Bool
+CompositeRegisterImplicitRedirectionException(ScreenPtr pScreen,
+                                              VisualID parentVisual,
+                                              VisualID winVisual)
+{
+    CompScreenPtr cs = GetCompScreen(pScreen);
+
+    return compRegisterImplicitRedirectionException(cs, parentVisual,
+                                                    winVisual);
+}
+
 typedef struct _alternateVisual {
     int depth;
     CARD32 format;
+    Bool implicitRedirect;
 } CompAlternateVisual;
 
+/*
+ * The 30-bit visual is only offered when the DDX supports depth 30 pixmaps
+ * on a lower depth screen. Windows using it are meant to only receive content
+ * through Present, so they are not redirected and can be page flipped.
+ */
 static CompAlternateVisual altVisuals[] = {
 #if COMP_INCLUDE_RGB24_VISUAL
-    {24, PICT_r8g8b8},
+    {24, PICT_r8g8b8, TRUE},
 #endif
-    {32, PICT_a8r8g8b8},
+    {30, PICT_x2r10g10b10, FALSE},
+    {32, PICT_a8r8g8b8, TRUE},
 };
 
 static Bool
@@ -259,11 +276,13 @@ compAddAlternateVisual(ScreenPtr pScreen, CompScreenPtr cs,
     unsigned long alphaMask;
 
     /*
-     * The ARGB32 visual is always available.  Other alternate depth visuals
+     * The ARGB32 visual is always available and the 30-bit one whenever the
+     * DDX supports depth 30 pixmaps.  Other alternate depth visuals
      * are only provided if their depth is less than the root window depth.
      * There's no deep reason for this.
      */
-    if (alt->depth >= pScreen->rootDepth && alt->depth != 32)
+    if (alt->depth >= pScreen->rootDepth && alt->depth != 30 &&
+        alt->depth != 32)
         return FALSE;
 
     depth = compFindVisuallessDepth(pScreen, alt->depth);
@@ -308,13 +327,18 @@ compAddAlternateVisual(ScreenPtr pScreen, CompScreenPtr cs,
                                visual->greenMask |
                                visual->blueMask | alphaMask);
         /* find widest component */
-        visual->ColormapEntries = (1 << max(Ones(visual->redMask),
-                                            max(Ones(visual->greenMask),
-                                                Ones(visual->blueMask))));
+        visual->bitsPerRGBValue = max(Ones(visual->redMask),
+                                      max(Ones(visual->greenMask),
+                                          Ones(visual->blueMask)));
+        visual->ColormapEntries = 1 << visual->bitsPerRGBValue;
     }
 
     /* remember the visual ID to detect auto-update windows */
     compRegisterAlternateVisuals(cs, &visual->vid, 1);
+
+    if (!alt->implicitRedirect)
+        compRegisterImplicitRedirectionException(cs, pScreen->rootVisual,
+                                                 visual->vid);
 
     return TRUE;
 }

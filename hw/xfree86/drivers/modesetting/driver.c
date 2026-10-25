@@ -1405,6 +1405,9 @@ PreInit(ScrnInfoPtr pScrn, int flags)
 
     try_enable_glamor(pScrn);
 
+    if (ms->drmmode.glamor && pScrn->depth == 24 && !pScrn->is_gpu)
+        xf86AddPixFormat(pScrn, 30, 32, 0);
+
     if (!ms->drmmode.glamor) {
         Bool prefer_shadow = TRUE;
 
