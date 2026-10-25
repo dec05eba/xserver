@@ -133,6 +133,20 @@ The default is
 Enable atomic modesetting when supported.  The default is
 .B on.
 .TP
+.BI "Option \*qAlwaysHDR\*q \*q" boolean \*q
+Keep monitors that support HDR10 in HDR mode at all times. The desktop is
+treated as gamma 2.2 content with BT.709 primaries and is converted to HDR10
+with the DEGAMMA_LUT, CTM and GAMMA_LUT CRTC properties. Fullscreen windows
+with the hdr_output_metadata property are passed through unconverted. Switching
+between them does not require a modeset, so it is instant. The default is
+.B off.
+.TP
+.BI "Option \*qSDRWhiteLevel\*q \*q" integer \*q
+The luminance in nits that SDR white is shown at when
+.B AlwaysHDR
+is enabled. The default is
+.B 203.
+.TP
 .SH "SEE ALSO"
 .BR @xservername@ (@appmansuffix@),
 .BR @xconfigfile@ (@filemansuffix@),

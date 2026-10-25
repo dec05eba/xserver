@@ -21,6 +21,7 @@ modesetting_drv_lib = shared_module(
         udev_dep,
         libdrm_dep,
         gbm_dep,
+        m_dep,
     ],
 
     install: true,

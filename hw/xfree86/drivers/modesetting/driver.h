@@ -63,6 +63,8 @@ typedef enum {
     OPTION_ASYNC_FLIP_SECONDARIES,
     OPTION_TEARFREE,
     OPTION_CURSOR_SIZE_OPTIM,
+    OPTION_ALWAYS_HDR,
+    OPTION_SDR_WHITE_LEVEL,
 } modesettingOpts;
 
 typedef struct
@@ -273,3 +275,12 @@ Bool ms_hdr_screen_init(ScreenPtr screen);
 void ms_hdr_close_screen(ScreenPtr screen);
 void ms_hdr_update(ScreenPtr screen);
 void ms_hdr_disable(ScrnInfoPtr scrn);
+Bool ms_hdr_edid_supports_pq(const uint8_t *edid, size_t size);
+void ms_hdr_desktop_metadata(int white_level,
+                             struct hdr_output_metadata *metadata);
+void ms_hdr_desktop_degamma_lut(xf86CrtcPtr crtc, struct drm_color_lut *lut,
+                                int size);
+void ms_hdr_desktop_gamma_lut(int white_level, struct drm_color_lut *lut,
+                              int size);
+void ms_hdr_desktop_ctm(const struct drm_color_ctm *user,
+                        struct drm_color_ctm *ctm);

@@ -159,6 +159,8 @@ static const OptionInfoRec Options[] = {
     {OPTION_USE_GAMMA_LUT, "UseGammaLUT", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_ASYNC_FLIP_SECONDARIES, "AsyncFlipSecondaries", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_TEARFREE, "TearFree", OPTV_BOOLEAN, {0}, FALSE},
+    {OPTION_ALWAYS_HDR, "AlwaysHDR", OPTV_BOOLEAN, {0}, FALSE},
+    {OPTION_SDR_WHITE_LEVEL, "SDRWhiteLevel", OPTV_INTEGER, {0}, FALSE},
     {-1, NULL, OPTV_NONE, {0}, FALSE}
 };
 
@@ -1506,6 +1508,17 @@ PreInit(ScrnInfoPtr pScrn, int flags)
     }
     xf86DrvMsg(pScrn->scrnIndex, X_INFO,
                "Atomic modesetting %sabled\n", ms->atomic_modeset ? "en" : "dis");
+
+    ms->drmmode.always_hdr = xf86ReturnOptValBool(ms->drmmode.Options,
+                                                  OPTION_ALWAYS_HDR, FALSE);
+    ms->drmmode.sdr_white_level = 203;
+    xf86GetOptValInteger(ms->drmmode.Options, OPTION_SDR_WHITE_LEVEL,
+                         &ms->drmmode.sdr_white_level);
+    ms->drmmode.sdr_white_level = min(max(ms->drmmode.sdr_white_level, 1), 10000);
+    if (ms->drmmode.always_hdr)
+        xf86DrvMsg(pScrn->scrnIndex, X_CONFIG,
+                   "Always HDR enabled with an SDR white level of %d nits\n",
+                   ms->drmmode.sdr_white_level);
 
     if (pScrn->is_gpu) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,

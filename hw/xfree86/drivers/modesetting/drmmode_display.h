@@ -83,10 +83,18 @@ enum drmmode_content_type {
 enum drmmode_crtc_property {
     DRMMODE_CRTC_ACTIVE,
     DRMMODE_CRTC_MODE_ID,
+    DRMMODE_CRTC_DEGAMMA_LUT,
+    DRMMODE_CRTC_DEGAMMA_LUT_SIZE,
     DRMMODE_CRTC_GAMMA_LUT,
     DRMMODE_CRTC_GAMMA_LUT_SIZE,
     DRMMODE_CRTC_CTM,
     DRMMODE_CRTC__COUNT
+};
+
+enum drmmode_hdr_mode {
+    DRMMODE_HDR_OFF,
+    DRMMODE_HDR_DESKTOP,
+    DRMMODE_HDR_PASSTHROUGH,
 };
 
 typedef struct {
@@ -153,6 +161,9 @@ typedef struct {
 
     uint32_t vrr_prop_id;
     Bool use_ctm;
+
+    Bool always_hdr;
+    int sdr_white_level;
 
     Bool pending_modeset;
 } drmmode_rec, *drmmode_ptr;
@@ -252,7 +263,8 @@ typedef struct {
     uint32_t present_flip_fb_id;
     WindowPtr present_flip_window;
 
-    Bool hdr_enabled;
+    enum drmmode_hdr_mode hdr_mode;
+    Bool hdr_failed;
     struct hdr_output_metadata hdr_metadata;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
 
@@ -282,6 +294,7 @@ typedef struct {
     Atom ctm_atom;
     struct drm_color_ctm ctm;
     Bool vrr_capable;
+    Bool hdr_pq_supported;
 } drmmode_output_private_rec, *drmmode_output_private_ptr;
 
 typedef struct {
@@ -366,5 +379,6 @@ void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
 void drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
                                           const struct hdr_output_metadata *metadata);
+void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
 
 #endif
