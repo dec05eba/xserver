@@ -162,8 +162,8 @@ typedef struct {
     uint32_t vrr_prop_id;
     Bool use_ctm;
 
-    Bool always_hdr;
-    int sdr_white_level;
+    Bool hdr_default;
+    int sdr_white_level_default;
 
     Bool pending_modeset;
 } drmmode_rec, *drmmode_ptr;
@@ -265,6 +265,7 @@ typedef struct {
 
     enum drmmode_hdr_mode hdr_mode;
     Bool hdr_failed;
+    int sdr_white_level;
     struct hdr_output_metadata hdr_metadata;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
 
@@ -295,6 +296,10 @@ typedef struct {
     struct drm_color_ctm ctm;
     Bool vrr_capable;
     Bool hdr_pq_supported;
+    Atom hdr_atom;
+    Atom sdr_white_level_atom;
+    Bool hdr_enabled;
+    int sdr_white_level;
 } drmmode_output_private_rec, *drmmode_output_private_ptr;
 
 typedef struct {
