@@ -39,6 +39,9 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "xf86.h"
 #include "xf86Priv.h"
@@ -1271,6 +1274,26 @@ ms_get_drm_master_fd(ScrnInfoPtr pScrn)
     return TRUE;
 }
 
+static int
+ms_enable_atomic_client_cap(int fd)
+{
+#ifdef __linux__
+    char name[16] = { 0 };
+    int ret;
+
+    /* Linux refuses DRM_CLIENT_CAP_ATOMIC to any thread whose name starts with 'X' */
+    if (prctl(PR_GET_NAME, name) == 0 && name[0] == 'X') {
+        name[0] = 'x';
+        prctl(PR_SET_NAME, name);
+        ret = drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1);
+        name[0] = 'X';
+        prctl(PR_SET_NAME, name);
+        return ret;
+    }
+#endif
+    return drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1);
+}
+
 static Bool
 PreInit(ScrnInfoPtr pScrn, int flags)
 {
@@ -1472,10 +1495,11 @@ PreInit(ScrnInfoPtr pScrn, int flags)
     ret = drmSetClientCap(ms->fd, DRM_CLIENT_CAP_ATOMIC, 0);
     ms->atomic_modeset_capable = (ret == 0);
 
-    if (xf86ReturnOptValBool(ms->drmmode.Options, OPTION_ATOMIC, FALSE)) {
-        ret = drmSetClientCap(ms->fd, DRM_CLIENT_CAP_ATOMIC, 1);
+    if (xf86ReturnOptValBool(ms->drmmode.Options, OPTION_ATOMIC, TRUE)) {
+        ret = ms_enable_atomic_client_cap(ms->fd);
         ms->atomic_modeset = (ret == 0);
-        if (!ms->atomic_modeset)
+        if (!ms->atomic_modeset &&
+            xf86IsOptionSet(ms->drmmode.Options, OPTION_ATOMIC))
             xf86DrvMsg(pScrn->scrnIndex, X_WARNING, "Atomic modesetting not supported\n");
     } else {
         ms->atomic_modeset = FALSE;
