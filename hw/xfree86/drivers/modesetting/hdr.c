@@ -52,31 +52,23 @@ ms_window_get_hdr_output_metadata(WindowPtr window)
     return prop->data;
 }
 
-static WindowPtr
-ms_find_child_covering_box(WindowPtr parent, BoxPtr box)
+static const struct hdr_output_metadata *
+ms_fullscreen_hdr_output_metadata(WindowPtr parent, BoxPtr box)
 {
     WindowPtr child;
 
     for (child = parent->firstChild; child; child = child->nextSib) {
-        if (child->viewable && child->drawable.class == InputOutput &&
-            RegionContainsRect(&child->borderSize, box) == rgnIN)
-            return child;
-    }
+        const struct hdr_output_metadata *metadata;
 
-    return NULL;
-}
+        if (!child->viewable || child->drawable.class != InputOutput ||
+            RegionContainsRect(&child->borderSize, box) != rgnIN)
+            continue;
 
-static const struct hdr_output_metadata *
-ms_fullscreen_hdr_output_metadata(ScreenPtr screen, BoxPtr box)
-{
-    WindowPtr window;
+        metadata = ms_window_get_hdr_output_metadata(child);
+        if (!metadata)
+            metadata = ms_fullscreen_hdr_output_metadata(child, box);
 
-    for (window = ms_find_child_covering_box(screen->root, box); window;
-         window = ms_find_child_covering_box(window, box)) {
-        const struct hdr_output_metadata *metadata =
-            ms_window_get_hdr_output_metadata(window);
-
-        if (metadata)
+        if (metadata || !child->overrideRedirect)
             return metadata;
     }
 
@@ -103,7 +95,7 @@ ms_hdr_update(ScreenPtr screen)
             continue;
 
         drmmode_crtc_set_hdr_output_metadata(crtc,
-            ms_fullscreen_hdr_output_metadata(screen, &crtc->bounds));
+            ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds));
     }
 }
 
