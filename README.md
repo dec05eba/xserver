@@ -33,3 +33,58 @@ yourself in a respectful and civilized manner when using the above
 mailing lists, bug trackers, etc:
 
   https://www.freedesktop.org/wiki/CodeOfConduct
+
+HDR
+---
+
+The modesetting driver can run monitors that support HDR10 in HDR mode. The
+desktop is converted to HDR10 by the GPU, and a fullscreen window that sets
+the `hdr_output_metadata` property is shown as HDR without conversion.
+Switching between the two doesn't change the display mode, so it's instant.
+Turning HDR on or off for a monitor does change the mode, so the monitor goes
+black for a moment. HDR is off by default.
+
+HDR needs:
+
+- the modesetting driver
+- a kernel driver that exposes the DEGAMMA_LUT, CTM and GAMMA_LUT CRTC
+  properties and the HDR_OUTPUT_METADATA connector property (tested with
+  amdgpu)
+- a monitor whose EDID reports HDR10 support
+
+To enable HDR on all monitors when the X server starts, set the options in
+the Device section of xorg.conf, for example in
+/etc/X11/xorg.conf.d/20-modesetting.conf:
+
+    Section "Device"
+        Identifier "GPU"
+        Driver     "modesetting"
+        Option     "HDR"           "true"
+        Option     "SDRWhiteLevel" "203"
+    EndSection
+
+`SDRWhiteLevel` is the brightness in nits that SDR content, such as the
+desktop, is shown at in HDR mode. The default is 203.
+
+These options only set the starting values. Each output has RandR properties
+that can be changed while the X server runs:
+
+- `HDR`: 1 enables HDR on the output, 0 disables it.
+- `SDR white level`: the SDR white level in nits, from 1 to 10000.
+- `HDR capable`: read-only, 1 if the monitor supports HDR10.
+
+For example:
+
+    xrandr --prop
+    xrandr --output DP-1 --set HDR 1
+    xrandr --output DP-1 --set "SDR white level" 250
+
+Changes made with xrandr last until the X server exits.
+
+Vulkan games and applications can output HDR through the X11 HDR Vulkan layer
+(VK_hdr_layer), and mpv through an mpv build with X11 HDR support. An
+application that does this itself sets the `hdr_output_metadata` window
+property (type CARDINAL, format 8) to a `struct hdr_output_metadata` from the
+kernel's drm_mode.h. It renders PQ content with BT.2020 primaries into a
+window with a 30-bit visual. The property is only used while the window covers
+the monitor and HDR is enabled on it.
