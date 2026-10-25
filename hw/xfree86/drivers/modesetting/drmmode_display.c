@@ -272,35 +272,45 @@ drmmode_zaphod_string_matches(ScrnInfoPtr scrn, const char *s, char *output_name
     return ret;
 }
 
+static Bool
+drmmode_prop_get_raw_value(drmmode_prop_info_ptr info,
+                           drmModeObjectPropertiesPtr props,
+                           uint64_t *value)
+{
+    unsigned int i;
+
+    if (info->prop_id == 0)
+        return FALSE;
+
+    for (i = 0; i < props->count_props; i++) {
+        if (props->props[i] == info->prop_id) {
+            *value = props->prop_values[i];
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 static uint64_t
 drmmode_prop_get_value(drmmode_prop_info_ptr info,
                        drmModeObjectPropertiesPtr props,
                        uint64_t def)
 {
-    unsigned int i;
+    uint64_t value;
+    unsigned int j;
 
-    if (info->prop_id == 0)
+    if (!drmmode_prop_get_raw_value(info, props, &value))
         return def;
 
-    for (i = 0; i < props->count_props; i++) {
-        unsigned int j;
+    /* Simple (non-enum) types can return the value directly */
+    if (info->num_enum_values == 0)
+        return value;
 
-        if (props->props[i] != info->prop_id)
-            continue;
-
-        /* Simple (non-enum) types can return the value directly */
-        if (info->num_enum_values == 0)
-            return props->prop_values[i];
-
-        /* Map from raw value to enum value */
-        for (j = 0; j < info->num_enum_values; j++) {
-            if (!info->enum_values[j].valid)
-                continue;
-            if (info->enum_values[j].value != props->prop_values[i])
-                continue;
-
+    /* Map from raw value to enum value */
+    for (j = 0; j < info->num_enum_values; j++) {
+        if (info->enum_values[j].valid && info->enum_values[j].value == value)
             return j;
-        }
     }
 
     return def;
@@ -1780,6 +1790,7 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
         if (can_test)
             drmmode_crtc_set_mode(crtc, FALSE);
         ms->pending_modeset = FALSE;
+        ms->hdr_dirty = TRUE;
     }
 
  done:
@@ -2977,6 +2988,8 @@ drmmode_output_destroy(xf86OutputPtr output)
         free(drmmode_output->props[i].atoms);
     }
     free(drmmode_output->props);
+    drmmode_prop_info_free(drmmode_output->props_connector,
+                           DRMMODE_CONNECTOR__COUNT);
     if (drmmode_output->mode_output) {
         for (i = 0; i < drmmode_output->mode_output->count_encoders; i++) {
             drmModeFreeEncoder(drmmode_output->mode_encoders[i]);
@@ -3437,8 +3450,26 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_r
     drmModePropertyBlobPtr path_blob = NULL;
     const char *s;
     drmModeObjectPropertiesPtr props;
+    static drmmode_prop_enum_info_rec colorspace_enums[] = {
+        [DRMMODE_COLORSPACE_BT2020_RGB] = { .name = "BT2020_RGB", },
+    };
+    static drmmode_prop_enum_info_rec content_type_enums[] = {
+        [DRMMODE_CONTENT_TYPE_GRAPHICS] = { .name = "Graphics", },
+    };
     static const drmmode_prop_info_rec connector_props[] = {
         [DRMMODE_CONNECTOR_CRTC_ID] = { .name = "CRTC_ID", },
+        [DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = { .name = "HDR_OUTPUT_METADATA", },
+        [DRMMODE_CONNECTOR_COLORSPACE] = {
+            .name = "Colorspace",
+            .enum_values = colorspace_enums,
+            .num_enum_values = DRMMODE_COLORSPACE__COUNT,
+        },
+        [DRMMODE_CONNECTOR_MAX_BPC] = { .name = "max bpc", },
+        [DRMMODE_CONNECTOR_CONTENT_TYPE] = {
+            .name = "content type",
+            .enum_values = content_type_enums,
+            .num_enum_values = DRMMODE_CONTENT_TYPE__COUNT,
+        },
     };
 
     koutput =
@@ -3528,18 +3559,22 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_r
     /* work out the possible clones later */
     output->possible_clones = 0;
 
-    if (ms->atomic_modeset) {
-        if (!drmmode_prop_info_copy(drmmode_output->props_connector,
-                                    connector_props, DRMMODE_CONNECTOR__COUNT,
-                                    0)) {
-            goto out_free_encoders;
-        }
-        props = drmModeObjectGetProperties(drmmode->fd,
-                                           drmmode_output->output_id,
-                                           DRM_MODE_OBJECT_CONNECTOR);
+    if (!drmmode_prop_info_copy(drmmode_output->props_connector,
+                                connector_props, DRMMODE_CONNECTOR__COUNT, 0)) {
+        goto out_free_encoders;
+    }
+    props = drmModeObjectGetProperties(drmmode->fd, drmmode_output->output_id,
+                                       DRM_MODE_OBJECT_CONNECTOR);
+    if (props) {
         drmmode_prop_info_update(drmmode, drmmode_output->props_connector,
                                  DRMMODE_CONNECTOR__COUNT, props);
-    } else {
+        drmModeFreeObjectProperties(props);
+    }
+    for (i = 0; i < DRMMODE_CONNECTOR__COUNT; i++)
+        drmmode_output->sdr_props[i] = drmmode_output->props_connector[i].value;
+    drmmode_output->sdr_props[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = 0;
+
+    if (!ms->atomic_modeset) {
         drmmode_output->dpms_enum_id =
             koutput_get_prop_id(drmmode->fd, koutput, DRM_MODE_PROP_ENUM,
                                 "DPMS");
@@ -4641,6 +4676,154 @@ drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled)
                                  drmmode->vrr_prop_id,
                                  enabled) == 0)
         drmmode_crtc->vrr_enabled = enabled;
+}
+
+static const enum drmmode_connector_property hdr_connector_props[] = {
+    DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA,
+    DRMMODE_CONNECTOR_COLORSPACE,
+    DRMMODE_CONNECTOR_MAX_BPC,
+    DRMMODE_CONNECTOR_CONTENT_TYPE,
+};
+
+static Bool
+drmmode_output_set_hdr_props(xf86OutputPtr output, const uint64_t *values)
+{
+    modesettingPtr ms = modesettingPTR(output->scrn);
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+    drmModeAtomicReq *req = NULL;
+    int i, ret = 0;
+
+    if (ms->atomic_modeset) {
+        req = drmModeAtomicAlloc();
+        if (!req)
+            return FALSE;
+    }
+
+    for (i = 0; i < ARRAY_SIZE(hdr_connector_props); i++) {
+        enum drmmode_connector_property prop = hdr_connector_props[i];
+        uint32_t prop_id = drmmode_output->props_connector[prop].prop_id;
+
+        if (!prop_id)
+            continue;
+
+        if (req)
+            ret |= connector_add_prop(req, drmmode_output, prop, values[prop]);
+        else
+            ret |= drmModeObjectSetProperty(ms->fd, drmmode_output->output_id,
+                                            DRM_MODE_OBJECT_CONNECTOR,
+                                            prop_id, values[prop]);
+    }
+
+    if (req) {
+        if (ret == 0)
+            ret = drmModeAtomicCommit(ms->fd, req,
+                                      DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+        drmModeAtomicFree(req);
+    }
+
+    return ret == 0;
+}
+
+static void
+drmmode_output_save_sdr_props(drmmode_output_private_ptr drmmode_output)
+{
+    drmmode_ptr drmmode = drmmode_output->drmmode;
+    drmModeObjectPropertiesPtr props;
+    int i;
+
+    props = drmModeObjectGetProperties(drmmode->fd, drmmode_output->output_id,
+                                       DRM_MODE_OBJECT_CONNECTOR);
+    if (props) {
+        for (i = 0; i < ARRAY_SIZE(hdr_connector_props); i++) {
+            enum drmmode_connector_property prop = hdr_connector_props[i];
+
+            drmmode_prop_get_raw_value(&drmmode_output->props_connector[prop],
+                                       props, &drmmode_output->sdr_props[prop]);
+        }
+        drmModeFreeObjectProperties(props);
+    }
+    drmmode_output->sdr_props[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = 0;
+}
+
+static void
+drmmode_output_get_hdr_props(drmmode_output_private_ptr drmmode_output,
+                             uint32_t metadata_blob_id, uint64_t *values)
+{
+    drmmode_prop_info_ptr colorspace =
+        &drmmode_output->props_connector[DRMMODE_CONNECTOR_COLORSPACE];
+    drmmode_prop_info_ptr content_type =
+        &drmmode_output->props_connector[DRMMODE_CONNECTOR_CONTENT_TYPE];
+    drmmode_prop_enum_info_ptr bt2020_rgb =
+        &colorspace->enum_values[DRMMODE_COLORSPACE_BT2020_RGB];
+    drmmode_prop_enum_info_ptr graphics =
+        &content_type->enum_values[DRMMODE_CONTENT_TYPE_GRAPHICS];
+
+    memcpy(values, drmmode_output->sdr_props, sizeof(drmmode_output->sdr_props));
+
+    values[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = metadata_blob_id;
+    values[DRMMODE_CONNECTOR_MAX_BPC] =
+        max(values[DRMMODE_CONNECTOR_MAX_BPC], 10);
+    if (bt2020_rgb->valid)
+        values[DRMMODE_CONNECTOR_COLORSPACE] = bt2020_rgb->value;
+    if (graphics->valid)
+        values[DRMMODE_CONNECTOR_CONTENT_TYPE] = graphics->value;
+}
+
+void
+drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
+                                     const struct hdr_output_metadata *metadata)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_ptr drmmode = drmmode_crtc->drmmode;
+    uint32_t blob_id = 0;
+    int i;
+
+    if (!metadata && !drmmode_crtc->hdr_enabled)
+        return;
+
+    if (metadata && drmmode_crtc->hdr_enabled &&
+        memcmp(metadata, &drmmode_crtc->hdr_metadata, sizeof(*metadata)) == 0)
+        return;
+
+    if (metadata &&
+        drmModeCreatePropertyBlob(drmmode->fd, metadata, sizeof(*metadata),
+                                  &blob_id) != 0) {
+        xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
+                   "Failed to create HDR output metadata blob\n");
+        return;
+    }
+
+    for (i = 0; i < config->num_output; i++) {
+        xf86OutputPtr output = config->output[i];
+        drmmode_output_private_ptr drmmode_output = output->driver_private;
+        uint64_t hdr_props[DRMMODE_CONNECTOR__COUNT];
+        const uint64_t *values = drmmode_output->sdr_props;
+
+        if (output->crtc != crtc || drmmode_output->output_id == -1 ||
+            !drmmode_output->props_connector[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA].prop_id)
+            continue;
+
+        if (metadata) {
+            if (!drmmode_crtc->hdr_enabled)
+                drmmode_output_save_sdr_props(drmmode_output);
+            drmmode_output_get_hdr_props(drmmode_output, blob_id, hdr_props);
+            values = hdr_props;
+        }
+
+        if (!drmmode_output_set_hdr_props(output, values))
+            xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
+                       "Failed to %s HDR on output %s: %s\n",
+                       metadata ? "enable" : "disable", output->name,
+                       strerror(errno));
+    }
+
+    if (blob_id)
+        drmModeDestroyPropertyBlob(drmmode->fd, blob_id);
+
+    drmmode_crtc->hdr_enabled = metadata != NULL;
+    if (metadata)
+        memcpy(&drmmode_crtc->hdr_metadata, metadata, sizeof(*metadata));
 }
 
 /*

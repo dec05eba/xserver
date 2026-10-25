@@ -63,7 +63,21 @@ enum drmmode_plane_type {
 
 enum drmmode_connector_property {
     DRMMODE_CONNECTOR_CRTC_ID,
+    DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA,
+    DRMMODE_CONNECTOR_COLORSPACE,
+    DRMMODE_CONNECTOR_MAX_BPC,
+    DRMMODE_CONNECTOR_CONTENT_TYPE,
     DRMMODE_CONNECTOR__COUNT
+};
+
+enum drmmode_colorspace {
+    DRMMODE_COLORSPACE_BT2020_RGB,
+    DRMMODE_COLORSPACE__COUNT
+};
+
+enum drmmode_content_type {
+    DRMMODE_CONTENT_TYPE_GRAPHICS,
+    DRMMODE_CONTENT_TYPE__COUNT
 };
 
 enum drmmode_crtc_property {
@@ -236,6 +250,9 @@ typedef struct {
     Bool present_per_crtc_flipping;
     uint32_t present_flip_fb_id;
     WindowPtr present_flip_window;
+
+    Bool hdr_enabled;
+    struct hdr_output_metadata hdr_metadata;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
 
 typedef struct {
@@ -257,6 +274,7 @@ typedef struct {
     int num_props;
     drmmode_prop_ptr props;
     drmmode_prop_info_rec props_connector[DRMMODE_CONNECTOR__COUNT];
+    uint64_t sdr_props[DRMMODE_CONNECTOR__COUNT];
     int enc_mask;
     int enc_clone_mask;
     xf86CrtcPtr current_crtc;
@@ -345,5 +363,7 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
+void drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
+                                          const struct hdr_output_metadata *metadata);
 
 #endif

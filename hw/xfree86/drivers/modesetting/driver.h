@@ -146,6 +146,9 @@ typedef struct _modesettingRec {
     Bool is_connector_vrr_capable;
     uint32_t connector_prop_id;
 
+    Bool hdr_dirty;
+    PostValidateTreeProcPtr PostValidateTree;
+
     /* shadow API */
     struct {
         Bool (*Setup)(ScreenPtr);
@@ -265,3 +268,8 @@ Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
 Bool ms_pixmap_is_per_crtc_size(ScrnInfoPtr scrn, PixmapPtr pixmap);
+
+Bool ms_hdr_screen_init(ScreenPtr screen);
+void ms_hdr_close_screen(ScreenPtr screen);
+void ms_hdr_update(ScreenPtr screen);
+void ms_hdr_disable(ScrnInfoPtr scrn);

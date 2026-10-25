@@ -912,6 +912,7 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
         dispatch_dirty(pScreen);
 
     ms_dirty_update(pScreen, timeout);
+    ms_hdr_update(pScreen);
     ms_tearfree_do_flips(pScreen);
 }
 
@@ -2250,6 +2251,10 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
                    "Failed to initialize the Present extension.\n");
     }
 
+    if (!ms_hdr_screen_init(pScreen)) {
+        xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
+                   "Failed to initialize HDR support.\n");
+    }
 
     pScrn->vtSema = TRUE;
 
@@ -2283,6 +2288,8 @@ LeaveVT(ScrnInfoPtr pScrn)
 
     xf86_hide_cursors(pScrn);
 
+    ms_hdr_disable(pScrn);
+
     pScrn->vtSema = FALSE;
 
 #ifdef XF86_PDEV_SERVER_FD
@@ -2304,6 +2311,7 @@ EnterVT(ScrnInfoPtr pScrn)
     modesettingPtr ms = modesettingPTR(pScrn);
 
     pScrn->vtSema = TRUE;
+    ms->hdr_dirty = TRUE;
 
     SetMaster(pScrn);
 
@@ -2383,6 +2391,8 @@ CloseScreen(ScreenPtr pScreen)
     if (pScrn->vtSema) {
         LeaveVT(pScrn);
     }
+
+    ms_hdr_close_screen(pScreen);
 
     pScreen->CreateScreenResources = ms->createScreenResources;
     pScreen->BlockHandler = ms->BlockHandler;

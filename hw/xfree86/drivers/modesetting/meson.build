@@ -3,6 +3,7 @@ modesetting_srcs = [
     'driver.c',
     'drmmode_display.c',
     'dumb_bo.c',
+    'hdr.c',
     'pageflip.c',
     'present.c',
     'vblank.c',
