@@ -87,9 +87,11 @@ For example:
 
 Changes made with xrandr last until the X server exits.
 
+For best result change your monitor/TVs "Dynamic Tone Mapping" option to "HGiG" (or "On" if it's not available).
+
 Vulkan games and applications can output HDR through the X11 HDR Vulkan layer
-(VK_hdr_layer), and mpv through an mpv build with X11 HDR support. An
-application that does this itself sets the `hdr_output_metadata` window
+[VK_hdr_layer](https://git.dec05eba.com/VK_hdr_layer/), and mpv through an [mpv build with X11 HDR support](https://git.dec05eba.com/mpv/).
+An application that does this itself sets the `hdr_output_metadata` window
 property (type CARDINAL, format 8) to a `struct hdr_output_metadata` from the
 kernel's drm_mode.h. It renders PQ content with BT.2020 primaries into a
 window with a 30-bit visual. The property is only used while the window covers
