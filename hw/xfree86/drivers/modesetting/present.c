@@ -45,6 +45,10 @@
 #include "driver.h"
 #include "drmmode_display.h"
 
+#ifndef DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP
+#define DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP 0x15
+#endif
+
 #if 0
 #define DebugPresent(x) ErrorF x
 #else
@@ -598,7 +602,7 @@ ms_present_screen_init(ScreenPtr screen)
     uint64_t value;
     int ret;
 
-    ret = drmGetCap(ms->fd, DRM_CAP_ASYNC_PAGE_FLIP, &value);
+    ret = drmGetCap(ms->fd, ms->atomic_modeset ? DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP : DRM_CAP_ASYNC_PAGE_FLIP, &value);
     if (ret == 0 && value == 1) {
         ms_present_screen_info.capabilities |= PresentCapabilityAsync;
         ms->drmmode.can_async_flip = TRUE;

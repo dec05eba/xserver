@@ -39,9 +39,6 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
-#ifdef __linux__
-#include <sys/prctl.h>
-#endif
 
 #include "xf86.h"
 #include "xf86Priv.h"
@@ -1279,20 +1276,10 @@ ms_get_drm_master_fd(ScrnInfoPtr pScrn)
 static int
 ms_enable_atomic_client_cap(int fd)
 {
-#ifdef __linux__
-    char name[16] = { 0 };
-    int ret;
-
-    /* Linux refuses DRM_CLIENT_CAP_ATOMIC to any thread whose name starts with 'X' */
-    if (prctl(PR_GET_NAME, name) == 0 && name[0] == 'X') {
-        name[0] = 'x';
-        prctl(PR_SET_NAME, name);
-        ret = drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1);
-        name[0] = 'X';
-        prctl(PR_SET_NAME, name);
-        return ret;
-    }
-#endif
+    /* Linux refuses atomic value 1 to the X server because of an old broken atomic implementation,
+     * value 2 tells it that this X server uses atomic correctly. Linux older than 5.2 only accepts 1 */
+    if (drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 2) == 0)
+        return 0;
     return drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1);
 }
 

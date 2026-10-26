@@ -935,6 +935,8 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
         if (ret == 0 && !test_only) {
             drmmode_crtc->scanout_format =
                 drmmode_fb_get_format(ms->fd, active ? fb_id : 0);
+            drmmode_crtc->src_x = x;
+            drmmode_crtc->src_y = y;
             for (i = 0; i < xf86_config->num_output; i++) {
                 xf86OutputPtr output = xf86_config->output[i];
                 drmmode_output_private_ptr drmmode_output = output->driver_private;
@@ -993,10 +995,11 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     uint32_t format = drmmode_fb_get_format(ms->fd, fb_id);
     Bool format_changed = format != drmmode_crtc->scanout_format;
+    Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
     int ret;
 
-    /* The kernel rejects async flips that change the frame buffer format */
-    if (format_changed)
+    /* The kernel rejects async flips that change anything other than the frame buffer, including its format */
+    if (format_changed || (ms->atomic_modeset && src_changed))
         flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
     if (ms->atomic_modeset) {
@@ -1010,8 +1013,11 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         if (ret == 0)
             ret = drmModeAtomicCommit(ms->fd, req, flags, data);
         drmModeAtomicFree(req);
-        if (ret == 0)
+        if (ret == 0) {
             drmmode_crtc->scanout_format = format;
+            drmmode_crtc->src_x = x;
+            drmmode_crtc->src_y = y;
+        }
         return ret;
     }
 
@@ -1019,8 +1025,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
      * coordinates, which change when switching between the primary frame
      * buffer and a per-CRTC frame buffer.
      */
-    if (format_changed ||
-        drmmode_crtc->src_x != x || drmmode_crtc->src_y != y) {
+    if (format_changed || src_changed) {
         ret = drmModeSetPlane(ms->fd, drmmode_crtc->plane_id,
                               drmmode_crtc->mode_crtc->crtc_id, fb_id, 0,
                               0, 0, crtc->mode.HDisplay, crtc->mode.VDisplay,
