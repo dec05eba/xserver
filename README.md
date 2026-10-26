@@ -44,8 +44,8 @@ Switching between the two doesn't change the display mode, so it's instant.
 Turning HDR on or off for a monitor does change the mode, so the monitor goes
 black for a moment. HDR is off by default.
 
-HDR support works without the "Depth 30" config option set, so programs function
-and look correct.
+HDR support works without the "Depth 30" config option set (in fact, you shouldn't set it),
+so programs function and look correct.
 
 HDR needs:
 
