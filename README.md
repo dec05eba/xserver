@@ -96,3 +96,5 @@ property (type CARDINAL, format 8) to a `struct hdr_output_metadata` from the
 kernel's drm_mode.h. It renders PQ content with BT.2020 primaries into a
 window with a 30-bit visual. The property is only used while the window covers
 the monitor and HDR is enabled on it.
+
+Note that when installing this latest Xorg server version you also need to rebuild and install the latest versions of Xorg drivers from source, such as [xf86-input-libinput](https://gitlab.freedesktop.org/xorg/driver/xf86-input-libinput).
