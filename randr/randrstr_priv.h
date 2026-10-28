@@ -94,6 +94,9 @@ extern DevPrivateKeyRec RRClientPrivateKeyRec;
 #define GetRRClient(pClient)    ((RRClientPtr)dixLookupPrivate(&(pClient)->devPrivates, RRClientPrivateKey))
 #define rrClientPriv(pClient)	RRClientPtr pRRClient = GetRRClient(pClient)
 
+#define RR_PROPERTY_DPI         "DPI"
+#define RR_DEFAULT_DPI          96
+
 int ProcRRGetPanning(ClientPtr client);
 
 int ProcRRSetPanning(ClientPtr client);

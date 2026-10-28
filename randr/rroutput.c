@@ -22,6 +22,7 @@
  */
 
 #include "randrstr_priv.h"
+#include "globals.h"
 #include <X11/Xatom.h>
 
 RESTYPE RROutputType;
@@ -53,6 +54,21 @@ RROutputChanged(RROutputPtr output, Bool configChanged)
     RRSetChanged(pScreen);
     if (configChanged)
         primarysp->configChanged = TRUE;
+}
+
+static void
+RROutputCreateDpiProperty(RROutputPtr output)
+{
+    static const INT32 range[2] = { 1, 10000 };
+    Atom dpiAtom = MakeAtom(RR_PROPERTY_DPI, strlen(RR_PROPERTY_DPI), TRUE);
+    INT32 dpi = monitorResolution > 0 ? monitorResolution : RR_DEFAULT_DPI;
+
+    if (dpiAtom == BAD_RESOURCE)
+        return;
+
+    RRConfigureOutputProperty(output, dpiAtom, FALSE, TRUE, TRUE, 2, range);
+    RRChangeOutputProperty(output, dpiAtom, XA_INTEGER, 32, PropModeReplace,
+                           1, &dpi, FALSE, FALSE);
 }
 
 /*
@@ -121,6 +137,7 @@ RROutputCreate(ScreenPtr pScreen,
                                             2, values);
     }
     RROutputSetNonDesktop(output, FALSE);
+    RROutputCreateDpiProperty(output);
     RRResourcesChanged(pScreen);
 
     return output;

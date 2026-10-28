@@ -44,6 +44,9 @@ Switching between the two doesn't change the display mode, so it's instant.
 Turning HDR on or off for a monitor does change the mode, so the monitor goes
 black for a moment. HDR is off by default.
 
+In the future HDR will also work for windowed applications and windows that set hdr metadata
+on a non-HDR monitor will get tonemapped to SDR.
+
 HDR support works without the "Depth 30" config option set (in fact, you shouldn't set it),
 so programs function and look correct.
 
@@ -98,3 +101,17 @@ window with a 30-bit visual. The property is only used while the window covers
 the monitor and HDR is enabled on it.
 
 Note that when installing this latest Xorg server version you also need to rebuild and install the latest versions of Xorg drivers from source, such as [xf86-input-libinput](https://gitlab.freedesktop.org/xorg/driver/xf86-input-libinput).
+
+DPI
+---
+
+Every output has a `DPI` RandR property that tells applications which scale to
+use on that monitor, where 96 means 1.0 scaling and 192 means 2.0 scaling. It
+starts at the value of the `-dpi` X server option, or 96 if that isn't set, and
+can be changed while the X server runs:
+
+    xrandr --output DP-1 --set DPI 192
+
+The X server doesn't use the value itself, it's up to applications to read it.
+Applications should prefer this `DPI` RandR property and only fallback to other properties, such as `XResources` `Xft.dpi` it the RandR property isn't set.
+Applications should also use the DPI of the monitor that the center of the window is inside and when changing scale the size of the window itself shouldn't change, only the content should scale.

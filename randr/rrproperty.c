@@ -156,13 +156,41 @@ RRNoticePropertyChange(RROutputPtr output, Atom property, RRPropertyValuePtr val
     }
 }
 
+static Bool
+RROutputPropertyValueValid(Atom property, RRPropertyValuePtr value)
+{
+    const char *dpi_str = RR_PROPERTY_DPI;
+    Atom dpi_prop = MakeAtom(dpi_str, strlen(dpi_str), FALSE);
+    INT32 dpi;
+
+    if (property != dpi_prop)
+        return TRUE;
+
+    if (value->type != XA_INTEGER || value->format != 32 || value->size != 1)
+        return FALSE;
+
+    memcpy(&dpi, value->data, sizeof(dpi));
+    return dpi > 0;
+}
+
+static Bool
+RRSetOutputPropertyValue(RROutputPtr output, Atom property, RRPropertyValuePtr value)
+{
+    rrScrPrivPtr pScrPriv = rrGetScrPriv(output->pScreen);
+
+    if (!RROutputPropertyValueValid(property, value))
+        return FALSE;
+
+    return !pScrPriv->rrOutputSetProperty ||
+        pScrPriv->rrOutputSetProperty(output->pScreen, output, property, value);
+}
+
 int
 RRChangeOutputProperty(RROutputPtr output, Atom property, Atom type,
                        int format, int mode, unsigned long len,
                        const void *value, Bool sendevent, Bool pending)
 {
     RRPropertyPtr prop;
-    rrScrPrivPtr pScrPriv = rrGetScrPriv(output->pScreen);
     int size_in_bytes;
     unsigned long total_len;
     RRPropertyValuePtr prop_value;
@@ -235,9 +263,8 @@ RRChangeOutputProperty(RROutputPtr output, Atom property, Atom type,
             memcpy((char *) old_data, (char *) prop_value->data,
                    prop_value->size * size_in_bytes);
 
-        if (pending && pScrPriv->rrOutputSetProperty &&
-            !pScrPriv->rrOutputSetProperty(output->pScreen, output,
-                                           prop->propertyName, &new_value)) {
+        if (pending &&
+            !RRSetOutputPropertyValue(output, prop->propertyName, &new_value)) {
             free(new_value.data);
             if (add)
                 RRDestroyOutputProperty(prop);
