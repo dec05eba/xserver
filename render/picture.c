@@ -499,9 +499,10 @@ PictFormatPtr
 PictureMatchVisual(ScreenPtr pScreen, int depth, VisualPtr pVisual)
 {
     PictureScreenPtr ps = GetPictureScreenIfSet(pScreen);
-    PictFormatPtr format;
+    PictFormatPtr format, rgbMatch = NULL;
     int nformat;
     int type;
+    int alpha;
 
     if (!ps)
         return 0;
@@ -534,13 +535,18 @@ PictureMatchVisual(ScreenPtr pScreen, int depth, VisualPtr pVisual)
                         format->direct.green == pVisual->greenMask &&
                     (unsigned long)format->direct.blueMask <<
                         format->direct.blue == pVisual->blueMask) {
-                    return format;
+                    alpha = depth - Ones(pVisual->redMask | pVisual->greenMask |
+                                         pVisual->blueMask);
+                    if (PICT_FORMAT_A(format->format) == alpha)
+                        return format;
+                    if (!rgbMatch)
+                        rgbMatch = format;
                 }
             }
         }
         format++;
     }
-    return 0;
+    return rgbMatch;
 }
 
 PictFormatPtr

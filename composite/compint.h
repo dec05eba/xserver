@@ -330,7 +330,7 @@ void
  compServerUnredirectManual(WindowPtr pWin);
 
 void
- compServerPaintBelow(WindowPtr pWin, PixmapPtr pPixmap);
+ compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap);
 
 /*
  * compdirect.c

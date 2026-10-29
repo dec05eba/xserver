@@ -558,7 +558,7 @@ compNewPixmap(WindowPtr pWin, int x, int y, int w, int h)
 
     if (CompositeIsServerRoot(pParent)) {
         if (compGetBackgroundState(pWin) == None)
-            compServerPaintBelow(pWin, pPixmap);
+            compServerInitPixmap(pWin, pPixmap);
     }
     else if (pParent->drawable.depth == pWin->drawable.depth) {
         GCPtr pGC = GetScratchGC(pWin->drawable.depth, pScreen);

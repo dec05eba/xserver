@@ -624,8 +624,26 @@ CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
     compServerPaint(pScreen, pDst, x, y, pRegion, NULL, closure);
 }
 
+static void
+compServerCopyWindowPixmap(WindowPtr pWin, PicturePtr pDst, int x, int y)
+{
+    PixmapPtr pPixmap = (*pWin->drawable.pScreen->GetWindowPixmap) (pWin);
+    PicturePtr pSrc;
+    int error;
+
+    pSrc = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pWin),
+                         0, NULL, serverClient, &error);
+    if (!pSrc)
+        return;
+
+    CompositePicture(PictOpSrc, pSrc, NULL, pDst, 0, 0, 0, 0,
+                     pPixmap->screen_x - x, pPixmap->screen_y - y,
+                     pPixmap->drawable.width, pPixmap->drawable.height);
+    FreePicture(pSrc, 0);
+}
+
 void
-compServerPaintBelow(WindowPtr pWin, PixmapPtr pPixmap)
+compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap)
 {
     BoxRec box = {
         .x1 = pPixmap->screen_x,
@@ -646,6 +664,10 @@ compServerPaintBelow(WindowPtr pWin, PixmapPtr pPixmap)
     compServerPaint(pWin->drawable.pScreen, pDst, box.x1, box.y1, &region,
                     pWin, NULL);
     RegionUninit(&region);
+
+    if (pWin->redirectDraw != RedirectDrawNone)
+        compServerCopyWindowPixmap(pWin, pDst, box.x1, box.y1);
+
     FreePicture(pDst, 0);
 }
 
