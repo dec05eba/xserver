@@ -140,6 +140,13 @@ SyncCheckWarnIsCounter(const SyncObject * pSync, const char *warning)
     return TRUE;
 }
 
+int
+SyncLookupCounter(SyncCounter **ppCounter, XID id, ClientPtr client)
+{
+    return dixLookupResourceByType((void **) ppCounter, id, RTCounter, client,
+                                   DixReadAccess);
+}
+
 /*  Each counter maintains a simple linked list of triggers that are
  *  interested in the counter.  The two functions below are used to
  *  delete and add triggers on this list.

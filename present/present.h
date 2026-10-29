@@ -190,6 +190,12 @@ present_register_complete_notify(present_complete_notify_proc proc);
 extern _X_EXPORT Bool
 present_can_window_flip(WindowPtr window);
 
+extern _X_EXPORT Bool
+present_window_has_pending_frames(WindowPtr window);
+
+extern _X_EXPORT Bool
+present_window_vblank_timing(WindowPtr window, uint64_t *ust, uint64_t *interval);
+
 extern _X_EXPORT uint32_t FakeScreenFps;
 
 #endif /* _PRESENT_H_ */

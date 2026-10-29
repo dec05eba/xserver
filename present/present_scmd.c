@@ -431,6 +431,8 @@ present_window_flip(present_flip_slot_ptr slot, present_vblank_ptr vblank)
     pixmap->screen_y = old_pixmap->screen_y;
     present_set_tree_pixmap(pixmap_window, old_pixmap, pixmap);
     pixmap->refcnt++;
+    vblank->executed = TRUE;
+    CompositeServerPresented(vblank->window, pixmap);
 
     if (slot->window_pixmap && old_pixmap == slot->flip_pixmap) {
         dixDestroyPixmap(old_pixmap, old_pixmap->drawable.id);

@@ -77,4 +77,7 @@ extern _X_EXPORT void CompositeServerSetHdrWindow(WindowPtr pWin, Bool hdr);
 extern _X_EXPORT WindowPtr CompositeServerHdrWindow(ScreenPtr pScreen,
                                                     BoxPtr pBox);
 
+extern _X_EXPORT void CompositeServerPresented(WindowPtr pWin,
+                                               PixmapPtr pPixmap);
+
 #endif                          /* _COMPOSITEEXT_H_ */

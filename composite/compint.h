@@ -71,6 +71,7 @@
 #include "damageextint.h"
 #include "xfixes.h"
 #include "list.h"
+#include "misyncstr.h"
 #include <X11/extensions/compositeproto.h>
 #include "compositeext.h"
 #include <assert.h>
@@ -125,12 +126,41 @@ typedef struct _CompImplicitRedirectException {
     XID winVisual;
 } CompImplicitRedirectException;
 
+typedef struct _CompServerHeldFrame {
+    PixmapPtr pPixmap;
+    BoxRec box;
+} CompServerHeldFrameRec;
+
+typedef struct _CompServerPendingConfigure {
+    ClientPtr client;
+    Mask mask;
+    INT16 x, y;
+    CARD16 width, height, borderWidth;
+} CompServerPendingConfigureRec;
+
+typedef struct _CompServerSyncRequest {
+    SyncTrigger trigger;
+    int64_t value;
+    Bool sent;
+    Bool waiting;
+} CompServerSyncRequestRec;
+
+typedef struct _CompServerFrameWait {
+    Bool active;
+    OsTimerPtr timer;
+    CompServerSyncRequestRec sync;
+    CompServerPendingConfigureRec pending;
+} CompServerFrameWaitRec;
+
 typedef struct _CompServerWindow {
     struct xorg_list entry;
     WindowPtr pWin;
     WindowPtr pAbove;
     RegionRec painted;
     Bool seen;
+    CARD32 presentCount;
+    CompServerHeldFrameRec held;
+    CompServerFrameWaitRec wait;
 } CompServerWindowRec, *CompServerWindowPtr;
 
 typedef struct _CompServerDeferredUpdate {
@@ -146,6 +176,28 @@ typedef struct _CompServerDirectWindow {
     CompServerDeferredUpdateRec deferred;
 } CompServerDirectWindowRec, *CompServerDirectWindowPtr;
 
+typedef struct _CompServerFrameAck {
+    int64_t value;
+    uint64_t presented;
+    uint32_t interval;
+    Bool scheduled;
+    OsTimerPtr timer;
+} CompServerFrameAckRec;
+
+typedef struct _CompServerFrameClient {
+    struct xorg_list entry;
+    WindowPtr pWin;
+    SyncTrigger trigger;
+    CompServerFrameAckRec ack;
+} CompServerFrameClientRec, *CompServerFrameClientPtr;
+
+typedef struct _CompServerFrameTiming {
+    struct xorg_list clients;
+    Bool active;
+    Bool advertiseQueued;
+    Bool appending;
+} CompServerFrameTimingRec;
+
 typedef struct _CompServer {
     RegionRec damage;
     struct xorg_list windows;
@@ -155,6 +207,7 @@ typedef struct _CompServer {
     Bool cmSelectionClaimed;
     GetImageProcPtr GetImage;
     ClearToBackgroundProcPtr ClearToBackground;
+    CompServerFrameTimingRec frameTiming;
 } CompServerRec, *CompServerPtr;
 
 typedef struct _CompScreen {
@@ -311,6 +364,12 @@ void
 CompServerPtr
  compServerGet(ScreenPtr pScreen);
 
+Atom
+ compServerAtom(const char *name);
+
+Bool
+ compServerPropertyHasAtom(WindowPtr pWin, Atom property, Atom atom);
+
 Bool
  compServerWindowHasAlpha(WindowPtr pWin);
 
@@ -331,6 +390,70 @@ void
 
 void
  compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap);
+
+Bool
+ compServerHasSublayers(CompServerPtr server, WindowPtr pToplevel);
+
+/*
+ * comphold.c
+ */
+
+void
+ compServerHoldFrame(CompServerWindowPtr sw, PixmapPtr pOld);
+
+void
+ compServerMoveHeldFrame(CompServerWindowPtr sw, int dx, int dy);
+
+void
+ compServerUpdateHeldFrame(CompServerWindowPtr sw, PixmapPtr pFrame);
+
+void
+ compServerReleaseHeldFrame(CompServerWindowPtr sw);
+
+void
+ compServerFreeHeldFrame(CompServerWindowPtr sw);
+
+Bool
+ compServerWindowHeld(WindowPtr pWin);
+
+Bool
+ compServerHeldFrameOverlaps(WindowPtr pWin, BoxPtr pBox);
+
+void
+ compServerDisplayedRegion(WindowPtr pWin, RegionPtr pRegion);
+
+PixmapPtr
+ compServerDisplayedPixmap(WindowPtr pWin, int *x, int *y);
+
+/*
+ * compsync.c
+ */
+
+Bool
+ compServerInitFrameSync(void);
+
+void
+ compServerCloseFrameSync(void);
+
+void
+ compServerReconfigureFrame(WindowPtr pWin, PixmapPtr pOld, int x, int y,
+                            int w, int h);
+
+void
+ compServerFreeFrameWait(CompServerWindowPtr sw);
+
+/*
+ * compframe.c
+ */
+
+void
+ compServerInitFrameTiming(CompServerPtr server);
+
+void
+ compServerCloseFrameTiming(CompServerPtr server);
+
+void
+ compServerFramePropertyChanged(CompServerPtr server, PropertyStateRec *rec);
 
 /*
  * compdirect.c

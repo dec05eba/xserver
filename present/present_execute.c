@@ -22,6 +22,7 @@
 #include <dix-config.h>
 
 #include "present_priv.h"
+#include "compositeext.h"
 #include <unistd.h>
 #ifdef DRI3
 #include <sys/eventfd.h>
@@ -117,6 +118,8 @@ present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc)
     }
 
     present_copy_region(&window->drawable, vblank->pixmap, vblank->update, vblank->x_off, vblank->y_off);
+    vblank->executed = TRUE;
+    CompositeServerPresented(window, vblank->pixmap);
 
     /* present_copy_region sticks the region into a scratch GC,
      * which is then freed, freeing the region

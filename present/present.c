@@ -151,6 +151,44 @@ present_can_window_flip(WindowPtr window)
     return screen_priv->can_window_flip(window);
 }
 
+Bool
+present_window_has_pending_frames(WindowPtr window)
+{
+    present_window_priv_ptr window_priv = present_window_priv(window);
+    present_vblank_ptr vblank;
+
+    if (!window_priv)
+        return FALSE;
+
+    xorg_list_for_each_entry(vblank, &window_priv->vblank, window_list) {
+        if (vblank->pixmap && !vblank->executed)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+Bool
+present_window_vblank_timing(WindowPtr window, uint64_t *ust, uint64_t *interval)
+{
+    present_screen_priv_ptr screen_priv = present_screen_priv(window->drawable.pScreen);
+    RRCrtcPtr crtc;
+    RRModePtr mode;
+    uint64_t msc;
+
+    if (!screen_priv || !screen_priv->info)
+        return FALSE;
+
+    crtc = present_get_crtc(window);
+    mode = crtc ? crtc->mode : NULL;
+    if (!mode || !mode->mode.dotClock ||
+        (*screen_priv->info->get_ust_msc) (crtc, ust, &msc) != Success)
+        return FALSE;
+
+    *interval = (uint64_t) mode->mode.hTotal * mode->mode.vTotal * 1000000 /
+        mode->mode.dotClock;
+    return TRUE;
+}
+
 uint64_t
 present_get_target_msc(uint64_t target_msc_arg,
                        uint64_t crtc_msc,

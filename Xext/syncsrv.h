@@ -148,4 +148,7 @@ SyncDeleteTriggerFromSyncObject(SyncTrigger * pTrigger);
 int
 SyncAddTriggerToSyncObject(SyncTrigger * pTrigger);
 
+int
+SyncLookupCounter(SyncCounter **ppCounter, XID id, ClientPtr client);
+
 #endif                          /* _SYNCSRV_H_ */

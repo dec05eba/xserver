@@ -62,6 +62,32 @@ typedef struct _CompServerLayers {
 
 DevPrivateKeyRec CompServerWindowPrivateKeyRec;
 
+Atom
+compServerAtom(const char *name)
+{
+    return MakeAtom(name, strlen(name), TRUE);
+}
+
+Bool
+compServerPropertyHasAtom(WindowPtr pWin, Atom property, Atom atom)
+{
+    PropertyPtr pProp;
+    CARD32 *atoms;
+    int i;
+
+    if (dixLookupProperty(&pProp, pWin, property, serverClient,
+                          DixReadAccess) != Success ||
+        pProp->type != XA_ATOM || pProp->format != 32)
+        return FALSE;
+
+    atoms = pProp->data;
+    for (i = 0; i < pProp->size; i++) {
+        if (atoms[i] == atom)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 CompServerPtr
 compServerGet(ScreenPtr pScreen)
 {
@@ -123,6 +149,18 @@ compServerToplevel(WindowPtr pWin)
     while (pWin->parent->parent)
         pWin = pWin->parent;
     return pWin;
+}
+
+Bool
+compServerHasSublayers(CompServerPtr server, WindowPtr pToplevel)
+{
+    CompServerDirectWindowPtr dw;
+
+    xorg_list_for_each_entry(dw, &server->directWindows, entry) {
+        if (dw->pWin->viewable && compServerToplevel(dw->pWin) == pToplevel)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 static Bool
@@ -193,6 +231,8 @@ compServerTrackWindow(CompServerPtr server, WindowPtr pWin)
 static void
 compServerFreeWindow(CompServerWindowPtr sw)
 {
+    compServerFreeFrameWait(sw);
+    compServerFreeHeldFrame(sw);
     RegionUninit(&sw->painted);
     xorg_list_del(&sw->entry);
     free(sw);
@@ -211,10 +251,12 @@ compServerUpdateWindows(CompServerPtr server, WindowPtr pRoot)
 {
     CompServerWindowPtr sw, tmp;
     WindowPtr pWin, pAbove = NULL;
+    RegionRec displayed;
 
     xorg_list_for_each_entry(sw, &server->windows, entry)
         sw->seen = FALSE;
 
+    RegionNull(&displayed);
     for (pWin = pRoot->firstChild; pWin; pWin = pWin->nextSib) {
         if (!compServerPaintsWindow(pWin))
             continue;
@@ -226,17 +268,18 @@ compServerUpdateWindows(CompServerPtr server, WindowPtr pRoot)
             continue;
         }
 
-        if (sw->pAbove != pAbove ||
-            !RegionEqual(&sw->painted, &pWin->borderSize)) {
+        compServerDisplayedRegion(pWin, &displayed);
+        if (sw->pAbove != pAbove || !RegionEqual(&sw->painted, &displayed)) {
             compServerAddDamage(server, &sw->painted);
-            compServerAddDamage(server, &pWin->borderSize);
-            RegionCopy(&sw->painted, &pWin->borderSize);
+            compServerAddDamage(server, &displayed);
+            RegionCopy(&sw->painted, &displayed);
             sw->pAbove = pAbove;
         }
 
         sw->seen = TRUE;
         pAbove = pWin;
     }
+    RegionUninit(&displayed);
 
     xorg_list_for_each_entry_safe(sw, tmp, &server->windows, entry) {
         if (!sw->seen)
@@ -389,9 +432,10 @@ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
                      PicturePtr pDst, int x, int y, void *closure)
 {
     WindowPtr pWin = pLayer->pWin;
-    PixmapPtr pPixmap = (*pWin->drawable.pScreen->GetWindowPixmap) (pWin);
     CARD8 op = compServerWindowHasAlpha(pWin) ? PictOpOver : PictOpSrc;
     PicturePtr pSrc, pMask = NULL;
+    PixmapPtr pPixmap;
+    int src_x, src_y;
     int error;
 
     if (pLayer->hdr && server->PaintHdr &&
@@ -399,6 +443,7 @@ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
                              &pLayer->exposed, pLayer->opacity, closure))
         return;
 
+    pPixmap = compServerDisplayedPixmap(pWin, &src_x, &src_y);
     pSrc = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pWin),
                          0, NULL, serverClient, &error);
     if (!pSrc)
@@ -413,7 +458,7 @@ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
 
     SetPictureClipRegion(pDst, -x, -y, &pLayer->region);
     CompositePicture(op, pSrc, pMask, pDst, 0, 0, 0, 0,
-                     pPixmap->screen_x - x, pPixmap->screen_y - y,
+                     src_x - x, src_y - y,
                      pPixmap->drawable.width, pPixmap->drawable.height);
 
     if (pMask)
@@ -479,7 +524,7 @@ compServerAddWindowLayers(CompServerPtr server, CompServerLayersPtr pLayers,
     RegionNull(&sublayerArea);
     RegionNull(&holes);
 
-    for (i = 0; i < pLayers->numSublayers; i++) {
+    for (i = 0; !compServerWindowHeld(pWin) && i < pLayers->numSublayers; i++) {
         CompServerSublayerPtr pSublayer = &pLayers->sublayers[i];
 
         if (pSublayer->pToplevel != pWin)
@@ -493,7 +538,8 @@ compServerAddWindowLayers(CompServerPtr server, CompServerLayersPtr pLayers,
     }
 
     RegionNull(&area);
-    RegionSubtract(&area, &pWin->borderSize, &holes);
+    compServerDisplayedRegion(pWin, &area);
+    RegionSubtract(&area, &area, &holes);
     compServerAddLayer(pLayers, pWin, &area, pRegion, opacity, FALSE);
     RegionUninit(&area);
     RegionUninit(&holes);
@@ -807,10 +853,10 @@ CompositeServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox)
             continue;
 
         overlap = RegionContainsRect(&pWin->borderSize, pBox);
-        if (overlap == rgnOUT)
+        if (overlap == rgnOUT && !compServerHeldFrameOverlaps(pWin, pBox))
             continue;
 
-        if (overlap != rgnIN ||
+        if (overlap != rgnIN || compServerWindowHeld(pWin) ||
             compServerWindowOpacity(server, pWin) != COMP_SERVER_OPAQUE)
             return NULL;
 
@@ -905,10 +951,15 @@ compServerPropertyState(CallbackListPtr *pcbl, void *closure, void *data)
     WindowPtr pWin = rec->win;
     CompServerPtr server = compServerGet(pScreen);
 
-    if (rec->prop->propertyName == server->opacityAtom &&
-        pWin->drawable.pScreen == pScreen &&
-        pWin->parent == pScreen->root && pWin->viewable)
-        compServerAddDamage(server, &pWin->borderSize);
+    if (pWin->drawable.pScreen != pScreen)
+        return;
+
+    if (rec->prop->propertyName == server->opacityAtom) {
+        if (pWin->parent == pScreen->root && pWin->viewable)
+            compServerAddDamage(server, &pWin->borderSize);
+    }
+    else
+        compServerFramePropertyChanged(server, rec);
 }
 
 Bool
@@ -925,6 +976,9 @@ CompositeServerInit(ScreenPtr pScreen, CompositeServerPaintHdrProcPtr PaintHdr)
     if (!cs)
         return FALSE;
 
+    if (!compServerInitFrameSync())
+        return FALSE;
+
     server = calloc(1, sizeof(*server));
     if (!server)
         return FALSE;
@@ -938,6 +992,7 @@ CompositeServerInit(ScreenPtr pScreen, CompositeServerPaintHdrProcPtr PaintHdr)
     RegionNull(&server->damage);
     xorg_list_init(&server->windows);
     xorg_list_init(&server->directWindows);
+    compServerInitFrameTiming(server);
     server->PaintHdr = PaintHdr;
     server->opacityAtom = MakeAtom(opacity_name, strlen(opacity_name), TRUE);
 
@@ -962,6 +1017,8 @@ compServerCloseScreen(ScreenPtr pScreen)
         return;
 
     DeleteCallback(&PropertyStateCallback, compServerPropertyState, pScreen);
+    compServerCloseFrameSync();
+    compServerCloseFrameTiming(server);
 
     pScreen->GetImage = server->GetImage;
     pScreen->ClearToBackground = server->ClearToBackground;
