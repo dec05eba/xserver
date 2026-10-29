@@ -99,6 +99,19 @@ enum drmmode_hdr_mode {
 };
 
 typedef struct {
+    enum drmmode_hdr_mode mode;
+    int sdr_white_level;
+    struct hdr_output_metadata metadata;
+} drmmode_hdr_state_rec;
+
+typedef struct {
+    drmmode_hdr_state_rec current;
+    drmmode_hdr_state_rec pending;
+    Bool has_pending;
+    Bool failed;
+} drmmode_hdr_rec;
+
+typedef struct {
     uint32_t width;
     uint32_t height;
     struct dumb_bo *dumb;
@@ -280,10 +293,7 @@ typedef struct {
     Bool vrr_enabled;
     Bool use_gamma_lut;
 
-    enum drmmode_hdr_mode hdr_mode;
-    Bool hdr_failed;
-    int sdr_white_level;
-    struct hdr_output_metadata hdr_metadata;
+    drmmode_hdr_rec hdr;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
 
 typedef struct {
@@ -409,7 +419,9 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
 Bool drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
-                                          const struct hdr_output_metadata *metadata);
+                                          const struct hdr_output_metadata *metadata,
+                                          Bool with_next_flip);
+Bool drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
 Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);
 Bool drmmode_crtc_can_show_pq(xf86CrtcPtr crtc);

@@ -1009,17 +1009,21 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
             /* Try to flip
              */
             if (present_flip_slot(screen, slot, vblank)) {
-                RegionPtr damage;
+                RegionRec damage;
 
                 /* Report update region as damaged
                  */
+                RegionNull(&damage);
                 if (vblank->update) {
-                    damage = vblank->update;
-                    RegionIntersect(damage, damage, &window->clipList);
+                    RegionCopy(&damage, vblank->update);
+                    RegionTranslate(&damage, window->drawable.x,
+                                    window->drawable.y);
+                    RegionIntersect(&damage, &damage, &window->clipList);
                 } else
-                    damage = &window->clipList;
+                    RegionCopy(&damage, &window->clipList);
 
-                DamageDamageRegion(&vblank->window->drawable, damage);
+                DamageDamageRegion(&vblank->window->drawable, &damage);
+                RegionUninit(&damage);
                 return;
             }
 

@@ -698,10 +698,12 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
         if (ms_compositor_direct_flip(crtc))
             continue;
 
-        /* Skip if there isn't any damage on the front buffer and it's on
-         * screen already
+        /* Skip if there isn't any damage on the front buffer, it's on screen
+         * already and nothing waits for a flip
          */
-        if (RegionNil(&trf->buf[trf->back_idx ^ 1].dmg) && !trf->scanout.fb_id)
+        if (RegionNil(&trf->buf[trf->back_idx ^ 1].dmg) && !trf->scanout.fb_id &&
+            !drmmode_crtc_has_pending_hdr(crtc) &&
+            xorg_list_is_empty(&trf->dri_flip_list))
             continue;
 
         if (!ms_tearfree_compose_due(crtc, timeout))

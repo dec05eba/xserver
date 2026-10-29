@@ -625,10 +625,21 @@ CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
 }
 
 static void
-compServerCopyWindowPixmap(WindowPtr pWin, PicturePtr pDst, int x, int y)
+compServerPixmapBox(PixmapPtr pPixmap, BoxPtr pBox)
+{
+    pBox->x1 = pPixmap->screen_x;
+    pBox->y1 = pPixmap->screen_y;
+    pBox->x2 = pPixmap->screen_x + pPixmap->drawable.width;
+    pBox->y2 = pPixmap->screen_y + pPixmap->drawable.height;
+}
+
+static void
+compServerCopyWindowPixmap(WindowPtr pWin, PicturePtr pDst, int x, int y,
+                           RegionPtr pCopied)
 {
     PixmapPtr pPixmap = (*pWin->drawable.pScreen->GetWindowPixmap) (pWin);
     PicturePtr pSrc;
+    BoxRec box;
     int error;
 
     pSrc = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pWin),
@@ -640,19 +651,17 @@ compServerCopyWindowPixmap(WindowPtr pWin, PicturePtr pDst, int x, int y)
                      pPixmap->screen_x - x, pPixmap->screen_y - y,
                      pPixmap->drawable.width, pPixmap->drawable.height);
     FreePicture(pSrc, 0);
+
+    compServerPixmapBox(pPixmap, &box);
+    RegionReset(pCopied, &box);
 }
 
 void
 compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap)
 {
-    BoxRec box = {
-        .x1 = pPixmap->screen_x,
-        .y1 = pPixmap->screen_y,
-        .x2 = pPixmap->screen_x + pPixmap->drawable.width,
-        .y2 = pPixmap->screen_y + pPixmap->drawable.height,
-    };
-    RegionRec region;
+    RegionRec region, copied;
     PicturePtr pDst;
+    BoxRec box;
     int error;
 
     pDst = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pWin),
@@ -660,14 +669,21 @@ compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap)
     if (!pDst)
         return;
 
+    compServerPixmapBox(pPixmap, &box);
     RegionInit(&region, &box, 1);
-    compServerPaint(pWin->drawable.pScreen, pDst, box.x1, box.y1, &region,
-                    pWin, NULL);
+    RegionNull(&copied);
+
+    if (pWin->redirectDraw != RedirectDrawNone) {
+        compServerCopyWindowPixmap(pWin, pDst, box.x1, box.y1, &copied);
+        RegionSubtract(&region, &region, &copied);
+    }
+
+    if (RegionNotEmpty(&region))
+        compServerPaint(pWin->drawable.pScreen, pDst, box.x1, box.y1, &region,
+                        pWin, NULL);
+
+    RegionUninit(&copied);
     RegionUninit(&region);
-
-    if (pWin->redirectDraw != RedirectDrawNone)
-        compServerCopyWindowPixmap(pWin, pDst, box.x1, box.y1);
-
     FreePicture(pDst, 0);
 }
 

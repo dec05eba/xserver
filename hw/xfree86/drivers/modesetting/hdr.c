@@ -111,7 +111,8 @@ ms_hdr_update(ScreenPtr screen)
             drmmode_crtc->tearfree.scanout.output_mode_dirty = TRUE;
         else
             drmmode_crtc_set_hdr_output_metadata(crtc,
-                ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds));
+                ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds),
+                FALSE);
     }
 }
 

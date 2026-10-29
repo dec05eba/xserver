@@ -672,7 +672,7 @@ ms_compositor_update_output_mode(xf86CrtcPtr crtc, WindowPtr window)
     }
 
     updated = drmmode_crtc_set_hdr_output_metadata(crtc,
-        hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL);
+        hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL, TRUE);
 
     if (ms->vrr_support)
         drmmode_crtc_set_vrr(crtc, window &&
@@ -697,7 +697,8 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc)
 
     window = ms_compositor_scanout_window(crtc, &pixmap);
     if (window && ms_compositor_update_output_mode(crtc, window)) {
-        if (pixmap == scanout->pixmap && scanout->fb_id) {
+        if (pixmap == scanout->pixmap && scanout->fb_id &&
+            !drmmode_crtc_has_pending_hdr(crtc)) {
             ms_tearfree_dri_abort_all(crtc);
             return TRUE;
         }
