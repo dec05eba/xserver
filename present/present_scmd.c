@@ -119,6 +119,13 @@ present_region_equals_crtc(RegionPtr region, RRCrtcPtr crtc)
 }
 
 static Bool
+present_pixmap_covers_screen(ScreenPtr screen, PixmapPtr pixmap)
+{
+    return pixmap->drawable.width == screen->width &&
+           pixmap->drawable.height == screen->height;
+}
+
+static Bool
 present_check_flip(RRCrtcPtr            crtc,
                    WindowPtr            window,
                    PixmapPtr            pixmap,
@@ -377,6 +384,9 @@ present_restore_slot_screen_pixmap(ScreenPtr screen,
      */
     if (screen->root && screen->GetWindowPixmap(screen->root) == flip_pixmap)
         present_copy_region(&screen_pixmap->drawable, flip_pixmap, NULL, 0, 0);
+    else if (flip_window && screen->GetWindowPixmap(flip_window) == flip_pixmap)
+        present_copy_region(&screen_pixmap->drawable, flip_pixmap, NULL,
+                            slot->crtc->x, slot->crtc->y);
 
     /* Switch back to using the screen pixmap now to avoid
      * 2D applications drawing to the wrong pixmap.
@@ -732,7 +742,8 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
                                             slot->flip_pixmap,
                                             (*screen->GetScreenPixmap)(screen));
                 present_set_tree_pixmap(vblank->window, NULL, vblank->pixmap);
-                present_set_tree_pixmap(screen->root, NULL, vblank->pixmap);
+                if (present_pixmap_covers_screen(screen, vblank->pixmap))
+                    present_set_tree_pixmap(screen->root, NULL, vblank->pixmap);
 
                 /* Report update region as damaged
                  */

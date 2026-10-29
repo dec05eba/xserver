@@ -728,7 +728,7 @@ ms_tearfree_do_flips(ScreenPtr pScreen)
          * there isn't any damage on the front buffer.
          */
         if (trf->flip_seq || ms->drmmode.dri2_flipping ||
-            ms->drmmode.present_flipping ||
+            ms_present_screen_flipping(scrn) ||
             RegionNil(&trf->buf[trf->back_idx ^ 1].dmg))
             continue;
 

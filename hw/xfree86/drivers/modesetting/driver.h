@@ -270,6 +270,7 @@ Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
 Bool ms_pixmap_is_per_crtc_size(ScrnInfoPtr scrn, PixmapPtr pixmap);
+Bool ms_present_screen_flipping(ScrnInfoPtr scrn);
 
 Bool ms_hdr_screen_init(ScreenPtr screen);
 void ms_hdr_close_screen(ScreenPtr screen);

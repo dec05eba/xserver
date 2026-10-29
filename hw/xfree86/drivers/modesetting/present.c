@@ -455,6 +455,14 @@ ms_find_per_crtc_flip(ScrnInfoPtr scrn)
     return NULL;
 }
 
+Bool
+ms_present_screen_flipping(ScrnInfoPtr scrn)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+
+    return ms->drmmode.present_flipping && !ms_find_per_crtc_flip(scrn);
+}
+
 static void
 ms_unflip_per_crtc(xf86CrtcPtr crtc)
 {
