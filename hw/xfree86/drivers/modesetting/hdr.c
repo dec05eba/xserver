@@ -37,13 +37,7 @@
 #include "driver.h"
 #include "drmmode_display.h"
 
-#define HDMI_STATIC_METADATA_TYPE1 0
-#define HDMI_EOTF_SMPTE_ST2084 2
 
-#define CTA_EXTENSION_TAG 0x02
-#define CTA_DATA_BLOCK_EXTENDED 7
-#define CTA_EXTENDED_HDR_STATIC_METADATA 6
-#define CTA_EOTF_SMPTE_ST2084 (1 << 2)
 
 #define SDR_GAMMA 2.2
 
@@ -103,16 +97,18 @@ ms_hdr_update(ScreenPtr screen)
     for (i = 0; i < config->num_crtc; i++) {
         xf86CrtcPtr crtc = config->crtc[i];
         drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+        const struct hdr_output_metadata *metadata;
 
         if (!crtc->enabled)
             continue;
 
-        if (ms->drmmode.tearfree_enable)
+        if (ms->drmmode.tearfree_enable) {
             drmmode_crtc->tearfree.scanout.output_mode_dirty = TRUE;
-        else
-            drmmode_crtc_set_hdr_output_metadata(crtc,
-                ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds),
-                FALSE);
+            continue;
+        }
+
+        metadata = ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds);
+        drmmode_crtc_set_scanout_content(crtc, metadata != NULL, metadata, FALSE);
     }
 }
 
@@ -124,54 +120,6 @@ ms_hdr_disable(ScrnInfoPtr scrn)
 
     for (i = 0; i < config->num_crtc; i++)
         drmmode_crtc_disable_hdr(config->crtc[i]);
-}
-
-Bool
-ms_hdr_edid_supports_pq(const uint8_t *edid, size_t size)
-{
-    size_t block;
-
-    for (block = 128; block + 128 <= size; block += 128) {
-        const uint8_t *ext = edid + block;
-        int end = ext[2];
-        int i, len;
-
-        if (ext[0] != CTA_EXTENSION_TAG || end > 127)
-            continue;
-
-        for (i = 4; i < end; i += len + 1) {
-            len = ext[i] & 0x1f;
-            if (i + len >= end)
-                break;
-
-            if (ext[i] >> 5 == CTA_DATA_BLOCK_EXTENDED && len >= 2 &&
-                ext[i + 1] == CTA_EXTENDED_HDR_STATIC_METADATA)
-                return (ext[i + 2] & CTA_EOTF_SMPTE_ST2084) != 0;
-        }
-    }
-
-    return FALSE;
-}
-
-void
-ms_hdr_desktop_metadata(int white_level, struct hdr_output_metadata *metadata)
-{
-    *metadata = (struct hdr_output_metadata) {
-        .metadata_type = HDMI_STATIC_METADATA_TYPE1,
-        .hdmi_metadata_type1 = {
-            .eotf = HDMI_EOTF_SMPTE_ST2084,
-            .metadata_type = HDMI_STATIC_METADATA_TYPE1,
-            .display_primaries = {
-                { .x = 32000, .y = 16500 },
-                { .x = 15000, .y = 30000 },
-                { .x = 7500, .y = 3000 },
-            },
-            .white_point = { .x = 15635, .y = 16450 },
-            .max_display_mastering_luminance = white_level,
-            .max_cll = white_level,
-            .max_fall = white_level,
-        },
-    };
 }
 
 static const double bt709_to_bt2020[9] = {
@@ -214,7 +162,7 @@ ms_hdr_linearize_ramp(const uint16_t *ramp, int size, double x)
     return ms_hdr_lut_value(pow(ms_hdr_sample_ramp(ramp, size, x), SDR_GAMMA));
 }
 
-static double
+double
 ms_hdr_pq_eotf(double value)
 {
     const double p = pow(value, 1.0 / pq_m2);
@@ -389,6 +337,16 @@ ms_hdr_tonemap_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
     ms_hdr_ctm_to_matrix(user_ctm, user);
     ms_hdr_matrix_multiply(user, bt2020_to_bt709, matrix);
     ms_hdr_matrix_to_ctm(matrix, &color->ctm);
+}
+
+void
+ms_hdr_sdr_to_pq_table(int white_level, uint8_t *table)
+{
+    int i;
+
+    for (i = 0; i < 256; i++)
+        table[i] = lrint(ms_hdr_pq_inverse_eotf(pow(i / 255.0, SDR_GAMMA) *
+                                                white_level) * 255.0);
 }
 
 #ifdef HAVE_GBM

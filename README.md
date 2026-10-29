@@ -87,9 +87,9 @@ Switching between the two doesn't change the display mode, so it's instant.
 Turning HDR on or off for a monitor does change the mode, so the monitor goes
 black for a moment. HDR is off by default.
 
-HDR windows also work when they aren't fullscreen. While one is visible on an
-HDR monitor, the X server composites that monitor in HDR10 and shows the parts
-of the window that nothing covers without conversion.
+HDR windows also work when they aren't fullscreen. The X server composites
+HDR monitors in HDR10 and shows the parts of HDR windows that nothing covers
+without conversion. Fullscreen windows are still shown directly.
 
 On a monitor without HDR, or with HDR turned off, HDR windows are tone mapped
 to SDR. A fullscreen HDR window is still shown directly there, and the tone
@@ -98,19 +98,19 @@ GAMMA_LUT) instead of by copying.
 
 Without per-monitor framebuffers (see above) only fullscreen HDR windows are
 supported. The gamma ramp (`xrandr --gamma`, night light tools) isn't applied
-to a monitor while it composites in HDR, and rotated or scaled HDR monitors
-tone map HDR windows instead of showing them as HDR.
+to HDR monitors that are composited in HDR10, and rotated or scaled HDR
+monitors tone map HDR windows instead of showing them as HDR.
 
 HDR support works without the "Depth 30" config option set (in fact, you shouldn't set it),
 so programs function and look correct.
 
 HDR needs:
 
+- A monitor that supports HDR
 - the modesetting driver
 - a kernel driver that exposes the DEGAMMA_LUT, CTM and GAMMA_LUT CRTC
   properties and the HDR_OUTPUT_METADATA connector property (tested with
   amdgpu)
-- a monitor whose EDID reports HDR10 support
 
 To enable HDR on all monitors when the X server starts, set the options in
 the Device section of xorg.conf, for example in

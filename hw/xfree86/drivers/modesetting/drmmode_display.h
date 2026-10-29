@@ -304,6 +304,16 @@ typedef struct {
 } drmmode_prop_rec, *drmmode_prop_ptr;
 
 typedef struct {
+    Bool pq_supported;
+    struct hdr_output_metadata display_metadata;
+    Bool enabled;
+    int sdr_white_level;
+    Atom atom;
+    Atom capable_atom;
+    Atom sdr_white_level_atom;
+} drmmode_output_hdr_rec;
+
+typedef struct {
     drmmode_ptr drmmode;
     int output_id;
     drmModeConnectorPtr mode_output;
@@ -322,12 +332,7 @@ typedef struct {
     Atom ctm_atom;
     struct drm_color_ctm ctm;
     Bool vrr_capable;
-    Bool hdr_pq_supported;
-    Atom hdr_atom;
-    Atom hdr_capable_atom;
-    Atom sdr_white_level_atom;
-    Bool hdr_enabled;
-    int sdr_white_level;
+    drmmode_output_hdr_rec hdr;
 } drmmode_output_private_rec, *drmmode_output_private_ptr;
 
 typedef struct {
@@ -418,9 +423,9 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
-Bool drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
-                                          const struct hdr_output_metadata *metadata,
-                                          Bool with_next_flip);
+Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
+                                      const struct hdr_output_metadata *metadata,
+                                      Bool with_next_flip);
 Bool drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
 Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);

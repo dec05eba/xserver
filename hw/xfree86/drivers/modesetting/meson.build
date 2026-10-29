@@ -5,6 +5,7 @@ modesetting_srcs = [
     'drmmode_display.c',
     'dumb_bo.c',
     'hdr.c',
+    'hdr_edid.c',
     'pageflip.c',
     'present.c',
     'vblank.c',

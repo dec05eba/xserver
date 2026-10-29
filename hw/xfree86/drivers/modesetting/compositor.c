@@ -656,23 +656,24 @@ ms_compositor_update_output_mode(xf86CrtcPtr crtc, WindowPtr window)
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
-    WindowPtr hdr_window;
     Bool updated;
 
     if (window == scanout->output_mode_window && !scanout->output_mode_dirty)
         return TRUE;
 
-    hdr_window = CompositeServerHdrWindow(crtc->scrn->pScreen, &crtc->bounds);
-    if (!window) {
-        Bool pq = hdr_window && ms_compositor_can_compose_pq(crtc);
+    if (window) {
+        WindowPtr hdr_window = CompositeServerHdrWindow(crtc->scrn->pScreen,
+                                                        &crtc->bounds);
+
+        updated = drmmode_crtc_set_scanout_content(crtc, hdr_window != NULL,
+            hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL, TRUE);
+    }
+    else {
+        Bool pq = ms_compositor_can_compose_pq(crtc);
 
         ms_compositor_set_composition(crtc, pq);
-        if (!pq)
-            hdr_window = NULL;
+        updated = drmmode_crtc_set_scanout_content(crtc, pq, NULL, TRUE);
     }
-
-    updated = drmmode_crtc_set_hdr_output_metadata(crtc,
-        hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL, TRUE);
 
     if (ms->vrr_support)
         drmmode_crtc_set_vrr(crtc, window &&
