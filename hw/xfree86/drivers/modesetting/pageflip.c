@@ -735,12 +735,24 @@ ms_tearfree_dri_abort(xf86CrtcPtr crtc,
     return FALSE;
 }
 
+static void
+ms_tearfree_dri_complete(struct xorg_list *flips, uint64_t msc, uint64_t usec)
+{
+    struct ms_crtc_pageflip *flip, *tmp;
+
+    xorg_list_for_each_entry_safe(flip, tmp, flips, node) {
+        xorg_list_del(&flip->node);
+        ms_pageflip_handler(msc, usec, flip);
+    }
+}
+
 void
 ms_tearfree_dri_abort_all(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
     struct ms_crtc_pageflip *flip, *tmp;
+    struct xorg_list flips;
     uint64_t usec = 0, msc = 0;
 
     /* Nothing to abort if there aren't any DRI clients waiting for a flip */
@@ -753,16 +765,21 @@ ms_tearfree_dri_abort_all(xf86CrtcPtr crtc)
      * time and MSC for this CRTC.
      */
     ms_get_crtc_ust_msc(crtc, &usec, &msc);
-    xorg_list_for_each_entry_safe(flip, tmp, &trf->dri_flip_list, node)
-        ms_pageflip_handler(msc, usec, flip);
-    xorg_list_init(&trf->dri_flip_list);
+    xorg_list_init(&flips);
+    xorg_list_for_each_entry_safe(flip, tmp, &trf->dri_flip_list, node) {
+        xorg_list_del(&flip->node);
+        xorg_list_append(&flip->node, &flips);
+    }
+    ms_tearfree_dri_complete(&flips, msc, usec);
 }
 
 static void
 ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
 {
     struct ms_crtc_pageflip *flip, *tmp;
+    struct xorg_list flips;
 
+    xorg_list_init(&flips);
     xorg_list_for_each_entry_safe(flip, tmp, &trf->dri_flip_list, node) {
         /* If a TearFree flip was already pending at the time this DRI client's
          * pixmap was copied, then the pixmap isn't contained in this TearFree
@@ -772,9 +789,10 @@ ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
             flip->tearfree_seq = 0;
         } else {
             xorg_list_del(&flip->node);
-            ms_pageflip_handler(msc, usec, flip);
+            xorg_list_append(&flip->node, &flips);
         }
     }
+    ms_tearfree_dri_complete(&flips, msc, usec);
 }
 
 static void

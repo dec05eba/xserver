@@ -849,17 +849,28 @@ drmmode_set_ctm(xf86CrtcPtr crtc, const struct drm_color_ctm *ctm)
     drmModeDestroyPropertyBlob(drmmode->fd, blob_id);
 }
 
-static uint32_t
-drmmode_fb_get_format(int fd, uint32_t fb_id)
+static drmmode_fb_layout_rec
+drmmode_fb_get_layout(int fd, uint32_t fb_id)
 {
     drmModeFB2Ptr fb = fb_id ? drmModeGetFB2(fd, fb_id) : NULL;
-    uint32_t format = 0;
+    drmmode_fb_layout_rec layout = { .modifier = DRM_FORMAT_MOD_INVALID };
 
     if (fb) {
-        format = fb->pixel_format;
+        layout.format = fb->pixel_format;
+        if (fb->flags & DRM_MODE_FB_MODIFIERS)
+            layout.modifier = fb->modifier;
+        layout.pitch = fb->pitches[0];
         drmModeFreeFB2(fb);
     }
-    return format;
+    return layout;
+}
+
+static Bool
+drmmode_fb_layout_equal(const drmmode_fb_layout_rec *a,
+                        const drmmode_fb_layout_rec *b)
+{
+    return a->format == b->format && a->modifier == b->modifier &&
+        a->pitch == b->pitch;
 }
 
 static int
@@ -935,8 +946,8 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
             ret = drmModeAtomicCommit(ms->fd, req, flags, NULL);
 
         if (ret == 0 && !test_only) {
-            drmmode_crtc->scanout_format =
-                drmmode_fb_get_format(ms->fd, active ? fb_id : 0);
+            drmmode_crtc->scanout_layout =
+                drmmode_fb_get_layout(ms->fd, active ? fb_id : 0);
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
             for (i = 0; i < xf86_config->num_output; i++) {
@@ -980,7 +991,7 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
     if (!ret && !ms->atomic_modeset) {
         drmmode_crtc->src_x = x;
         drmmode_crtc->src_y = y;
-        drmmode_crtc->scanout_format = drmmode_fb_get_format(drmmode->fd, fb_id);
+        drmmode_crtc->scanout_layout = drmmode_fb_get_layout(drmmode->fd, fb_id);
     }
 
     drmmode_set_ctm(crtc, ctm);
@@ -1028,13 +1039,15 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint32_t format = drmmode_fb_get_format(ms->fd, fb_id);
-    Bool format_changed = format != drmmode_crtc->scanout_format;
+    drmmode_fb_layout_rec layout = drmmode_fb_get_layout(ms->fd, fb_id);
+    Bool format_changed = layout.format != drmmode_crtc->scanout_layout.format;
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
     int ret;
 
-    /* The kernel rejects async flips that change anything other than the frame buffer, including its format */
-    if (format_changed || (ms->atomic_modeset && src_changed) ||
+    /* The kernel rejects async flips that change anything other than the frame buffer, including its format,
+     * modifier or pitch */
+    if (!drmmode_fb_layout_equal(&layout, &drmmode_crtc->scanout_layout) ||
+        (ms->atomic_modeset && src_changed) ||
         drmmode_crtc->hdr.has_pending)
         flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
@@ -1060,7 +1073,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         drmmode_destroy_hdr_blobs(drmmode_crtc->drmmode, &hdr_blobs);
 
         if (ret == 0) {
-            drmmode_crtc->scanout_format = format;
+            drmmode_crtc->scanout_layout = layout;
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
             if (with_hdr) {
@@ -1096,11 +1109,14 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
 
         drmmode_crtc->src_x = x;
         drmmode_crtc->src_y = y;
-        drmmode_crtc->scanout_format = format;
+        drmmode_crtc->scanout_layout = layout;
     }
 
-    return drmModePageFlip(ms->fd, drmmode_crtc->mode_crtc->crtc_id,
-                           fb_id, flags, data);
+    ret = drmModePageFlip(ms->fd, drmmode_crtc->mode_crtc->crtc_id,
+                          fb_id, flags, data);
+    if (ret == 0)
+        drmmode_crtc->scanout_layout = layout;
+    return ret;
 }
 
 int

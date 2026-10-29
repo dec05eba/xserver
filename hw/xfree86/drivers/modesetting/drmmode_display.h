@@ -216,6 +216,12 @@ typedef struct {
 } drmmode_shadow_fb_rec, *drmmode_shadow_fb_ptr;
 
 typedef struct {
+    uint32_t format;
+    uint64_t modifier;
+    uint32_t pitch;
+} drmmode_fb_layout_rec;
+
+typedef struct {
     WindowPtr window;
     PixmapPtr pixmap;
     PixmapPtr failed_pixmap;
@@ -267,7 +273,7 @@ typedef struct {
     unsigned prime_pixmap_x;
 
     int src_x, src_y;
-    uint32_t scanout_format;
+    drmmode_fb_layout_rec scanout_layout;
 
     /**
      * @{ MSC (vblank count) handling for the PRESENT extension.
