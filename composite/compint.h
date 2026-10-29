@@ -133,15 +133,23 @@ typedef struct _CompServerWindow {
     Bool seen;
 } CompServerWindowRec, *CompServerWindowPtr;
 
-typedef struct _CompServerHdrWindow {
+typedef struct _CompServerDeferredUpdate {
+    Bool active;
+    Bool stale;
+    int x, y;
+} CompServerDeferredUpdateRec;
+
+typedef struct _CompServerDirectWindow {
     struct xorg_list entry;
     WindowPtr pWin;
-} CompServerHdrWindowRec, *CompServerHdrWindowPtr;
+    Bool hdr;
+    CompServerDeferredUpdateRec deferred;
+} CompServerDirectWindowRec, *CompServerDirectWindowPtr;
 
 typedef struct _CompServer {
     RegionRec damage;
     struct xorg_list windows;
-    struct xorg_list hdrWindows;
+    struct xorg_list directWindows;
     CompositeServerPaintHdrProcPtr PaintHdr;
     Atom opacityAtom;
     Bool cmSelectionClaimed;
@@ -300,6 +308,12 @@ void
  * compserver.c
  */
 
+CompServerPtr
+ compServerGet(ScreenPtr pScreen);
+
+Bool
+ compServerWindowHasAlpha(WindowPtr pWin);
+
 void
  compServerCloseScreen(ScreenPtr pScreen);
 
@@ -317,6 +331,34 @@ void
 
 void
  compServerPaintBelow(WindowPtr pWin, PixmapPtr pPixmap);
+
+/*
+ * compdirect.c
+ */
+
+int
+ compServerTreeLevel(WindowPtr pWin);
+
+Bool
+ compServerDeferUpdate(WindowPtr pWin);
+
+void
+ compServerFlushInferiors(WindowPtr pWin);
+
+void
+ compServerUndeferTree(WindowPtr pWin);
+
+void
+ compServerUpdateDeferred(CompServerPtr server);
+
+void
+ compServerForgetDeferred(WindowPtr pWin);
+
+void
+ compServerDestroyDirectWindow(CompServerPtr server, WindowPtr pWin);
+
+void
+ compServerFreeDirectWindows(CompServerPtr server);
 
 /*
  * compwindow.c
@@ -378,6 +420,9 @@ void
 
 void
  compPaintChildrenToWindow(WindowPtr pWin);
+
+void
+ compWindowUpdateParent(WindowPtr pWin, RegionPtr pRegion);
 
 WindowPtr
  CompositeRealChildHead(WindowPtr pWin);

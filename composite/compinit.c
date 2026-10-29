@@ -152,8 +152,10 @@ compSourceValidate(DrawablePtr pDrawable,
     CompScreenPtr cs = GetCompScreen(pScreen);
 
     pScreen->SourceValidate = cs->SourceValidate;
-    if (pDrawable->type == DRAWABLE_WINDOW && subWindowMode == IncludeInferiors)
+    if (pDrawable->type == DRAWABLE_WINDOW && subWindowMode == IncludeInferiors) {
         compPaintChildrenToWindow((WindowPtr) pDrawable);
+        compServerFlushInferiors((WindowPtr) pDrawable);
+    }
     (*pScreen->SourceValidate) (pDrawable, x, y, width, height,
                                 subWindowMode);
     cs->SourceValidate = pScreen->SourceValidate;

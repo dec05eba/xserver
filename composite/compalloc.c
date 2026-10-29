@@ -149,6 +149,9 @@ compRedirectWindow(ClientPtr pClient, WindowPtr pWin, int update)
     if (!pWin->parent)
         return BadMatch;
 
+    if (pClient != serverClient)
+        compServerUndeferTree(pWin);
+
     /*
      * Only one Manual update is allowed
      */
@@ -657,6 +660,8 @@ compSetParentPixmap(WindowPtr pWin)
     ScreenPtr pScreen = pWin->drawable.pScreen;
     PixmapPtr pParentPixmap;
     CompWindowPtr cw = GetCompWindow(pWin);
+
+    compServerForgetDeferred(pWin);
 
     if (cw->damageRegistered) {
         DamageUnregister(cw->damage);

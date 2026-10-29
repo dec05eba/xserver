@@ -679,8 +679,8 @@ compGetRedirectBorderClip(WindowPtr pWin)
     return &cw->borderClip;
 }
 
-static void
-compWindowUpdateAutomatic(WindowPtr pWin)
+void
+compWindowUpdateParent(WindowPtr pWin, RegionPtr pRegion)
 {
     CompWindowPtr cw = GetCompWindow(pWin);
     ScreenPtr pScreen = pWin->drawable.pScreen;
@@ -689,7 +689,6 @@ compWindowUpdateAutomatic(WindowPtr pWin)
     PictFormatPtr pSrcFormat = PictureWindowFormat(pWin);
     PictFormatPtr pDstFormat = PictureWindowFormat(pWin->parent);
     int error;
-    RegionPtr pRegion = DamageRegion(cw->damage);
     PicturePtr pSrcPicture = CreatePicture(0, &pSrcPixmap->drawable,
                                            pSrcFormat,
                                            0, 0,
@@ -734,6 +733,14 @@ compWindowUpdateAutomatic(WindowPtr pWin)
                      pSrcPixmap->drawable.width, pSrcPixmap->drawable.height);
     FreePicture(pSrcPicture, 0);
     FreePicture(pDstPicture, 0);
+}
+
+static void
+compWindowUpdateAutomatic(WindowPtr pWin)
+{
+    CompWindowPtr cw = GetCompWindow(pWin);
+
+    compWindowUpdateParent(pWin, DamageRegion(cw->damage));
     /*
      * Empty the damage region.  This has the nice effect of
      * rendering the translations above harmless
@@ -752,7 +759,7 @@ compPaintWindowToParent(WindowPtr pWin)
         if (cw->damaged) {
             if (CompositeIsServerRoot(pWin->parent))
                 compServerCollectDamage(pWin);
-            else
+            else if (!compServerDeferUpdate(pWin))
                 compWindowUpdateAutomatic(pWin);
             cw->damaged = FALSE;
         }

@@ -1,5 +1,6 @@
 srcs_composite = [
 	'compalloc.c',
+	'compdirect.c',
 	'compext.c',
 	'compinit.c',
 	'compoverlay.c',
