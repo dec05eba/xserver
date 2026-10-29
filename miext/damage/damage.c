@@ -1862,7 +1862,7 @@ DamageSubtract(DamagePtr pDamage, const RegionPtr pRegion)
     RegionSubtract(&pDamage->damage, &pDamage->damage, pRegion);
     if (pDrawable) {
         if (pDrawable->type == DRAWABLE_WINDOW)
-            pClip = &((WindowPtr) pDrawable)->borderClip;
+            pClip = WindowVisibleRegion((WindowPtr) pDrawable);
         else {
             BoxRec box;
 

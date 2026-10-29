@@ -34,6 +34,47 @@ mailing lists, bug trackers, etc:
 
   https://www.freedesktop.org/wiki/CodeOfConduct
 
+Per-monitor framebuffers
+------------------------
+
+With the modesetting driver every monitor has its own framebuffer.
+There is no framebuffer that covers all monitors. Every toplevel window
+has its own pixmap and the X server composites the visible windows into
+each monitor's framebuffer on the GPU, only where something changed,
+and flips it in sync with the monitor so there's no tearing.
+
+A fullscreen window on any monitor is shown without copies: when it presents
+with Present (Vulkan and OpenGL do) its buffer is put on the monitor directly.
+HDR and variable refresh rate follow the window that is shown this way on each
+monitor.
+
+Since the X server is the compositor:
+
+- Windows with an alpha channel are transparent and `_NET_WM_WINDOW_OPACITY`
+  is supported, so you don't need a compositor such as picom.
+- The X server owns the `_NET_WM_CM_S<screen>` selection, so picom and similar
+  compositors refuse to start. Window managers with a built-in compositor,
+  such as KWin and xfwm4, run with their compositor disabled. Mutter based
+  window managers always composite and may refuse to start unless they are
+  started with `--replace`. A compositor that takes over the selection still
+  works: the X server shows its overlay window.
+
+This is enabled when the modesetting driver uses glamor. Set
+`Option "TearFree" "false"` in the Device section to go back to one shared
+framebuffer for all monitors.
+
+Limitations:
+
+- Drawing directly on the root window, other than its background, isn't
+  shown. Desktop wallpapers set with tools like `xsetroot` and `feh` work.
+- Reading the root window works with GetImage (screenshots, `xwd`, ffmpeg
+  x11grab), but not with CopyArea or Render.
+- Monitors on a secondary GPU (reverse PRIME) are composited into a buffer
+  shared with that GPU, so fullscreen windows on them are copied instead of
+  scanned out directly.
+- A software cursor is drawn by the X server and stops direct scanout on the
+  monitor it is on.
+
 HDR
 ---
 
@@ -72,9 +113,6 @@ the Device section of xorg.conf, for example in
 `SDRWhiteLevel` is the brightness in nits that SDR content, such as the
 desktop, is shown at in HDR mode. The default is 203.
 
-You also have to turn off your compositor to make HDR display at the moment
-and for proper multimonitor support.
-
 These options only set the starting values. Each output has RandR properties
 that can be changed while the X server runs:
 
@@ -97,8 +135,9 @@ Vulkan games and applications can output HDR through the X11 HDR Vulkan layer
 An application that does this itself sets the `hdr_output_metadata` window
 property (type CARDINAL, format 8) to a `struct hdr_output_metadata` from the
 kernel's drm_mode.h. It renders PQ content with BT.2020 primaries into a
-window with a 30-bit visual. The property is only used while the window covers
-the monitor and HDR is enabled on it.
+window with a 30-bit visual. The property is only used while HDR is enabled on
+the monitor and the window is shown on it directly (see Per-monitor
+framebuffers), which works on every monitor.
 
 Note that when installing this latest Xorg server version you also need to rebuild and install the latest versions of Xorg drivers from source, such as [xf86-input-libinput](https://github.com/dec05eba/xf86-input-libinput).
 

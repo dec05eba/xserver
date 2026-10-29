@@ -119,12 +119,13 @@ entries, if supported by the kernel. By default, GAMMA_LUT will be used for
 kms drivers which are known to be safe for use of GAMMA_LUT.
 .TP
 .BI "Option \*qTearFree\*q \*q" boolean \*q
-Enable tearing prevention using the hardware page flipping mechanism.
-It allocates two extra scanout buffers for each CRTC and utilizes damage
-tracking to minimize buffer copying and skip unnecessary flips when the
-screen's contents have not changed. It works on transformed screens too, such
-as rotated and scaled CRTCs. When PageFlip is enabled, fullscreen DRI
-applications will still have the discretion to not use tearing prevention.
+Give every CRTC its own scanout buffers instead of one framebuffer for the
+whole screen. The X server composites the visible windows into each CRTC's
+buffers, only where something changed, and flips them without tearing. It
+works on transformed screens too, such as rotated and scaled CRTCs. When
+PageFlip is enabled, a fullscreen window that presents with the Present
+extension is scanned out directly on its CRTC. Requires glamor and the
+Composite extension; when disabled all CRTCs scan out one shared framebuffer.
 .br
 The default is
 .B on.

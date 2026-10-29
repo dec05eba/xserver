@@ -218,7 +218,7 @@ DamageExtRegister(DrawablePtr pDrawable, DamagePtr pDamage, Bool report)
     DamageRegister(pDrawable, pDamage);
 
     if (report) {
-        RegionPtr pRegion = &((WindowPtr) pDrawable)->borderClip;
+        RegionPtr pRegion = WindowVisibleRegion((WindowPtr) pDrawable);
         RegionTranslate(pRegion, -pDrawable->x, -pDrawable->y);
         DamageReportDamage(pDamage, pRegion);
         RegionTranslate(pRegion, pDrawable->x, pDrawable->y);

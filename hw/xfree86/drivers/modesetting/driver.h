@@ -148,8 +148,13 @@ typedef struct _modesettingRec {
     Bool is_connector_vrr_capable;
     uint32_t connector_prop_id;
 
-    Bool hdr_dirty;
+    Bool output_mode_dirty;
     PostValidateTreeProcPtr PostValidateTree;
+
+    struct {
+        xf86EnableDisableFBAccessProc *EnableDisableFBAccess;
+        struct xorg_list sw_cursors;
+    } compositor;
 
     /* shadow API */
     struct {
@@ -262,6 +267,22 @@ ms_tearfree_dri_abort_all(xf86CrtcPtr crtc);
 
 Bool ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc);
 
+Bool ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
+                       PixmapPtr pixmap, Bool async);
+
+Bool ms_tearfree_window_flip(xf86CrtcPtr crtc, WindowPtr window, Bool async,
+                             void *event,
+                             ms_pageflip_handler_proc pageflip_handler,
+                             ms_pageflip_abort_proc pageflip_abort);
+
+Bool ms_tearfree_window_unflip(ScreenPtr screen, WindowPtr window, void *event,
+                               ms_pageflip_handler_proc pageflip_handler,
+                               ms_pageflip_abort_proc pageflip_abort);
+
+Bool ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap);
+
+Bool ms_compositor_direct_flip(xf86CrtcPtr crtc);
+
 #endif
 
 int ms_flush_drm_events(ScreenPtr screen);
@@ -269,12 +290,22 @@ void ms_drain_drm_events(ScreenPtr screen);
 Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
-Bool ms_pixmap_is_per_crtc_size(ScrnInfoPtr scrn, PixmapPtr pixmap);
-Bool ms_present_screen_flipping(ScrnInfoPtr scrn);
+
+void ms_compositor_screen_init(ScrnInfoPtr scrn);
+Bool ms_compositor_create_screen_resources(ScreenPtr screen);
+void ms_compositor_update_damages(ScreenPtr screen);
+void ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region);
+Bool ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty);
+void ms_compositor_set_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,
+                              CursorPtr cursor, int x, int y);
+void ms_compositor_move_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,
+                               CursorPtr cursor, int x, int y);
 
 Bool ms_hdr_screen_init(ScreenPtr screen);
 void ms_hdr_close_screen(ScreenPtr screen);
 void ms_hdr_update(ScreenPtr screen);
+const struct hdr_output_metadata *ms_hdr_scanout_metadata(WindowPtr window,
+                                                          BoxPtr box);
 void ms_hdr_disable(ScrnInfoPtr scrn);
 Bool ms_hdr_edid_supports_pq(const uint8_t *edid, size_t size);
 void ms_hdr_desktop_metadata(int white_level,

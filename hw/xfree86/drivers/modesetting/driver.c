@@ -55,6 +55,7 @@
 #include "xf86Crtc.h"
 #include "miscstruct.h"
 #include "dixstruct.h"
+#include "extinit.h"
 #include "xf86xv.h"
 #include <X11/extensions/Xv.h>
 #include <xorg-config.h>
@@ -667,41 +668,6 @@ dispatch_dirty_region(ScrnInfoPtr scrn, xf86CrtcPtr crtc,
 }
 
 static void
-ms_tearfree_update_damages(ScreenPtr pScreen)
-{
-    ScrnInfoPtr scrn = xf86ScreenToScrn(pScreen);
-    xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(scrn);
-    modesettingPtr ms = modesettingPTR(scrn);
-    RegionPtr dirty = DamageRegion(ms->damage);
-    int c, i;
-
-    if (RegionNil(dirty))
-        return;
-
-    for (c = 0; c < xf86_config->num_crtc; c++) {
-        xf86CrtcPtr crtc = xf86_config->crtc[c];
-        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-        drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-        RegionRec region;
-
-        /* Compute how much of the damage intersects with this CRTC */
-        RegionInit(&region, &crtc->bounds, 0);
-        RegionIntersect(&region, &region, dirty);
-
-        if (trf->buf[0].px) {
-            for (i = 0; i < ARRAY_SIZE(trf->buf); i++)
-                RegionUnion(&trf->buf[i].dmg, &trf->buf[i].dmg, &region);
-        } else {
-            /* Just notify the kernel of the damages if TearFree isn't used */
-            dispatch_damages(scrn, crtc, &region,
-                             pScreen->GetScreenPixmap(pScreen),
-                             NULL, ms->drmmode.fb_id, 0, 0);
-        }
-    }
-    DamageEmpty(ms->damage);
-}
-
-static void
 ms_tearfree_do_flips(ScreenPtr pScreen)
 {
 #ifdef HAVE_GBM
@@ -724,12 +690,18 @@ ms_tearfree_do_flips(ScreenPtr pScreen)
             continue;
         }
 
-        /* Skip if the last flip is still pending, a DRI client is flipping, or
-         * there isn't any damage on the front buffer.
-         */
+        /* Skip if the last flip is still pending or a DRI client is flipping */
         if (trf->flip_seq || ms->drmmode.dri2_flipping ||
-            ms_present_screen_flipping(scrn) ||
-            RegionNil(&trf->buf[trf->back_idx ^ 1].dmg))
+            ms->drmmode.present_flipping)
+            continue;
+
+        if (ms_compositor_direct_flip(crtc))
+            continue;
+
+        /* Skip if there isn't any damage on the front buffer and it's on
+         * screen already
+         */
+        if (RegionNil(&trf->buf[trf->back_idx ^ 1].dmg) && !trf->scanout.fb_id)
             continue;
 
         /* Flip. If it fails, notify the kernel of the front buffer damages */
@@ -822,7 +794,10 @@ redisplay_dirty(ScreenPtr screen, PixmapDirtyUpdatePtr dirty, int *timeout)
 
     PixmapRegionInit(&pixregion, dirty->secondary_dst);
     DamageRegionAppend(&dirty->secondary_dst->drawable, &pixregion);
-    PixmapSyncDirtyHelper(dirty);
+    if (modesettingPTR(xf86ScreenToScrn(screen))->drmmode.tearfree_enable)
+        ms_compositor_sync_dirty(dirty);
+    else
+        PixmapSyncDirtyHelper(dirty);
 
     if (!screen->isGPU) {
 #ifdef HAVE_GBM
@@ -909,7 +884,7 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
     if (pScreen->isGPU && !ms->drmmode.reverse_prime_offload_mode)
         dispatch_secondary_dirty(pScreen);
     else if (ms->drmmode.tearfree_enable)
-        ms_tearfree_update_damages(pScreen);
+        ms_compositor_update_damages(pScreen);
     else if (ms->dirty_enabled)
         dispatch_dirty(pScreen);
 
@@ -948,6 +923,8 @@ ms_vrr_property_update(WindowPtr window, Bool variable_refresh)
 
     if (ms->flip_window == window && ms->drmmode.present_flipping)
         ms_present_set_screen_vrr(scrn, variable_refresh);
+
+    ms->output_mode_dirty = TRUE;
 }
 
 /* Wrapper for xserver/dix/property.c:ProcChangeProperty */
@@ -1522,6 +1499,10 @@ PreInit(ScrnInfoPtr pScrn, int flags)
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
                    "Per-monitor framebuffer requires Glamor acceleration; "
                    "falling back to shared framebuffer.\n");
+    } else if (noCompositeExtension) {
+        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+                   "Per-monitor framebuffer requires the Composite "
+                   "extension; falling back to shared framebuffer.\n");
     } else if (ms->drmmode.pageflip &&
                /* Atomic modesetting implicitly enables universal planes */
                !ms->atomic_modeset &&
@@ -1830,37 +1811,22 @@ msStopFlippingPixmapTracking(DrawablePtr src,
 }
 
 static Bool
-CreateScreenResources(ScreenPtr pScreen)
+ms_init_shared_screen_pixmap(ScreenPtr pScreen)
 {
     ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
-    PixmapPtr rootPixmap;
-    Bool ret;
+    PixmapPtr rootPixmap = pScreen->GetScreenPixmap(pScreen);
     void *pixels = NULL;
     int err;
 
-    pScreen->CreateScreenResources = ms->createScreenResources;
-    ret = pScreen->CreateScreenResources(pScreen);
-    pScreen->CreateScreenResources = CreateScreenResources;
-
-    if (!drmmode_set_desired_modes(pScrn, &ms->drmmode, pScrn->is_gpu, FALSE))
-        return FALSE;
-
     if (!drmmode_glamor_handle_new_screen_pixmap(&ms->drmmode))
         return FALSE;
-
-    drmmode_uevent_init(pScrn, &ms->drmmode);
-
-    if (!ms->drmmode.sw_cursor)
-        drmmode_map_cursor_bos(pScrn, &ms->drmmode);
 
     if (!ms->drmmode.gbm) {
         pixels = drmmode_map_front_bo(&ms->drmmode);
         if (!pixels)
             return FALSE;
     }
-
-    rootPixmap = pScreen->GetScreenPixmap(pScreen);
 
     if (ms->drmmode.shadow_enable)
         pixels = ms->drmmode.shadow_fb;
@@ -1881,22 +1847,49 @@ CreateScreenResources(ScreenPtr pScreen)
     }
 
     err = drmModeDirtyFB(ms->fd, ms->drmmode.fb_id, NULL, 0);
+    if (err == -EINVAL || err == -ENOSYS)
+        return TRUE;
 
-    if ((err != -EINVAL && err != -ENOSYS) || ms->drmmode.tearfree_enable) {
-        ms->damage = DamageCreate(NULL, NULL, DamageReportNone, TRUE,
-                                  pScreen, rootPixmap);
-
-        if (ms->damage) {
-            DamageRegister(&rootPixmap->drawable, ms->damage);
-            ms->dirty_enabled = err != -EINVAL && err != -ENOSYS;
-            xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Damage tracking initialized\n");
-        }
-        else {
-            xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
-                       "Failed to create screen damage record\n");
-            return FALSE;
-        }
+    ms->damage = DamageCreate(NULL, NULL, DamageReportNone, TRUE,
+                              pScreen, rootPixmap);
+    if (!ms->damage) {
+        xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
+                   "Failed to create screen damage record\n");
+        return FALSE;
     }
+
+    DamageRegister(&rootPixmap->drawable, ms->damage);
+    ms->dirty_enabled = TRUE;
+    xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Damage tracking initialized\n");
+    return TRUE;
+}
+
+static Bool
+CreateScreenResources(ScreenPtr pScreen)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    modesettingPtr ms = modesettingPTR(pScrn);
+    Bool ret;
+
+    pScreen->CreateScreenResources = ms->createScreenResources;
+    ret = pScreen->CreateScreenResources(pScreen);
+    pScreen->CreateScreenResources = CreateScreenResources;
+
+    if (!drmmode_set_desired_modes(pScrn, &ms->drmmode, pScrn->is_gpu, FALSE))
+        return FALSE;
+
+    if (ms->drmmode.tearfree_enable) {
+        if (!ms_compositor_create_screen_resources(pScreen))
+            return FALSE;
+    }
+    else if (!ms_init_shared_screen_pixmap(pScreen)) {
+        return FALSE;
+    }
+
+    drmmode_uevent_init(pScrn, &ms->drmmode);
+
+    if (!ms->drmmode.sw_cursor)
+        drmmode_map_cursor_bos(pScrn, &ms->drmmode);
 
     if (dixPrivateKeyRegistered(rrPrivKey)) {
         rrScrPrivPtr pScrPriv = rrGetScrPriv(pScreen);
@@ -2153,8 +2146,9 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
     miDCInitialize(pScreen, xf86GetPointerScreenFuncs());
 
     /* If pageflip is enabled hook the screen's cursor-sprite (swcursor) funcs.
-     * So that we can disable page-flipping on fallback to a swcursor. */
-    if (ms->drmmode.pageflip) {
+     * So that we can disable page-flipping on fallback to a swcursor.
+     * Per-monitor framebuffers draw the swcursor themselves. */
+    if (ms->drmmode.pageflip || ms->drmmode.tearfree_enable) {
         miPointerScreenPtr PointPriv =
             dixLookupPrivate(&pScreen->devPrivates, miPointerScreenKey);
 
@@ -2167,6 +2161,9 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
         PointPriv->spriteFuncs = &drmmode_sprite_funcs;
     }
 
+    if (ms->drmmode.tearfree_enable)
+        ms_compositor_screen_init(pScrn);
+
     /* Need to extend HWcursor support to handle mask interleave */
     if (!ms->drmmode.sw_cursor)
         xf86_cursors_init(pScreen, ms->max_cursor_width, ms->max_cursor_height,
@@ -2178,7 +2175,8 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
      * later memory should be bound when allocating, e.g rotate_mem */
     pScrn->vtSema = TRUE;
 
-    if (serverGeneration == 1 && bgNoneRoot && ms->drmmode.glamor) {
+    if (serverGeneration == 1 && bgNoneRoot && ms->drmmode.glamor &&
+        !ms->drmmode.tearfree_enable) {
         ms->CreateWindow = pScreen->CreateWindow;
         pScreen->CreateWindow = CreateWindow_oneshot;
     }
@@ -2339,7 +2337,7 @@ EnterVT(ScrnInfoPtr pScrn)
     modesettingPtr ms = modesettingPTR(pScrn);
 
     pScrn->vtSema = TRUE;
-    ms->hdr_dirty = TRUE;
+    ms->output_mode_dirty = TRUE;
 
     SetMaster(pScrn);
 

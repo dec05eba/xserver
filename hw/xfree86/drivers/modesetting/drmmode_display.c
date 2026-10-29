@@ -656,9 +656,8 @@ drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
 
     *fb_id = 0;
 
-    if (drmmode_crtc->present_per_crtc_flipping &&
-        drmmode_crtc->present_flip_fb_id) {
-        *fb_id = drmmode_crtc->present_flip_fb_id;
+    if (trf->scanout.fb_id) {
+        *fb_id = trf->scanout.fb_id;
         *x = *y = 0;
     }
     else if (drmmode_crtc->prime_pixmap) {
@@ -686,6 +685,9 @@ drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
         *x = crtc->x;
         *y = crtc->y;
     }
+
+    if (*fb_id == 0 && drmmode->tearfree_enable)
+        return FALSE;
 
     if (*fb_id == 0) {
         ret = drmmode_bo_import(drmmode, &drmmode->front_bo,
@@ -1660,20 +1662,13 @@ drmmode_copy_fb(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
 }
 
 void
-drmmode_copy_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg, Bool empty)
+drmmode_compose_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg,
+                       Bool empty)
 {
 #ifdef HAVE_GBM
     ScreenPtr pScreen = xf86ScrnToScreen(crtc->scrn);
-    DrawableRec *src;
 
-    /* Copy the screen's pixmap into the destination pixmap */
-    if (crtc->rotatedPixmap) {
-        src = &crtc->rotatedPixmap->drawable;
-        xf86RotateCrtcRedisplay(crtc, dst, src, dmg, FALSE);
-    } else {
-        src = &pScreen->GetScreenPixmap(pScreen)->drawable;
-        PixmapDirtyCopyArea(dst, src, 0, 0, -crtc->x, -crtc->y, dmg);
-    }
+    ms_compositor_paint(crtc, dst, dmg);
 
     /* Reset the damages if requested */
     if (empty)
@@ -1705,6 +1700,18 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
             RegionUninit(&trf->buf[i].dmg);
         }
     }
+
+    if (trf->untransformed) {
+        dixDestroyPixmap(trf->untransformed, 0);
+        trf->untransformed = NULL;
+    }
+
+    if (trf->scanout.fb_id)
+        drmModeRmFB(drmmode_crtc->drmmode->fd, trf->scanout.fb_id);
+    trf->scanout.fb_id = 0;
+    trf->scanout.window = NULL;
+    trf->scanout.pixmap = NULL;
+    trf->scanout.output_mode_dirty = TRUE;
 }
 
 static PixmapPtr
@@ -1738,8 +1745,8 @@ drmmode_create_tearfree_shadow(xf86CrtcPtr crtc)
     }
 
     /* Initialize the front buffer with the current scanout */
-    drmmode_copy_damage(crtc, trf->buf[trf->back_idx ^ 1].px,
-                        &trf->buf[trf->back_idx ^ 1].dmg, TRUE);
+    drmmode_compose_damage(crtc, trf->buf[trf->back_idx ^ 1].px,
+                           &trf->buf[trf->back_idx ^ 1].dmg, TRUE);
     return TRUE;
 }
 
@@ -1840,7 +1847,7 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
         if (can_test)
             drmmode_crtc_set_mode(crtc, FALSE);
         ms->pending_modeset = FALSE;
-        ms->hdr_dirty = TRUE;
+        ms->output_mode_dirty = TRUE;
         drmmode_crtc->hdr_failed = FALSE;
     }
 
@@ -2688,6 +2695,8 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     crtc = xf86CrtcCreate(pScrn, &drmmode_crtc_funcs);
     if (crtc == NULL)
         return 0;
+    if (drmmode->tearfree_enable)
+        crtc->driverIsPerformingTransform = XF86DriverTransformOutput;
     drmmode_crtc = XNFcallocarray(1, sizeof(drmmode_crtc_private_rec));
     crtc->driver_private = drmmode_crtc;
     drmmode_crtc->mode_crtc =
@@ -3019,7 +3028,7 @@ drmmode_output_update_hdr_capable(xf86OutputPtr output)
         return;
 
     drmmode_output->hdr_pq_supported = capable;
-    modesettingPTR(output->scrn)->hdr_dirty = TRUE;
+    modesettingPTR(output->scrn)->output_mode_dirty = TRUE;
 
     if (drmmode_output->hdr_capable_atom)
         RRChangeOutputProperty(output->randr_output,
@@ -3359,7 +3368,7 @@ drmmode_property_value_get_int(RRPropertyValuePtr value, INT32 min, INT32 max,
 static void
 drmmode_output_hdr_changed(xf86OutputPtr output)
 {
-    modesettingPTR(output->scrn)->hdr_dirty = TRUE;
+    modesettingPTR(output->scrn)->output_mode_dirty = TRUE;
 
     if (output->crtc) {
         drmmode_crtc_private_ptr drmmode_crtc = output->crtc->driver_private;
@@ -3897,6 +3906,13 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
 
     if (scrn->virtualX == width && scrn->virtualY == height)
         return TRUE;
+
+    if (drmmode->tearfree_enable) {
+        scrn->virtualX = width;
+        scrn->virtualY = height;
+        scrn->displayWidth = width;
+        return TRUE;
+    }
 
     xf86DrvMsg(scrn->scrnIndex, X_INFO,
                "Allocate new frame buffer %dx%d stride\n", width, height);
@@ -4699,14 +4715,16 @@ drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
     width = pScrn->virtualX;
     height = pScrn->virtualY;
 
-    if (!drmmode_create_bo(drmmode, &drmmode->front_bo, width, height, bpp,
+    if (!drmmode->tearfree_enable) {
+        if (!drmmode_create_bo(drmmode, &drmmode->front_bo, width, height, bpp,
 #ifdef HAVE_GBM_BO_USE_FRONT_RENDERING
-                           GBM_BO_USE_FRONT_RENDERING))
+                               GBM_BO_USE_FRONT_RENDERING))
 #else
-                           0))
+                               0))
 #endif
-        return FALSE;
-    pScrn->displayWidth = drmmode_bo_get_pitch(&drmmode->front_bo) / cpp;
+            return FALSE;
+        pScrn->displayWidth = drmmode_bo_get_pitch(&drmmode->front_bo) / cpp;
+    }
 
     width = ms->max_cursor_width;
     height = ms->max_cursor_height;
@@ -5290,7 +5308,10 @@ static void drmmode_sprite_set_cursor(DeviceIntPtr pDev, ScreenPtr pScreen,
     sprite_priv->cursor = pCursor;
     drmmode_sprite_do_set_cursor(sprite_priv, scrn, x, y);
 
-    ms->SpriteFuncs->SetCursor(pDev, pScreen, pCursor, x, y);
+    if (ms->drmmode.tearfree_enable)
+        ms_compositor_set_cursor(scrn, &sprite_priv->sw_cursor, pCursor, x, y);
+    else
+        ms->SpriteFuncs->SetCursor(pDev, pScreen, pCursor, x, y);
 }
 
 static void drmmode_sprite_move_cursor(DeviceIntPtr pDev, ScreenPtr pScreen,
@@ -5302,7 +5323,11 @@ static void drmmode_sprite_move_cursor(DeviceIntPtr pDev, ScreenPtr pScreen,
 
     drmmode_sprite_do_set_cursor(sprite_priv, scrn, x, y);
 
-    ms->SpriteFuncs->MoveCursor(pDev, pScreen, x, y);
+    if (ms->drmmode.tearfree_enable)
+        ms_compositor_move_cursor(scrn, &sprite_priv->sw_cursor,
+                                  sprite_priv->cursor, x, y);
+    else
+        ms->SpriteFuncs->MoveCursor(pDev, pScreen, x, y);
 }
 
 static Bool drmmode_sprite_realize_realize_cursor(DeviceIntPtr pDev,
@@ -5339,6 +5364,10 @@ static void drmmode_sprite_device_cursor_cleanup(DeviceIntPtr pDev,
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(scrn);
+
+    if (ms->drmmode.tearfree_enable && pDev->spriteInfo->spriteOwner)
+        ms_compositor_set_cursor(scrn, &msGetSpritePriv(pDev, ms, pScreen)->sw_cursor,
+                                 NULL, 0, 0);
 
     ms->SpriteFuncs->DeviceCursorCleanup(pDev, pScreen);
 }

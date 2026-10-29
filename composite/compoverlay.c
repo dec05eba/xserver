@@ -155,6 +155,9 @@ compCreateOverlayWindow(ScreenPtr pScreen)
     if (!AddResource(pWin->drawable.id, X11_RESTYPE_WINDOW, (void *) pWin))
         return FALSE;
 
+    if (cs->server)
+        compServerUnredirectManual(pWin);
+
     MapWindow(pWin, serverClient);
 
     return TRUE;

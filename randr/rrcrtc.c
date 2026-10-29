@@ -621,16 +621,14 @@ rrCheckPixmapBounding(ScreenPtr pScreen,
                       RRCrtcPtr rr_crtc, Rotation rotation,
                       int x, int y, int w, int h)
 {
-    RegionRec root_pixmap_region, total_region, new_crtc_region;
+    RegionRec total_region, new_crtc_region;
     int c;
     BoxRec newbox;
     BoxPtr newsize;
     ScreenPtr secondary;
     int new_width, new_height;
-    PixmapPtr screen_pixmap = pScreen->GetScreenPixmap(pScreen);
     rrScrPriv(pScreen);
 
-    PixmapRegionInit(&root_pixmap_region, screen_pixmap);
     RegionInit(&total_region, NULL, 0);
 
     /* have to iterate all the crtcs of the attached gpu primarys
@@ -693,14 +691,14 @@ rrCheckPixmapBounding(ScreenPtr pScreen,
     new_width = newsize->x2;
     new_height = newsize->y2;
 
-    if (new_width < screen_pixmap->drawable.width)
-        new_width = screen_pixmap->drawable.width;
+    if (new_width < pScreen->width)
+        new_width = pScreen->width;
 
-    if (new_height < screen_pixmap->drawable.height)
-        new_height = screen_pixmap->drawable.height;
+    if (new_height < pScreen->height)
+        new_height = pScreen->height;
 
-    if (new_width <= screen_pixmap->drawable.width &&
-        new_height <= screen_pixmap->drawable.height) {
+    if (new_width <= pScreen->width &&
+        new_height <= pScreen->height) {
     } else {
         pScrPriv->rrScreenSetSize(pScreen, new_width, new_height, 0, 0);
     }

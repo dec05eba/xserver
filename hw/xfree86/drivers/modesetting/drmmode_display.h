@@ -202,7 +202,20 @@ typedef struct {
 } drmmode_shadow_fb_rec, *drmmode_shadow_fb_ptr;
 
 typedef struct {
+    WindowPtr window;
+    PixmapPtr pixmap;
+    PixmapPtr failed_pixmap;
+    uint32_t fb_id;
+    uint32_t flip_fb_id;
+    Bool async;
+    WindowPtr output_mode_window;
+    Bool output_mode_dirty;
+} drmmode_scanout_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
+    PixmapPtr untransformed;
+    drmmode_scanout_rec scanout;
     struct xorg_list dri_flip_list;
     uint32_t back_idx;
     uint32_t flip_seq;
@@ -258,10 +271,6 @@ typedef struct {
 
     Bool vrr_enabled;
     Bool use_gamma_lut;
-
-    Bool present_per_crtc_flipping;
-    uint32_t present_flip_fb_id;
-    WindowPtr present_flip_window;
 
     enum drmmode_hdr_mode hdr_mode;
     Bool hdr_failed;
@@ -326,9 +335,17 @@ typedef struct _msPixmapPriv {
 
 #define msGetPixmapPriv(drmmode, p) ((msPixmapPrivPtr)dixGetPrivateAddr(&(p)->devPrivates, &(drmmode)->pixmapPrivateKeyRec))
 
+typedef struct {
+    struct xorg_list entry;
+    Bool listed;
+    PicturePtr picture;
+    BoxRec box;
+} ms_sw_cursor_rec, *ms_sw_cursor_ptr;
+
 typedef struct _msSpritePriv {
     CursorPtr cursor;
     Bool sprite_visible;
+    ms_sw_cursor_rec sw_cursor;
 } msSpritePrivRec, *msSpritePrivPtr;
 
 extern miPointerSpriteFuncRec drmmode_sprite_funcs;
@@ -373,8 +390,8 @@ void drmmode_get_default_bpp(ScrnInfoPtr pScrn, drmmode_ptr drmmmode,
                              int *depth, int *bpp);
 
 void drmmode_copy_fb(ScrnInfoPtr pScrn, drmmode_ptr drmmode);
-void drmmode_copy_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr damage,
-                         Bool empty);
+void drmmode_compose_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr damage,
+                            Bool empty);
 
 int drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                       uint32_t flags, void *data);

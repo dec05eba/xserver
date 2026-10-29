@@ -125,9 +125,15 @@ typedef Bool (*present_wnmd_flip_ptr) (WindowPtr window,
 typedef void (*present_unflip_ptr) (ScreenPtr screen,
                                     uint64_t event_id);
 
-typedef void (*present_unflip_crtc_ptr) (ScreenPtr screen,
-                                         RRCrtcPtr crtc,
-                                         uint64_t event_id);
+typedef Bool (*present_window_flip_ptr) (RRCrtcPtr crtc,
+                                         uint64_t event_id,
+                                         WindowPtr toplevel,
+                                         PixmapPtr pixmap,
+                                         Bool sync_flip);
+
+typedef void (*present_window_unflip_ptr) (ScreenPtr screen,
+                                           WindowPtr toplevel,
+                                           uint64_t event_id);
 
 /* Doing flips has been discontinued.
  *
@@ -150,7 +156,8 @@ typedef struct present_screen_info {
     present_flip_ptr                    flip;
     present_unflip_ptr                  unflip;
     present_check_flip2_ptr             check_flip2;
-    present_unflip_crtc_ptr             unflip_crtc;
+    present_window_flip_ptr             window_flip;
+    present_window_unflip_ptr           window_unflip;
 
 } present_screen_info_rec, *present_screen_info_ptr;
 
@@ -166,6 +173,9 @@ present_screen_init(ScreenPtr screen, present_screen_info_ptr info);
 
 extern _X_EXPORT void
 present_check_flips(WindowPtr window);
+
+extern _X_EXPORT PixmapPtr
+present_window_flip_pixmap(WindowPtr toplevel);
 
 typedef void (*present_complete_notify_proc)(WindowPtr window,
                                              CARD8 kind,

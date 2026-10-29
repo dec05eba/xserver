@@ -94,20 +94,33 @@ ms_hdr_update(ScreenPtr screen)
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
     int i;
 
-    if (!ms->hdr_dirty || !scrn->vtSema || !screen->root)
+    if (!ms->output_mode_dirty || !scrn->vtSema || !screen->root)
         return;
 
-    ms->hdr_dirty = FALSE;
+    ms->output_mode_dirty = FALSE;
 
     for (i = 0; i < config->num_crtc; i++) {
         xf86CrtcPtr crtc = config->crtc[i];
+        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
         if (!crtc->enabled)
             continue;
 
-        drmmode_crtc_set_hdr_output_metadata(crtc,
-            ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds));
+        if (ms->drmmode.tearfree_enable)
+            drmmode_crtc->tearfree.scanout.output_mode_dirty = TRUE;
+        else
+            drmmode_crtc_set_hdr_output_metadata(crtc,
+                ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds));
     }
+}
+
+const struct hdr_output_metadata *
+ms_hdr_scanout_metadata(WindowPtr window, BoxPtr box)
+{
+    const struct hdr_output_metadata *metadata =
+        ms_window_get_hdr_output_metadata(window);
+
+    return metadata ? metadata : ms_fullscreen_hdr_output_metadata(window, box);
 }
 
 void
@@ -281,7 +294,7 @@ ms_hdr_post_validate_tree(WindowPtr parent, WindowPtr child, VTKind kind)
     ScreenPtr screen = (parent ? parent : child)->drawable.pScreen;
     modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
 
-    ms->hdr_dirty = TRUE;
+    ms->output_mode_dirty = TRUE;
 
     screen->PostValidateTree = ms->PostValidateTree;
     if (screen->PostValidateTree)
@@ -298,7 +311,7 @@ ms_hdr_property_state(CallbackListPtr *pcbl, void *closure, void *data)
 
     if (rec->prop->propertyName == hdr_output_metadata_atom &&
         rec->win->drawable.pScreen == screen)
-        modesettingPTR(xf86ScreenToScrn(screen))->hdr_dirty = TRUE;
+        modesettingPTR(xf86ScreenToScrn(screen))->output_mode_dirty = TRUE;
 }
 
 Bool

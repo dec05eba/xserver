@@ -195,6 +195,8 @@ extern _X_EXPORT Bool PointInWindowIsVisible(WindowPtr /*pWin */ ,
 
 extern _X_EXPORT RegionPtr NotClippedByChildren(WindowPtr /*pWin */ );
 
+extern _X_EXPORT RegionPtr WindowVisibleRegion(WindowPtr pWin);
+
 extern _X_EXPORT void SendVisibilityNotify(WindowPtr /*pWin */ );
 
 extern _X_EXPORT int dixSaveScreens(ClientPtr client, int on, int mode);

@@ -163,6 +163,9 @@ typedef void (*present_priv_flip_destroy_ptr)(ScreenPtr screen);
 
 typedef struct present_flip_slot_rec {
     struct xorg_list    entry;
+    Bool                window_flip;
+    WindowPtr           toplevel;
+    PixmapPtr           window_pixmap;
     RRCrtcPtr           crtc;
     present_vblank_ptr  flip_pending;
     uint64_t            unflip_event_id;

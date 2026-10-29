@@ -655,7 +655,7 @@ ProcShmGetImage(ClientPtr client)
             return BadMatch;
         visual = wVisual(((WindowPtr) pDraw));
         if (pDraw->type == DRAWABLE_WINDOW)
-            pVisibleRegion = &((WindowPtr) pDraw)->borderClip;
+            pVisibleRegion = WindowVisibleRegion((WindowPtr) pDraw);
         pDraw->pScreen->SourceValidate(pDraw, stuff->x, stuff->y,
                                        stuff->width, stuff->height,
                                        IncludeInferiors);

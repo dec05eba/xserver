@@ -3012,6 +3012,16 @@ NotClippedByChildren(WindowPtr pWin)
     return pReg;
 }
 
+RegionPtr
+WindowVisibleRegion(WindowPtr pWin)
+{
+#ifdef COMPOSITE
+    if (CompositeIsServerRoot(pWin))
+        return &pWin->winSize;
+#endif
+    return &pWin->borderClip;
+}
+
 void
 SendVisibilityNotify(WindowPtr pWin)
 {

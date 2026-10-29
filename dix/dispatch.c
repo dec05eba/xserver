@@ -127,6 +127,9 @@ Equipment Corporation.
 #include "xkbsrv.h"
 #include "client.h"
 #include "xfixesint.h"
+#ifdef COMPOSITE
+#include "compositeext.h"
+#endif
 
 // temporary workaround for win32/mingw32 name clash
 #undef CreateWindow
@@ -2136,6 +2139,16 @@ ProcPutImage(ClientPtr client)
     return Success;
 }
 
+static Bool
+WindowImageIsInPixmap(WindowPtr pWin)
+{
+#ifdef COMPOSITE
+    if (CompositeIsServerRoot(pWin))
+        return FALSE;
+#endif
+    return pWin->drawable.pScreen->GetWindowPixmap != NULL;
+}
+
 static int
 DoGetImage(ClientPtr client, int format, Drawable drawable,
            int x, int y, int width, int height,
@@ -2185,7 +2198,7 @@ DoGetImage(ClientPtr client, int format, Drawable drawable,
         relx += pDraw->x;
         rely += pDraw->y;
 
-        if (pDraw->pScreen->GetWindowPixmap) {
+        if (WindowImageIsInPixmap(pWin)) {
             PixmapPtr pPix = (*pDraw->pScreen->GetWindowPixmap) (pWin);
 
             pBoundingDraw = &pPix->drawable;
@@ -2267,7 +2280,7 @@ DoGetImage(ClientPtr client, int format, Drawable drawable,
     WriteReplyToClient(client, sizeof(xGetImageReply), &xgi);
 
     if (pDraw->type == DRAWABLE_WINDOW) {
-        pVisibleRegion = &((WindowPtr) pDraw)->borderClip;
+        pVisibleRegion = WindowVisibleRegion((WindowPtr) pDraw);
         pDraw->pScreen->SourceValidate(pDraw, x, y, width, height,
                                        IncludeInferiors);
     }

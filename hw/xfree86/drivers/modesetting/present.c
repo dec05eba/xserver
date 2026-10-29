@@ -247,6 +247,18 @@ ms_present_flip_abort(modesettingPtr ms, void *data)
     free(event);
 }
 
+static Bool
+ms_present_format_supported(ScreenPtr screen, PixmapPtr pixmap,
+                            PresentFlipReason *reason)
+{
+    if (ms_pixmap_scanout_format_supported(screen, pixmap))
+        return TRUE;
+
+    if (reason)
+        *reason = PRESENT_FLIP_REASON_BUFFER_FORMAT;
+    return FALSE;
+}
+
 /*
  * Test to see if page flipping is possible on the target crtc
  *
@@ -267,7 +279,6 @@ ms_present_check_unflip(RRCrtcPtr crtc,
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
     int num_crtcs_on = 0;
     int i;
-    struct gbm_bo *gbm;
 
     if (!ms->drmmode.pageflip)
         return FALSE;
@@ -297,37 +308,49 @@ ms_present_check_unflip(RRCrtcPtr crtc,
      * Check stride, can't change that reliably on flip on some drivers, unless
      * the kms driver is atomic_modeset_capable.
      */
-    if (!ms->atomic_modeset_capable &&
+    if (!ms->atomic_modeset_capable && !ms->drmmode.tearfree_enable &&
         pixmap->devKind != drmmode_bo_get_pitch(&ms->drmmode.front_bo))
         return FALSE;
 
     if (!ms->drmmode.glamor)
         return FALSE;
 
-#ifdef GBM_BO_WITH_MODIFIERS
-    /* Check if buffer format/modifier is supported by all active CRTCs */
-    gbm = ms->glamor.gbm_bo_from_pixmap(screen, pixmap);
-    if (gbm) {
-        uint32_t format;
-        uint64_t modifier;
-
-        format = gbm_bo_get_format(gbm);
-        modifier = gbm_bo_get_modifier(gbm);
-        gbm_bo_destroy(gbm);
-
-        if (!drmmode_is_format_supported(scrn, format, modifier)) {
-            if (reason)
-                *reason = PRESENT_FLIP_REASON_BUFFER_FORMAT;
-            return FALSE;
-        }
-    }
-#endif
+    if (!ms_present_format_supported(screen, pixmap, reason))
+        return FALSE;
 
     /* Make sure there's a bo we can get to */
     /* XXX: actually do this.  also...is it sufficient?
      * if (!glamor_get_pixmap_private(pixmap))
      *     return FALSE;
      */
+
+    return TRUE;
+}
+
+static Bool
+ms_present_window_covers_crtc(WindowPtr window, xf86CrtcPtr crtc)
+{
+    return !crtc->transform_in_use &&
+        window->drawable.x == crtc->bounds.x1 &&
+        window->drawable.y == crtc->bounds.y1 &&
+        window->drawable.width == crtc->bounds.x2 - crtc->bounds.x1 &&
+        window->drawable.height == crtc->bounds.y2 - crtc->bounds.y1;
+}
+
+static Bool
+ms_present_check_window_flip(RRCrtcPtr crtc,
+                             WindowPtr window,
+                             PixmapPtr pixmap,
+                             PresentFlipReason *reason)
+{
+    xf86CrtcPtr xf86_crtc = crtc->devPrivate;
+
+    if (!ms_tearfree_is_active_on_crtc(xf86_crtc))
+        return FALSE;
+
+    if (ms_present_window_covers_crtc(window, xf86_crtc) &&
+        !ms_present_format_supported(window->drawable.pScreen, pixmap, reason))
+        return FALSE;
 
     return TRUE;
 }
@@ -346,6 +369,9 @@ ms_present_check_flip(RRCrtcPtr crtc,
     if (reason)
         *reason = PRESENT_FLIP_REASON_UNKNOWN;
 
+    if (ms->drmmode.tearfree_enable)
+        return ms_present_check_window_flip(crtc, window, pixmap, reason);
+
     if (ms->drmmode.sprites_visible > 0)
         goto no_flip;
 
@@ -356,11 +382,6 @@ ms_present_check_flip(RRCrtcPtr crtc,
         goto no_flip;
 
     ms->flip_window = window;
-    if (crtc && ms_pixmap_is_per_crtc_size(scrn, pixmap)) {
-        xf86CrtcPtr xf86_crtc = crtc->devPrivate;
-        drmmode_crtc_private_ptr drmmode_crtc = xf86_crtc->driver_private;
-        drmmode_crtc->present_flip_window = window;
-    }
 
     return TRUE;
 
@@ -422,13 +443,9 @@ ms_present_flip(RRCrtcPtr crtc,
                               ms_present_flip_handler, ms_present_flip_abort,
                               "Present-TearFree-flip");
 
-    if (ms->vrr_support &&
-          ms_window_has_variable_refresh(ms, ms->flip_window)) {
-        if (ms_pixmap_is_per_crtc_size(scrn, pixmap))
-            drmmode_crtc_set_vrr(xf86_crtc, TRUE);
-        else if (ms->is_connector_vrr_capable)
-            ms_present_set_screen_vrr(scrn, TRUE);
-    }
+    if (ms->vrr_support && ms->is_connector_vrr_capable &&
+        ms_window_has_variable_refresh(ms, ms->flip_window))
+        ms_present_set_screen_vrr(scrn, TRUE);
 
     ret = ms_do_pageflip(screen, pixmap, event, xf86_crtc, !sync_flip,
                          ms_present_flip_handler, ms_present_flip_abort,
@@ -439,70 +456,11 @@ ms_present_flip(RRCrtcPtr crtc,
     return ret;
 }
 
-static xf86CrtcPtr
-ms_find_per_crtc_flip(ScrnInfoPtr scrn)
-{
-    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
-    int i;
-
-    for (i = 0; i < config->num_crtc; i++) {
-        xf86CrtcPtr crtc = config->crtc[i];
-        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-
-        if (drmmode_crtc->present_per_crtc_flipping)
-            return crtc;
-    }
-    return NULL;
-}
-
-Bool
-ms_present_screen_flipping(ScrnInfoPtr scrn)
-{
-    modesettingPtr ms = modesettingPTR(scrn);
-
-    return ms->drmmode.present_flipping && !ms_find_per_crtc_flip(scrn);
-}
-
-static void
-ms_unflip_per_crtc(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-
-    /* Has to be cleared before set_mode_major so it scans out TearFree again */
-    drmmode_crtc->present_per_crtc_flipping = FALSE;
-    drmmode_crtc->present_flip_window = NULL;
-    drmmode_crtc_set_vrr(crtc, FALSE);
-
-    if (drmmode_crtc->dpms_mode == DPMSModeOn)
-        crtc->funcs->set_mode_major(crtc, &crtc->mode, crtc->rotation,
-                                    crtc->x, crtc->y);
-    else
-        drmmode_crtc->need_modeset = TRUE;
-
-    if (drmmode_crtc->present_flip_fb_id) {
-        drmModeRmFB(drmmode_crtc->drmmode->fd,
-                    drmmode_crtc->present_flip_fb_id);
-        drmmode_crtc->present_flip_fb_id = 0;
-    }
-}
-
-static void
-ms_present_unflip_per_crtc(ScrnInfoPtr scrn, xf86CrtcPtr crtc,
-                           uint64_t event_id)
-{
-    modesettingPtr ms = modesettingPTR(scrn);
-
-    ms_unflip_per_crtc(crtc);
-    if (!ms_find_per_crtc_flip(scrn))
-        ms->drmmode.present_flipping = FALSE;
-    present_event_notify(event_id, 0, 0);
-}
-
 /*
  * Queue a flip back to the normal frame buffer
  */
 static void
-ms_present_unflip_screen(ScreenPtr screen, uint64_t event_id)
+ms_present_unflip(ScreenPtr screen, uint64_t event_id)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     modesettingPtr ms = modesettingPTR(scrn);
@@ -553,33 +511,41 @@ ms_present_unflip_screen(ScreenPtr screen, uint64_t event_id)
     present_event_notify(event_id, 0, 0);
 }
 
-static void
-ms_present_unflip(ScreenPtr screen, uint64_t event_id)
+static Bool
+ms_present_window_flip(RRCrtcPtr crtc,
+                       uint64_t event_id,
+                       WindowPtr toplevel,
+                       PixmapPtr pixmap,
+                       Bool sync_flip)
 {
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
-    xf86CrtcPtr per_crtc_flip = ms_find_per_crtc_flip(scrn);
+    struct ms_present_vblank_event *event;
 
-    if (per_crtc_flip)
-        ms_present_unflip_per_crtc(scrn, per_crtc_flip, event_id);
-    else
-        ms_present_unflip_screen(screen, event_id);
+    event = calloc(1, sizeof(struct ms_present_vblank_event));
+    if (!event)
+        return FALSE;
+
+    event->event_id = event_id;
+    return ms_tearfree_window_flip(crtc->devPrivate, toplevel, !sync_flip,
+                                   event, ms_present_flip_handler,
+                                   ms_present_flip_abort);
 }
 
 static void
-ms_present_unflip_crtc(ScreenPtr screen, RRCrtcPtr rrcrtc, uint64_t event_id)
+ms_present_window_unflip(ScreenPtr screen, WindowPtr toplevel,
+                         uint64_t event_id)
 {
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
-    modesettingPtr ms = modesettingPTR(scrn);
-    xf86CrtcPtr xf86_crtc = rrcrtc ? rrcrtc->devPrivate : NULL;
-    drmmode_crtc_private_ptr drmmode_crtc =
-        xf86_crtc ? xf86_crtc->driver_private : NULL;
+    struct ms_present_vblank_event *event;
 
-    if (drmmode_crtc && drmmode_crtc->present_per_crtc_flipping)
-        ms_present_unflip_per_crtc(scrn, xf86_crtc, event_id);
-    else if (ms->drmmode.present_flipping && !ms_find_per_crtc_flip(scrn))
-        ms_present_unflip_screen(screen, event_id);
-    else
-        present_event_notify(event_id, 0, 0);
+    event = calloc(1, sizeof(struct ms_present_vblank_event));
+    if (event) {
+        event->event_id = event_id;
+        if (ms_tearfree_window_unflip(screen, toplevel, event,
+                                      ms_present_flip_handler,
+                                      ms_present_flip_abort))
+            return;
+    }
+
+    present_event_notify(event_id, 0, 0);
 }
 #endif
 
@@ -598,7 +564,8 @@ static present_screen_info_rec ms_present_screen_info = {
     .check_flip2 = ms_present_check_flip,
     .flip = ms_present_flip,
     .unflip = ms_present_unflip,
-    .unflip_crtc = ms_present_unflip_crtc,
+    .window_flip = ms_present_window_flip,
+    .window_unflip = ms_present_window_unflip,
 #endif
 };
 

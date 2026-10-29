@@ -30,6 +30,7 @@
 
 #include "misc.h"
 #include "scrnintstr.h"
+#include "picture.h"
 
 extern _X_EXPORT Bool CompositeRegisterAlternateVisuals(ScreenPtr pScreen,
                                                         VisualID * vids,
@@ -44,5 +45,22 @@ extern _X_EXPORT Bool compIsAlternateVisual(ScreenPtr pScreen, XID visual);
 Bool CompositeIsImplicitRedirectException(ScreenPtr pScreen,
                                           XID parentVisual, XID winVisual);
 extern _X_EXPORT RESTYPE CompositeClientWindowType;
+
+extern _X_EXPORT Bool CompositeServerInit(ScreenPtr pScreen);
+
+extern _X_EXPORT Bool CompositeServerActive(ScreenPtr pScreen);
+
+extern _X_EXPORT Bool CompositeIsServerRoot(WindowPtr pWin);
+
+extern _X_EXPORT Bool CompositeIsServerToplevel(WindowPtr pWin);
+
+extern _X_EXPORT void CompositeServerFlush(ScreenPtr pScreen,
+                                           RegionPtr pDamage);
+
+extern _X_EXPORT void CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst,
+                                           int x, int y, RegionPtr pRegion);
+
+extern _X_EXPORT WindowPtr CompositeServerScanoutWindow(ScreenPtr pScreen,
+                                                        BoxPtr pBox);
 
 #endif                          /* _COMPOSITEEXT_H_ */

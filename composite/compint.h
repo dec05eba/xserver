@@ -70,6 +70,7 @@
 #include "damage.h"
 #include "damageextint.h"
 #include "xfixes.h"
+#include "list.h"
 #include <X11/extensions/compositeproto.h>
 #include "compositeext.h"
 #include <assert.h>
@@ -124,6 +125,23 @@ typedef struct _CompImplicitRedirectException {
     XID winVisual;
 } CompImplicitRedirectException;
 
+typedef struct _CompServerWindow {
+    struct xorg_list entry;
+    WindowPtr pWin;
+    WindowPtr pAbove;
+    RegionRec painted;
+    Bool seen;
+} CompServerWindowRec, *CompServerWindowPtr;
+
+typedef struct _CompServer {
+    RegionRec damage;
+    struct xorg_list windows;
+    Atom opacityAtom;
+    Bool cmSelectionClaimed;
+    GetImageProcPtr GetImage;
+    ClearToBackgroundProcPtr ClearToBackground;
+} CompServerRec, *CompServerPtr;
+
 typedef struct _CompScreen {
     PositionWindowProcPtr PositionWindow;
     CopyWindowProcPtr CopyWindow;
@@ -169,6 +187,8 @@ typedef struct _CompScreen {
     CompOverlayClientPtr pOverlayClients;
 
     SourceValidateProcPtr SourceValidate;
+
+    CompServerPtr server;
 } CompScreenRec, *CompScreenPtr;
 
 extern DevPrivateKeyRec CompScreenPrivateKeyRec;
@@ -183,12 +203,18 @@ extern DevPrivateKeyRec CompSubwindowsPrivateKeyRec;
 
 #define CompSubwindowsPrivateKey (&CompSubwindowsPrivateKeyRec)
 
+extern DevPrivateKeyRec CompServerWindowPrivateKeyRec;
+
+#define CompServerWindowPrivateKey (&CompServerWindowPrivateKeyRec)
+
 #define GetCompScreen(s) ((CompScreenPtr) \
     dixLookupPrivate(&(s)->devPrivates, CompScreenPrivateKey))
 #define GetCompWindow(w) ((CompWindowPtr) \
     dixLookupPrivate(&(w)->devPrivates, CompWindowPrivateKey))
 #define GetCompSubwindows(w) ((CompSubwindowsPtr) \
     dixLookupPrivate(&(w)->devPrivates, CompSubwindowsPrivateKey))
+#define GetCompServerWindow(w) ((CompServerWindowPtr) \
+    dixLookupPrivate(&(w)->devPrivates, CompServerWindowPrivateKey))
 
 extern RESTYPE CompositeClientSubwindowsType;
 extern RESTYPE CompositeClientOverlayType;
@@ -262,6 +288,28 @@ Bool
 
 void
  compDestroyOverlayWindow(ScreenPtr pScreen);
+
+/*
+ * compserver.c
+ */
+
+void
+ compServerCloseScreen(ScreenPtr pScreen);
+
+void
+ compServerAddDamage(CompServerPtr server, RegionPtr pRegion);
+
+void
+ compServerCollectDamage(WindowPtr pWin);
+
+void
+ compServerDestroyWindow(WindowPtr pWin);
+
+void
+ compServerUnredirectManual(WindowPtr pWin);
+
+void
+ compServerPaintBelow(WindowPtr pWin, PixmapPtr pPixmap);
 
 /*
  * compwindow.c
