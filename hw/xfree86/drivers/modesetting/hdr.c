@@ -32,6 +32,7 @@
 #include <xf86Crtc.h>
 #include <property.h>
 #include <propertyst.h>
+#include <compositeext.h>
 
 #include "driver.h"
 #include "drmmode_display.h"
@@ -48,8 +49,8 @@
 
 static Atom hdr_output_metadata_atom;
 
-static const struct hdr_output_metadata *
-ms_window_get_hdr_output_metadata(WindowPtr window)
+const struct hdr_output_metadata *
+ms_hdr_window_metadata(WindowPtr window)
 {
     PropertyPtr prop;
 
@@ -75,7 +76,7 @@ ms_fullscreen_hdr_output_metadata(WindowPtr parent, BoxPtr box)
             RegionContainsRect(&child->borderSize, box) != rgnIN)
             continue;
 
-        metadata = ms_window_get_hdr_output_metadata(child);
+        metadata = ms_hdr_window_metadata(child);
         if (!metadata)
             metadata = ms_fullscreen_hdr_output_metadata(child, box);
 
@@ -112,15 +113,6 @@ ms_hdr_update(ScreenPtr screen)
             drmmode_crtc_set_hdr_output_metadata(crtc,
                 ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds));
     }
-}
-
-const struct hdr_output_metadata *
-ms_hdr_scanout_metadata(WindowPtr window, BoxPtr box)
-{
-    const struct hdr_output_metadata *metadata =
-        ms_window_get_hdr_output_metadata(window);
-
-    return metadata ? metadata : ms_fullscreen_hdr_output_metadata(window, box);
 }
 
 void
@@ -181,6 +173,24 @@ ms_hdr_desktop_metadata(int white_level, struct hdr_output_metadata *metadata)
     };
 }
 
+static const double bt709_to_bt2020[9] = {
+    0.6274040, 0.3292820, 0.0433136,
+    0.0690970, 0.9195400, 0.0113612,
+    0.0163916, 0.0880132, 0.8955950,
+};
+
+static const double bt2020_to_bt709[9] = {
+    1.6604903, -0.5876391, -0.0728516,
+    -0.1245500, 1.1328999, -0.0083480,
+    -0.0181511, -0.1005787, 1.1187299,
+};
+
+static const double pq_m1 = 2610.0 / 16384.0;
+static const double pq_m2 = 2523.0 / 4096.0 * 128.0;
+static const double pq_c1 = 3424.0 / 4096.0;
+static const double pq_c2 = 2413.0 / 4096.0 * 32.0;
+static const double pq_c3 = 2392.0 / 4096.0 * 32.0;
+
 static uint16_t
 ms_hdr_lut_value(double value)
 {
@@ -203,51 +213,50 @@ ms_hdr_linearize_ramp(const uint16_t *ramp, int size, double x)
     return ms_hdr_lut_value(pow(ms_hdr_sample_ramp(ramp, size, x), SDR_GAMMA));
 }
 
-void
-ms_hdr_desktop_degamma_lut(xf86CrtcPtr crtc, struct drm_color_lut *lut,
-                           int size)
+static double
+ms_hdr_pq_eotf(double value)
 {
-    int i;
+    const double p = pow(value, 1.0 / pq_m2);
 
-    for (i = 0; i < size; i++) {
-        double x = (double)i / (size - 1);
-
-        lut[i] = (struct drm_color_lut) {
-            .red = ms_hdr_linearize_ramp(crtc->gamma_red, crtc->gamma_size, x),
-            .green = ms_hdr_linearize_ramp(crtc->gamma_green, crtc->gamma_size, x),
-            .blue = ms_hdr_linearize_ramp(crtc->gamma_blue, crtc->gamma_size, x),
-        };
-    }
+    return 10000.0 * pow(fmax(p - pq_c1, 0.0) / (pq_c2 - pq_c3 * p), 1.0 / pq_m1);
 }
 
 static double
 ms_hdr_pq_inverse_eotf(double nits)
 {
-    const double m1 = 2610.0 / 16384.0;
-    const double m2 = 2523.0 / 4096.0 * 128.0;
-    const double c1 = 3424.0 / 4096.0;
-    const double c2 = 2413.0 / 4096.0 * 32.0;
-    const double c3 = 2392.0 / 4096.0 * 32.0;
-    const double y = pow(nits / 10000.0, m1);
+    const double y = pow(nits / 10000.0, pq_m1);
 
-    return pow((c1 + c2 * y) / (1.0 + c3 * y), m2);
+    return pow((pq_c1 + pq_c2 * y) / (1.0 + pq_c3 * y), pq_m2);
 }
 
-void
-ms_hdr_desktop_gamma_lut(int white_level, struct drm_color_lut *lut, int size)
+static double
+ms_hdr_tone_map(double value, double peak)
 {
-    int i;
+    const double knee = 0.75;
+    double t, peak_t;
 
-    for (i = 0; i < size; i++) {
-        uint16_t value =
-            ms_hdr_lut_value(ms_hdr_pq_inverse_eotf((double)i / (size - 1) * white_level));
+    if (value <= knee || peak <= 1.0)
+        return value;
 
-        lut[i] = (struct drm_color_lut) {
-            .red = value,
-            .green = value,
-            .blue = value,
-        };
+    t = (value - knee) / (1.0 - knee);
+    peak_t = (peak - knee) / (1.0 - knee);
+    return knee + (1.0 - knee) * t * (1.0 + t / (peak_t * peak_t)) / (1.0 + t);
+}
+
+static double
+ms_hdr_content_peak(const struct hdr_output_metadata *metadata, int white_level)
+{
+    double peak = 0.0;
+
+    if (metadata) {
+        peak = metadata->hdmi_metadata_type1.max_cll;
+        if (!peak)
+            peak = metadata->hdmi_metadata_type1.max_display_mastering_luminance;
     }
+    if (!peak)
+        peak = 1000.0;
+
+    return fmin(fmax(peak, white_level), 10000.0);
 }
 
 static double
@@ -266,27 +275,159 @@ ms_hdr_double_to_ctm(double value)
     return value < 0 ? magnitude | (1ULL << 63) : magnitude;
 }
 
-void
-ms_hdr_desktop_ctm(const struct drm_color_ctm *user, struct drm_color_ctm *ctm)
+static void
+ms_hdr_matrix_multiply(const double *a, const double *b, double *out)
 {
-    static const double bt709_to_bt2020[9] = {
-        0.6274040, 0.3292820, 0.0433136,
-        0.0690970, 0.9195400, 0.0113612,
-        0.0163916, 0.0880132, 0.8955950,
-    };
     int row, col, i;
 
     for (row = 0; row < 3; row++) {
         for (col = 0; col < 3; col++) {
-            double sum = 0.0;
-
+            out[row * 3 + col] = 0.0;
             for (i = 0; i < 3; i++)
-                sum += bt709_to_bt2020[row * 3 + i] *
-                       ms_hdr_ctm_to_double(user->matrix[i * 3 + col]);
-            ctm->matrix[row * 3 + col] = ms_hdr_double_to_ctm(sum);
+                out[row * 3 + col] += a[row * 3 + i] * b[i * 3 + col];
         }
     }
 }
+
+static void
+ms_hdr_ctm_to_matrix(const struct drm_color_ctm *ctm, double *matrix)
+{
+    int i;
+
+    for (i = 0; i < 9; i++)
+        matrix[i] = ms_hdr_ctm_to_double(ctm->matrix[i]);
+}
+
+static void
+ms_hdr_matrix_to_ctm(const double *matrix, struct drm_color_ctm *ctm)
+{
+    int i;
+
+    for (i = 0; i < 9; i++)
+        ctm->matrix[i] = ms_hdr_double_to_ctm(matrix[i]);
+}
+
+static void
+ms_hdr_desktop_matrix(const struct drm_color_ctm *user_ctm, double *matrix)
+{
+    double user[9];
+
+    ms_hdr_ctm_to_matrix(user_ctm, user);
+    ms_hdr_matrix_multiply(bt709_to_bt2020, user, matrix);
+}
+
+void
+ms_hdr_desktop_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
+                     int white_level, ms_hdr_color_rec *color)
+{
+    double matrix[9];
+    int i;
+
+    for (i = 0; i < color->degamma_size; i++) {
+        double x = (double)i / (color->degamma_size - 1);
+
+        color->degamma[i] = (struct drm_color_lut) {
+            .red = ms_hdr_linearize_ramp(crtc->gamma_red, crtc->gamma_size, x),
+            .green = ms_hdr_linearize_ramp(crtc->gamma_green, crtc->gamma_size, x),
+            .blue = ms_hdr_linearize_ramp(crtc->gamma_blue, crtc->gamma_size, x),
+        };
+    }
+
+    for (i = 0; i < color->gamma_size; i++) {
+        double x = (double)i / (color->gamma_size - 1);
+        uint16_t value =
+            ms_hdr_lut_value(ms_hdr_pq_inverse_eotf(x * white_level));
+
+        color->gamma[i] = (struct drm_color_lut) {
+            .red = value,
+            .green = value,
+            .blue = value,
+        };
+    }
+
+    ms_hdr_desktop_matrix(user_ctm, matrix);
+    ms_hdr_matrix_to_ctm(matrix, &color->ctm);
+}
+
+void
+ms_hdr_tonemap_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
+                     const struct hdr_output_metadata *metadata,
+                     int white_level, ms_hdr_color_rec *color)
+{
+    double peak = ms_hdr_content_peak(metadata, white_level);
+    double relative_peak = peak / white_level;
+    double user[9], matrix[9];
+    int i;
+
+    for (i = 0; i < color->degamma_size; i++) {
+        double x = (double)i / (color->degamma_size - 1);
+        uint16_t value = ms_hdr_lut_value(ms_hdr_pq_eotf(x) / peak);
+
+        color->degamma[i] = (struct drm_color_lut) {
+            .red = value,
+            .green = value,
+            .blue = value,
+        };
+    }
+
+    for (i = 0; i < color->gamma_size; i++) {
+        double x = (double)i / (color->gamma_size - 1) * relative_peak;
+        double sdr = pow(fmin(ms_hdr_tone_map(x, relative_peak), 1.0),
+                         1.0 / SDR_GAMMA);
+
+        color->gamma[i] = (struct drm_color_lut) {
+            .red = ms_hdr_lut_value(ms_hdr_sample_ramp(crtc->gamma_red,
+                                                       crtc->gamma_size, sdr)),
+            .green = ms_hdr_lut_value(ms_hdr_sample_ramp(crtc->gamma_green,
+                                                         crtc->gamma_size, sdr)),
+            .blue = ms_hdr_lut_value(ms_hdr_sample_ramp(crtc->gamma_blue,
+                                                        crtc->gamma_size, sdr)),
+        };
+    }
+
+    ms_hdr_ctm_to_matrix(user_ctm, user);
+    ms_hdr_matrix_multiply(user, bt2020_to_bt709, matrix);
+    ms_hdr_matrix_to_ctm(matrix, &color->ctm);
+}
+
+#ifdef HAVE_GBM
+static void
+ms_hdr_set_conversion_matrix(const double *matrix,
+                             glamor_color_conversion *conversion)
+{
+    int i;
+
+    for (i = 0; i < 9; i++)
+        conversion->matrix[i] = matrix[i];
+}
+
+void
+ms_hdr_pq_to_sdr_conversion(const struct hdr_output_metadata *metadata,
+                            int white_level,
+                            glamor_color_conversion *conversion)
+{
+    conversion->src = GLAMOR_COLOR_PQ;
+    conversion->dst = GLAMOR_COLOR_SDR;
+    conversion->sdr_white = white_level;
+    conversion->peak = ms_hdr_content_peak(metadata, white_level);
+    ms_hdr_set_conversion_matrix(bt2020_to_bt709, conversion);
+}
+
+void
+ms_hdr_sdr_to_pq_conversion(const struct drm_color_ctm *user_ctm,
+                            int white_level,
+                            glamor_color_conversion *conversion)
+{
+    double matrix[9];
+
+    conversion->src = GLAMOR_COLOR_SDR;
+    conversion->dst = GLAMOR_COLOR_PQ;
+    conversion->sdr_white = white_level;
+    conversion->peak = 10000.0;
+    ms_hdr_desktop_matrix(user_ctm, matrix);
+    ms_hdr_set_conversion_matrix(matrix, conversion);
+}
+#endif
 
 static void
 ms_hdr_post_validate_tree(WindowPtr parent, WindowPtr child, VTKind kind)
@@ -309,9 +450,13 @@ ms_hdr_property_state(CallbackListPtr *pcbl, void *closure, void *data)
     ScreenPtr screen = closure;
     PropertyStateRec *rec = data;
 
-    if (rec->prop->propertyName == hdr_output_metadata_atom &&
-        rec->win->drawable.pScreen == screen)
-        modesettingPTR(xf86ScreenToScrn(screen))->output_mode_dirty = TRUE;
+    if (rec->prop->propertyName != hdr_output_metadata_atom ||
+        rec->win->drawable.pScreen != screen)
+        return;
+
+    modesettingPTR(xf86ScreenToScrn(screen))->output_mode_dirty = TRUE;
+    CompositeServerSetHdrWindow(rec->win, rec->state != PropertyDelete &&
+                                ms_hdr_window_metadata(rec->win));
 }
 
 Bool

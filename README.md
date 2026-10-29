@@ -45,8 +45,8 @@ and flips it in sync with the monitor so there's no tearing.
 
 A fullscreen window on any monitor is shown without copies: when it presents
 with Present (Vulkan and OpenGL do) its buffer is put on the monitor directly.
-HDR and variable refresh rate follow the window that is shown this way on each
-monitor.
+This also works for a window inside a window manager frame. HDR and variable
+refresh rate follow the window that is shown this way on each monitor.
 
 Since the X server is the compositor:
 
@@ -85,8 +85,19 @@ Switching between the two doesn't change the display mode, so it's instant.
 Turning HDR on or off for a monitor does change the mode, so the monitor goes
 black for a moment. HDR is off by default.
 
-In the future HDR will also work for windowed applications and windows that set hdr metadata
-on a non-HDR monitor will get tonemapped to SDR.
+HDR windows also work when they aren't fullscreen. While one is visible on an
+HDR monitor, the X server composites that monitor in HDR10 and shows the parts
+of the window that nothing covers without conversion.
+
+On a monitor without HDR, or with HDR turned off, HDR windows are tone mapped
+to SDR. A fullscreen HDR window is still shown directly there, and the tone
+mapping is done by the monitor's color pipeline (DEGAMMA_LUT, CTM and
+GAMMA_LUT) instead of by copying.
+
+Without per-monitor framebuffers (see above) only fullscreen HDR windows are
+supported. The gamma ramp (`xrandr --gamma`, night light tools) isn't applied
+to a monitor while it composites in HDR, and rotated or scaled HDR monitors
+tone map HDR windows instead of showing them as HDR.
 
 HDR support works without the "Depth 30" config option set (in fact, you shouldn't set it),
 so programs function and look correct.
@@ -135,9 +146,7 @@ Vulkan games and applications can output HDR through the X11 HDR Vulkan layer
 An application that does this itself sets the `hdr_output_metadata` window
 property (type CARDINAL, format 8) to a `struct hdr_output_metadata` from the
 kernel's drm_mode.h. It renders PQ content with BT.2020 primaries into a
-window with a 30-bit visual. The property is only used while HDR is enabled on
-the monitor and the window is shown on it directly (see Per-monitor
-framebuffers), which works on every monitor.
+window with a 30-bit visual.
 
 Note that when installing this latest Xorg server version you also need to rebuild and install the latest versions of Xorg drivers from source, such as [xf86-input-libinput](https://github.com/dec05eba/xf86-input-libinput).
 

@@ -46,6 +46,135 @@ typedef struct {
     int filter_height;
 } ms_compositor_transform_rec;
 
+typedef struct {
+    PixmapPtr dst;
+    int x, y;
+    RegionRec copied;
+} ms_compositor_pq_rec;
+
+typedef struct {
+    int sdr_white_level;
+    ms_compositor_pq_rec *pq;
+} ms_compositor_paint_rec;
+
+static PicturePtr
+ms_compositor_create_picture(ScreenPtr screen, PixmapPtr pixmap)
+{
+    PictFormatPtr format = pixmap->drawable.depth == 30 ?
+        PictureMatchFormat(screen, 30, PICT_x2r10g10b10) :
+        PictureWindowFormat(screen->root);
+    int error;
+
+    if (!format)
+        return NULL;
+
+    return CreatePicture(0, &pixmap->drawable, format, 0, NULL, serverClient,
+                         &error);
+}
+
+#ifdef HAVE_GBM
+static void
+ms_compositor_subtract_cursors(ScrnInfoPtr scrn, RegionPtr region)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+    ms_sw_cursor_ptr sw_cursor;
+
+    xorg_list_for_each_entry(sw_cursor, &ms->compositor.sw_cursors, entry) {
+        RegionRec cursor;
+
+        RegionInit(&cursor, &sw_cursor->box, 1);
+        RegionSubtract(region, region, &cursor);
+        RegionUninit(&cursor);
+    }
+}
+
+static void
+ms_compositor_copy_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
+                      WindowPtr window, RegionPtr exposed)
+{
+    ScreenPtr screen = scrn->pScreen;
+    PixmapPtr src = screen->GetWindowPixmap(window);
+    PicturePtr src_picture, dst_picture;
+    RegionRec copy;
+    int error;
+
+    RegionNull(&copy);
+    RegionCopy(&copy, exposed);
+    ms_compositor_subtract_cursors(scrn, &copy);
+    if (RegionNil(&copy)) {
+        RegionUninit(&copy);
+        return;
+    }
+
+    src_picture = CreatePicture(0, &src->drawable, PictureWindowFormat(window),
+                                0, NULL, serverClient, &error);
+    dst_picture = ms_compositor_create_picture(screen, pq->dst);
+    if (src_picture && dst_picture) {
+        SetPictureClipRegion(dst_picture, -pq->x, -pq->y, &copy);
+        CompositePicture(PictOpSrc, src_picture, NULL, dst_picture,
+                         0, 0, 0, 0, src->screen_x - pq->x,
+                         src->screen_y - pq->y, src->drawable.width,
+                         src->drawable.height);
+        RegionUnion(&pq->copied, &pq->copied, &copy);
+    }
+
+    if (dst_picture)
+        FreePicture(dst_picture, 0);
+    if (src_picture)
+        FreePicture(src_picture, 0);
+    RegionUninit(&copy);
+}
+
+static Bool
+ms_compositor_paint_hdr_window(PicturePtr dst, int x, int y, WindowPtr window,
+                               RegionPtr region, RegionPtr exposed,
+                               CARD16 opacity, void *closure)
+{
+    ScreenPtr screen = window->drawable.pScreen;
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    modesettingPtr ms = modesettingPTR(scrn);
+    ms_compositor_paint_rec *paint = closure;
+    PixmapPtr src = screen->GetWindowPixmap(window);
+    PictFormatPtr format = PictureWindowFormat(window);
+    glamor_color_conversion conversion;
+    RegionRec dst_region;
+    Bool painted;
+
+    if (dst->pDrawable->type != DRAWABLE_PIXMAP)
+        return FALSE;
+
+    ms_hdr_pq_to_sdr_conversion(ms_hdr_window_metadata(window),
+                                paint ? paint->sdr_white_level :
+                                ms->drmmode.sdr_white_level_default,
+                                &conversion);
+
+    RegionNull(&dst_region);
+    RegionCopy(&dst_region, region);
+    RegionTranslate(&dst_region, -x, -y);
+    painted = ms->glamor.convert_color(src, (PixmapPtr) dst->pDrawable,
+                                       &dst_region, x - src->screen_x,
+                                       y - src->screen_y,
+                                       format && format->type == PictTypeDirect &&
+                                       format->direct.alphaMask,
+                                       opacity, &conversion);
+    RegionUninit(&dst_region);
+
+    if (painted && paint && paint->pq)
+        ms_compositor_copy_pq(scrn, paint->pq, window, exposed);
+    return painted;
+}
+#endif
+
+static CompositeServerPaintHdrProcPtr
+ms_compositor_paint_hdr_proc(ScrnInfoPtr scrn)
+{
+#ifdef HAVE_GBM
+    if (modesettingPTR(scrn)->glamor.convert_color)
+        return ms_compositor_paint_hdr_window;
+#endif
+    return NULL;
+}
+
 static void
 ms_compositor_enable_disable_fb_access(ScrnInfoPtr scrn, Bool enable)
 {
@@ -81,7 +210,7 @@ ms_compositor_create_screen_resources(ScreenPtr screen)
     screen->SetScreenPixmap(pixmap);
     dixDestroyPixmap(old_pixmap, 0);
 
-    if (!CompositeServerInit(screen)) {
+    if (!CompositeServerInit(screen, ms_compositor_paint_hdr_proc(scrn))) {
         xf86DrvMsg(scrn->scrnIndex, X_ERROR,
                    "Failed to set up per-monitor framebuffers, use "
                    "Option \"TearFree\" \"false\" for a shared framebuffer\n");
@@ -140,16 +269,6 @@ ms_compositor_update_damages(ScreenPtr screen)
     RegionUninit(&damage);
 }
 
-static PicturePtr
-ms_compositor_create_picture(ScreenPtr screen, PixmapPtr pixmap)
-{
-    int error;
-
-    return CreatePicture(0, &pixmap->drawable,
-                         PictureWindowFormat(screen->root), 0, NULL,
-                         serverClient, &error);
-}
-
 static void
 ms_compositor_paint_cursors(ScrnInfoPtr scrn, PicturePtr dst, int x, int y,
                             RegionPtr region)
@@ -177,34 +296,60 @@ ms_compositor_paint_cursors(ScrnInfoPtr scrn, PicturePtr dst, int x, int y,
 
 static void
 ms_compositor_paint_layers(ScrnInfoPtr scrn, PicturePtr dst, int x, int y,
-                           RegionPtr region)
+                           RegionPtr region, ms_compositor_paint_rec *paint)
 {
-    CompositeServerPaint(scrn->pScreen, dst, x, y, region);
+    CompositeServerPaint(scrn->pScreen, dst, x, y, region, paint);
     ms_compositor_paint_cursors(scrn, dst, x, y, region);
 }
 
 static PixmapPtr
-ms_compositor_untransformed_pixmap(xf86CrtcPtr crtc, Bool *created)
+ms_compositor_intermediate_pixmap(xf86CrtcPtr crtc, Bool *created)
 {
     ScreenPtr screen = crtc->scrn->pScreen;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    drmmode_composition_rec *composition = &drmmode_crtc->tearfree.composition;
     int width = crtc->bounds.x2 - crtc->bounds.x1;
     int height = crtc->bounds.y2 - crtc->bounds.y1;
 
     *created = FALSE;
-    if (trf->untransformed &&
-        trf->untransformed->drawable.width == width &&
-        trf->untransformed->drawable.height == height)
-        return trf->untransformed;
+    if (composition->intermediate &&
+        composition->intermediate->drawable.width == width &&
+        composition->intermediate->drawable.height == height)
+        return composition->intermediate;
 
-    if (trf->untransformed)
-        dixDestroyPixmap(trf->untransformed, 0);
+    if (composition->intermediate)
+        dixDestroyPixmap(composition->intermediate, 0);
 
-    trf->untransformed = screen->CreatePixmap(screen, width, height,
-                                              screen->rootDepth, 0);
-    *created = trf->untransformed != NULL;
-    return trf->untransformed;
+    composition->intermediate = screen->CreatePixmap(screen, width, height,
+                                                     screen->rootDepth, 0);
+    *created = composition->intermediate != NULL;
+    return composition->intermediate;
+}
+
+static PixmapPtr
+ms_compositor_paint_intermediate(xf86CrtcPtr crtc, RegionPtr region,
+                                 ms_compositor_paint_rec *paint)
+{
+    ScrnInfoPtr scrn = crtc->scrn;
+    PixmapPtr pixmap;
+    PicturePtr picture;
+    RegionRec bounds;
+    Bool created;
+
+    pixmap = ms_compositor_intermediate_pixmap(crtc, &created);
+    if (!pixmap)
+        return NULL;
+
+    picture = ms_compositor_create_picture(scrn->pScreen, pixmap);
+    if (!picture)
+        return NULL;
+
+    RegionInit(&bounds, &crtc->bounds, 1);
+    ms_compositor_paint_layers(scrn, picture, crtc->bounds.x1, crtc->bounds.y1,
+                               created ? &bounds : region, paint);
+    RegionUninit(&bounds);
+    FreePicture(picture, 0);
+    return pixmap;
 }
 
 static void
@@ -243,7 +388,7 @@ ms_compositor_copy_transformed(PicturePtr src, int x, int y, PicturePtr dst,
 
 static void
 ms_compositor_paint_transformed(xf86CrtcPtr crtc, PicturePtr dst,
-                                RegionPtr region)
+                                RegionPtr region, ms_compositor_paint_rec *paint)
 {
     ScrnInfoPtr scrn = crtc->scrn;
     ms_compositor_transform_rec transform = {
@@ -257,9 +402,8 @@ ms_compositor_paint_transformed(xf86CrtcPtr crtc, PicturePtr dst,
     };
     PixmapPtr pixmap;
     PicturePtr src;
-    Bool created;
 
-    pixmap = ms_compositor_untransformed_pixmap(crtc, &created);
+    pixmap = ms_compositor_paint_intermediate(crtc, region, paint);
     if (!pixmap)
         return;
 
@@ -267,42 +411,73 @@ ms_compositor_paint_transformed(xf86CrtcPtr crtc, PicturePtr dst,
     if (!src)
         return;
 
-    if (created) {
-        RegionRec bounds;
-
-        RegionInit(&bounds, &crtc->bounds, 1);
-        ms_compositor_paint_layers(scrn, src, crtc->bounds.x1,
-                                   crtc->bounds.y1, &bounds);
-        RegionUninit(&bounds);
-    }
-    else {
-        ms_compositor_paint_layers(scrn, src, crtc->bounds.x1,
-                                   crtc->bounds.y1, region);
-    }
-
     ms_compositor_copy_transformed(src, crtc->bounds.x1, crtc->bounds.y1, dst,
                                    region, &transform);
     FreePicture(src, 0);
 }
 
+#ifdef HAVE_GBM
+static void
+ms_compositor_paint_pq(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region,
+                       ms_compositor_paint_rec *paint)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    ms_compositor_pq_rec pq = { .dst = dst, .x = crtc->x, .y = crtc->y };
+    glamor_color_conversion conversion;
+    PixmapPtr pixmap;
+    RegionRec converted;
+
+    RegionNull(&pq.copied);
+    paint->pq = &pq;
+    pixmap = ms_compositor_paint_intermediate(crtc, region, paint);
+    paint->pq = NULL;
+
+    if (pixmap) {
+        RegionNull(&converted);
+        RegionSubtract(&converted, region, &pq.copied);
+        RegionTranslate(&converted, -crtc->x, -crtc->y);
+        ms_hdr_sdr_to_pq_conversion(drmmode_crtc_user_ctm(crtc),
+                                    paint->sdr_white_level, &conversion);
+        ms->glamor.convert_color(pixmap, dst, &converted,
+                                 crtc->x - crtc->bounds.x1,
+                                 crtc->y - crtc->bounds.y1, FALSE, 0xffff,
+                                 &conversion);
+        RegionUninit(&converted);
+    }
+    RegionUninit(&pq.copied);
+}
+#endif
+
 void
 ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region)
 {
     ScrnInfoPtr scrn = crtc->scrn;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_composition_rec *composition = &drmmode_crtc->tearfree.composition;
+    ms_compositor_paint_rec paint = {
+        .sdr_white_level = composition->sdr_white_level,
+    };
     PicturePtr dst_picture;
 
     if (RegionNil(region))
         return;
+
+#ifdef HAVE_GBM
+    if (composition->pq) {
+        ms_compositor_paint_pq(crtc, dst, region, &paint);
+        return;
+    }
+#endif
 
     dst_picture = ms_compositor_create_picture(scrn->pScreen, dst);
     if (!dst_picture)
         return;
 
     if (crtc->transform_in_use)
-        ms_compositor_paint_transformed(crtc, dst_picture, region);
+        ms_compositor_paint_transformed(crtc, dst_picture, region, &paint);
     else
         ms_compositor_paint_layers(scrn, dst_picture, crtc->x, crtc->y,
-                                   region);
+                                   region, &paint);
 
     FreePicture(dst_picture, 0);
 }
@@ -331,7 +506,8 @@ ms_compositor_paint_rotated(ScrnInfoPtr scrn, PicturePtr dst,
     if (!src)
         return;
 
-    ms_compositor_paint_layers(scrn, src, extents->x1, extents->y1, region);
+    ms_compositor_paint_layers(scrn, src, extents->x1, extents->y1, region,
+                               NULL);
     ms_compositor_copy_transformed(src, extents->x1, extents->y1, dst, region,
                                    &transform);
     FreePicture(src, 0);
@@ -365,7 +541,8 @@ ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
         if (dirty->rotation == RR_Rotate_0)
             ms_compositor_paint_layers(scrn, dst_picture,
                                        dirty->x - dirty->dst_x,
-                                       dirty->y - dirty->dst_y, &region);
+                                       dirty->y - dirty->dst_y, &region,
+                                       NULL);
         else
             ms_compositor_paint_rotated(scrn, dst_picture, dirty, &region);
         FreePicture(dst_picture, 0);
@@ -415,6 +592,10 @@ ms_compositor_scanout_window(xf86CrtcPtr crtc, PixmapPtr *pixmap)
         !ms_pixmap_scanout_format_supported(scrn->pScreen, *pixmap))
         return NULL;
 
+    if (!drmmode_crtc_can_show_pq(crtc) &&
+        CompositeServerHdrWindow(scrn->pScreen, &crtc->bounds))
+        return NULL;
+
     return window;
 }
 
@@ -434,25 +615,72 @@ ms_compositor_window_has_variable_refresh(modesettingPtr ms, WindowPtr window)
     return FALSE;
 }
 
+static Bool
+ms_compositor_can_compose_pq(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return ms->glamor.convert_color && !crtc->transform_in_use &&
+        drmmode_crtc->tearfree.buf[0].px->drawable.depth == 30 &&
+        drmmode_crtc_hdr_enabled(crtc);
+}
+
 static void
+ms_compositor_set_composition(xf86CrtcPtr crtc, Bool pq)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    drmmode_composition_rec *composition = &trf->composition;
+    int sdr_white_level = drmmode_crtc_sdr_white_level(crtc);
+    int i;
+
+    if (composition->pq == pq &&
+        composition->sdr_white_level == sdr_white_level)
+        return;
+
+    composition->pq = pq;
+    composition->sdr_white_level = sdr_white_level;
+    if (composition->intermediate) {
+        dixDestroyPixmap(composition->intermediate, 0);
+        composition->intermediate = NULL;
+    }
+
+    for (i = 0; i < ARRAY_SIZE(trf->buf); i++)
+        RegionReset(&trf->buf[i].dmg, &crtc->bounds);
+}
+
+static Bool
 ms_compositor_update_output_mode(xf86CrtcPtr crtc, WindowPtr window)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
+    WindowPtr hdr_window;
+    Bool updated;
 
     if (window == scanout->output_mode_window && !scanout->output_mode_dirty)
-        return;
+        return TRUE;
 
-    scanout->output_mode_window = window;
-    scanout->output_mode_dirty = FALSE;
+    hdr_window = CompositeServerHdrWindow(crtc->scrn->pScreen, &crtc->bounds);
+    if (!window) {
+        Bool pq = hdr_window && ms_compositor_can_compose_pq(crtc);
 
-    drmmode_crtc_set_hdr_output_metadata(crtc,
-        window ? ms_hdr_scanout_metadata(window, &crtc->bounds) : NULL);
+        ms_compositor_set_composition(crtc, pq);
+        if (!pq)
+            hdr_window = NULL;
+    }
+
+    updated = drmmode_crtc_set_hdr_output_metadata(crtc,
+        hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL);
 
     if (ms->vrr_support)
         drmmode_crtc_set_vrr(crtc, window &&
                              ms_compositor_window_has_variable_refresh(ms, window));
+
+    scanout->output_mode_window = window;
+    scanout->output_mode_dirty = !updated;
+    return updated;
 }
 
 Bool
@@ -468,19 +696,18 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc)
     scanout->async = FALSE;
 
     window = ms_compositor_scanout_window(crtc, &pixmap);
-    ms_compositor_update_output_mode(crtc, window);
-    if (!window)
-        return FALSE;
+    if (window && ms_compositor_update_output_mode(crtc, window)) {
+        if (pixmap == scanout->pixmap && scanout->fb_id) {
+            ms_tearfree_dri_abort_all(crtc);
+            return TRUE;
+        }
 
-    if (pixmap == scanout->pixmap && scanout->fb_id) {
-        ms_tearfree_dri_abort_all(crtc);
-        return TRUE;
+        if (ms_do_direct_flip(scrn->pScreen, crtc, window, pixmap, async))
+            return TRUE;
+
+        scanout->failed_pixmap = pixmap;
     }
 
-    if (ms_do_direct_flip(scrn->pScreen, crtc, window, pixmap, async))
-        return TRUE;
-
-    scanout->failed_pixmap = pixmap;
     ms_compositor_update_output_mode(crtc, NULL);
     return FALSE;
 }

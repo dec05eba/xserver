@@ -367,7 +367,8 @@ compImplicitRedirect(WindowPtr pWin, WindowPtr pParent)
         XID winVisual = wVisual(pWin);
         XID parentVisual = wVisual(pParent);
 
-        if (CompositeIsImplicitRedirectException(pScreen, parentVisual, winVisual))
+        if (!CompositeServerActive(pScreen) &&
+            CompositeIsImplicitRedirectException(pScreen, parentVisual, winVisual))
             return FALSE;
 
         if (winVisual != parentVisual &&

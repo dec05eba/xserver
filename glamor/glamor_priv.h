@@ -227,6 +227,17 @@ struct glamor_saved_procs {
     ScreenBlockHandlerProcPtr block_handler;
 };
 
+typedef struct {
+    glamor_program      prog;
+    GLint               src_pq_uniform;
+    GLint               dst_pq_uniform;
+    GLint               src_alpha_uniform;
+    GLint               matrix_uniform;
+    GLint               sdr_white_uniform;
+    GLint               peak_uniform;
+    GLint               opacity_uniform;
+} glamor_color_program;
+
 typedef struct glamor_screen_private {
     Bool is_gles;
     int glsl_version;
@@ -279,6 +290,8 @@ typedef struct glamor_screen_private {
     /* glamor copy shaders */
     glamor_program      copy_area_prog;
     glamor_program      copy_plane_prog;
+
+    glamor_color_program color_prog;
 
     /* glamor line shader */
     glamor_program_fill poly_line_program;

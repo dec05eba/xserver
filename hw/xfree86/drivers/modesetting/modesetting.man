@@ -139,7 +139,10 @@ Enable HDR on monitors that support HDR10. The desktop is treated as gamma 2.2
 content with BT.709 primaries and is converted to HDR10 with the DEGAMMA_LUT,
 CTM and GAMMA_LUT CRTC properties. Fullscreen windows with the
 hdr_output_metadata property are passed through unconverted. Switching between
-them does not require a modeset, so it is instant. This sets the initial value
+them does not require a modeset, so it is instant. With TearFree, other
+windows with the property are shown as HDR too, by compositing the monitor in
+HDR10. On monitors with HDR disabled these windows are tone mapped to SDR. This
+sets the initial value
 of the
 .B HDR
 output property, which can be changed per output with

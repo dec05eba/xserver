@@ -133,9 +133,16 @@ typedef struct _CompServerWindow {
     Bool seen;
 } CompServerWindowRec, *CompServerWindowPtr;
 
+typedef struct _CompServerHdrWindow {
+    struct xorg_list entry;
+    WindowPtr pWin;
+} CompServerHdrWindowRec, *CompServerHdrWindowPtr;
+
 typedef struct _CompServer {
     RegionRec damage;
     struct xorg_list windows;
+    struct xorg_list hdrWindows;
+    CompositeServerPaintHdrProcPtr PaintHdr;
     Atom opacityAtom;
     Bool cmSelectionClaimed;
     GetImageProcPtr GetImage;

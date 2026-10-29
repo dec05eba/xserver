@@ -1,5 +1,6 @@
 srcs_glamor = [
     'glamor.c',
+    'glamor_color.c',
     'glamor_copy.c',
     'glamor_core.c',
     'glamor_dash.c',

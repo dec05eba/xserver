@@ -46,21 +46,35 @@ Bool CompositeIsImplicitRedirectException(ScreenPtr pScreen,
                                           XID parentVisual, XID winVisual);
 extern _X_EXPORT RESTYPE CompositeClientWindowType;
 
-extern _X_EXPORT Bool CompositeServerInit(ScreenPtr pScreen);
+typedef Bool (*CompositeServerPaintHdrProcPtr) (PicturePtr pDst, int x, int y,
+                                                WindowPtr pWin,
+                                                RegionPtr pRegion,
+                                                RegionPtr pExposed,
+                                                CARD16 opacity,
+                                                void *closure);
+
+extern _X_EXPORT Bool CompositeServerInit(ScreenPtr pScreen,
+                                          CompositeServerPaintHdrProcPtr PaintHdr);
 
 extern _X_EXPORT Bool CompositeServerActive(ScreenPtr pScreen);
 
 extern _X_EXPORT Bool CompositeIsServerRoot(WindowPtr pWin);
 
-extern _X_EXPORT Bool CompositeIsServerToplevel(WindowPtr pWin);
+extern _X_EXPORT Bool CompositeIsServerRedirected(WindowPtr pWin);
 
 extern _X_EXPORT void CompositeServerFlush(ScreenPtr pScreen,
                                            RegionPtr pDamage);
 
 extern _X_EXPORT void CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst,
-                                           int x, int y, RegionPtr pRegion);
+                                           int x, int y, RegionPtr pRegion,
+                                           void *closure);
 
 extern _X_EXPORT WindowPtr CompositeServerScanoutWindow(ScreenPtr pScreen,
                                                         BoxPtr pBox);
+
+extern _X_EXPORT void CompositeServerSetHdrWindow(WindowPtr pWin, Bool hdr);
+
+extern _X_EXPORT WindowPtr CompositeServerHdrWindow(ScreenPtr pScreen,
+                                                    BoxPtr pBox);
 
 #endif                          /* _COMPOSITEEXT_H_ */

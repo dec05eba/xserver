@@ -127,12 +127,12 @@ typedef void (*present_unflip_ptr) (ScreenPtr screen,
 
 typedef Bool (*present_window_flip_ptr) (RRCrtcPtr crtc,
                                          uint64_t event_id,
-                                         WindowPtr toplevel,
+                                         WindowPtr window,
                                          PixmapPtr pixmap,
                                          Bool sync_flip);
 
 typedef void (*present_window_unflip_ptr) (ScreenPtr screen,
-                                           WindowPtr toplevel,
+                                           WindowPtr window,
                                            uint64_t event_id);
 
 /* Doing flips has been discontinued.
@@ -175,7 +175,7 @@ extern _X_EXPORT void
 present_check_flips(WindowPtr window);
 
 extern _X_EXPORT PixmapPtr
-present_window_flip_pixmap(WindowPtr toplevel);
+present_window_flip_pixmap(WindowPtr window);
 
 typedef void (*present_complete_notify_proc)(WindowPtr window,
                                              CARD8 kind,

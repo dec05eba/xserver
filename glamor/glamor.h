@@ -414,6 +414,24 @@ extern _X_EXPORT void glamor_egl_screen_init(ScreenPtr screen,
 
 extern _X_EXPORT int glamor_create_gc(GCPtr gc);
 
+typedef enum {
+    GLAMOR_COLOR_SDR,
+    GLAMOR_COLOR_PQ,
+} glamor_color_encoding;
+
+typedef struct {
+    glamor_color_encoding src;
+    glamor_color_encoding dst;
+    float matrix[9];
+    float sdr_white;
+    float peak;
+} glamor_color_conversion;
+
+extern _X_EXPORT Bool glamor_convert_color(PixmapPtr src, PixmapPtr dst,
+                                           RegionPtr region, int dx, int dy,
+                                           Bool src_alpha, CARD16 opacity,
+                                           const glamor_color_conversion *conversion);
+
 extern _X_EXPORT void glamor_validate_gc(GCPtr gc, unsigned long changes,
                                          DrawablePtr drawable);
 

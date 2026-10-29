@@ -191,6 +191,8 @@ typedef struct _modesettingRec {
         Bool (*supports_pixmap_import_export)(ScreenPtr);
         XF86VideoAdaptorPtr (*xv_init)(ScreenPtr, int);
         const char *(*egl_get_driver_name)(ScreenPtr);
+        Bool (*convert_color)(PixmapPtr, PixmapPtr, RegionPtr, int, int, Bool,
+                              CARD16, const glamor_color_conversion *);
     } glamor;
 #endif
 } modesettingRec, *modesettingPtr;
@@ -301,18 +303,32 @@ void ms_compositor_set_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,
 void ms_compositor_move_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,
                                CursorPtr cursor, int x, int y);
 
+typedef struct {
+    struct drm_color_lut *degamma;
+    int degamma_size;
+    struct drm_color_lut *gamma;
+    int gamma_size;
+    struct drm_color_ctm ctm;
+} ms_hdr_color_rec;
+
 Bool ms_hdr_screen_init(ScreenPtr screen);
 void ms_hdr_close_screen(ScreenPtr screen);
 void ms_hdr_update(ScreenPtr screen);
-const struct hdr_output_metadata *ms_hdr_scanout_metadata(WindowPtr window,
-                                                          BoxPtr box);
+const struct hdr_output_metadata *ms_hdr_window_metadata(WindowPtr window);
 void ms_hdr_disable(ScrnInfoPtr scrn);
 Bool ms_hdr_edid_supports_pq(const uint8_t *edid, size_t size);
 void ms_hdr_desktop_metadata(int white_level,
                              struct hdr_output_metadata *metadata);
-void ms_hdr_desktop_degamma_lut(xf86CrtcPtr crtc, struct drm_color_lut *lut,
-                                int size);
-void ms_hdr_desktop_gamma_lut(int white_level, struct drm_color_lut *lut,
-                              int size);
-void ms_hdr_desktop_ctm(const struct drm_color_ctm *user,
-                        struct drm_color_ctm *ctm);
+void ms_hdr_desktop_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
+                          int white_level, ms_hdr_color_rec *color);
+void ms_hdr_tonemap_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
+                          const struct hdr_output_metadata *metadata,
+                          int white_level, ms_hdr_color_rec *color);
+#ifdef HAVE_GBM
+void ms_hdr_pq_to_sdr_conversion(const struct hdr_output_metadata *metadata,
+                                 int white_level,
+                                 glamor_color_conversion *conversion);
+void ms_hdr_sdr_to_pq_conversion(const struct drm_color_ctm *user_ctm,
+                                 int white_level,
+                                 glamor_color_conversion *conversion);
+#endif

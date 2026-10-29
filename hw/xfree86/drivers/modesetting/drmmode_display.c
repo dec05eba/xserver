@@ -1181,7 +1181,7 @@ drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
 
 static Bool
 drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
-                  unsigned width, unsigned height, unsigned bpp,
+                  unsigned width, unsigned height, unsigned bpp, int depth,
                   uint32_t gbm_bo_use_flag)
 {
     bo->width = width;
@@ -1195,7 +1195,7 @@ drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
 #endif
         uint32_t format;
 
-        switch (drmmode->scrn->depth) {
+        switch (depth) {
         case 15:
             format = GBM_FORMAT_ARGB1555;
             break;
@@ -1701,10 +1701,12 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
         }
     }
 
-    if (trf->untransformed) {
-        dixDestroyPixmap(trf->untransformed, 0);
-        trf->untransformed = NULL;
+    if (trf->composition.intermediate) {
+        dixDestroyPixmap(trf->composition.intermediate, 0);
+        trf->composition.intermediate = NULL;
     }
+    trf->composition.pq = FALSE;
+    trf->composition.sdr_white_level = drmmode_crtc_sdr_white_level(crtc);
 
     if (trf->scanout.fb_id)
         drmModeRmFB(drmmode_crtc->drmmode->fd, trf->scanout.fb_id);
@@ -1716,32 +1718,84 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
 
 static PixmapPtr
 drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width, int height,
-                         drmmode_bo *bo, uint32_t *fb_id);
+                         int depth, drmmode_bo *bo, uint32_t *fb_id);
+
+static Bool
+drmmode_crtc_supports_format(xf86CrtcPtr crtc, uint32_t format)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    int i;
+
+    for (i = 0; i < drmmode_crtc->num_formats; i++) {
+        if (drmmode_crtc->formats[i].format == format)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static int
+drmmode_crtc_tearfree_depth(xf86CrtcPtr crtc)
+{
+    ScrnInfoPtr scrn = crtc->scrn;
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    int i;
+
+    if (!drmmode_crtc->drmmode->glamor || scrn->depth != 24 ||
+        !drmmode_crtc_supports_format(crtc, DRM_FORMAT_XRGB2101010))
+        return scrn->depth;
+
+    for (i = 0; i < config->num_output; i++) {
+        xf86OutputPtr output = config->output[i];
+        drmmode_output_private_ptr drmmode_output = output->driver_private;
+
+        if (output->crtc == crtc && drmmode_output->hdr_pq_supported)
+            return 30;
+    }
+    return scrn->depth;
+}
+
+static Bool
+drmmode_create_tearfree_buffers(xf86CrtcPtr crtc, int depth)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    uint32_t w = crtc->mode.HDisplay, h = crtc->mode.VDisplay;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(trf->buf); i++) {
+        trf->buf[i].px = drmmode_shadow_fb_create(crtc, NULL, w, h, depth,
+                                                  &trf->buf[i].bo,
+                                                  &trf->buf[i].fb_id);
+        if (!trf->buf[i].px) {
+            drmmode_destroy_tearfree_shadow(crtc);
+            return FALSE;
+        }
+        RegionInit(&trf->buf[i].dmg, &crtc->bounds, 0);
+    }
+    return TRUE;
+}
+
 static Bool
 drmmode_create_tearfree_shadow(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-    uint32_t w = crtc->mode.HDisplay, h = crtc->mode.VDisplay;
-    int i;
+    int depth;
 
     if (!drmmode->tearfree_enable)
         return TRUE;
 
     /* Destroy the old mode's buffers and make new ones */
     drmmode_destroy_tearfree_shadow(crtc);
-    for (i = 0; i < ARRAY_SIZE(trf->buf); i++) {
-        trf->buf[i].px = drmmode_shadow_fb_create(crtc, NULL, w, h,
-                                                  &trf->buf[i].bo,
-                                                  &trf->buf[i].fb_id);
-        if (!trf->buf[i].px) {
-            drmmode_destroy_tearfree_shadow(crtc);
-            xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
-                       "shadow creation failed for TearFree buf%d\n", i);
-            return FALSE;
-        }
-        RegionInit(&trf->buf[i].dmg, &crtc->bounds, 0);
+    depth = drmmode_crtc_tearfree_depth(crtc);
+    if (!drmmode_create_tearfree_buffers(crtc, depth) &&
+        (depth == crtc->scrn->depth ||
+         !drmmode_create_tearfree_buffers(crtc, crtc->scrn->depth))) {
+        xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
+                   "shadow creation failed for TearFree\n");
+        return FALSE;
     }
 
     /* Initialize the front buffer with the current scanout */
@@ -2221,14 +2275,15 @@ drmmode_clear_pixmap(PixmapPtr pixmap)
 }
 
 static void *
-drmmode_shadow_fb_allocate(xf86CrtcPtr crtc, int width, int height,
+drmmode_shadow_fb_allocate(xf86CrtcPtr crtc, int width, int height, int depth,
                            drmmode_bo *bo, uint32_t *fb_id)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
     int ret;
 
-    if (!drmmode_create_bo(drmmode, bo, width, height, drmmode->kbpp, 0)) {
+    if (!drmmode_create_bo(drmmode, bo, width, height, drmmode->kbpp, depth,
+                           0)) {
         xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
                "Couldn't allocate shadow memory for rotated CRTC\n");
         return NULL;
@@ -2254,7 +2309,7 @@ drmmode_shadow_allocate(xf86CrtcPtr crtc, int width, int height)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-    return drmmode_shadow_fb_allocate(crtc, width, height,
+    return drmmode_shadow_fb_allocate(crtc, width, height, crtc->scrn->depth,
                                       &drmmode_crtc->rotate_bo,
                                       &drmmode_crtc->rotate_fb_id);
 }
@@ -2283,17 +2338,19 @@ drmmode_set_pixmap_bo(drmmode_ptr drmmode, PixmapPtr pixmap, drmmode_bo *bo);
 
 static PixmapPtr
 drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width, int height,
-                         drmmode_bo *bo, uint32_t *fb_id)
+                         int depth, drmmode_bo *bo, uint32_t *fb_id)
 {
     ScrnInfoPtr scrn = crtc->scrn;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
+    void *allocated = NULL;
     uint32_t pitch;
     PixmapPtr pixmap;
     void *pPixData = NULL;
 
     if (!data) {
-        data = drmmode_shadow_fb_allocate(crtc, width, height, bo, fb_id);
+        data = allocated = drmmode_shadow_fb_allocate(crtc, width, height,
+                                                      depth, bo, fb_id);
         if (!data) {
             xf86DrvMsg(scrn->scrnIndex, X_ERROR,
                        "Couldn't allocate shadow pixmap for CRTC\n");
@@ -2312,18 +2369,22 @@ drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width, int height,
 
     pixmap = drmmode_create_pixmap_header(scrn->pScreen,
                                           width, height,
-                                          scrn->depth,
+                                          depth,
                                           drmmode->kbpp,
                                           pitch,
                                           pPixData);
 
+    if (pixmap && !drmmode_set_pixmap_bo(drmmode, pixmap, bo)) {
+        pixmap->drawable.pScreen->DestroyPixmap(pixmap);
+        pixmap = NULL;
+    }
+
     if (pixmap == NULL) {
         xf86DrvMsg(scrn->scrnIndex, X_ERROR,
                    "Couldn't allocate shadow pixmap for CRTC\n");
+        drmmode_shadow_fb_destroy(crtc, NULL, allocated, bo, fb_id);
         return NULL;
     }
-
-    drmmode_set_pixmap_bo(drmmode, pixmap, bo);
 
     return pixmap;
 }
@@ -2334,6 +2395,7 @@ drmmode_shadow_create(xf86CrtcPtr crtc, void *data, int width, int height)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
     return drmmode_shadow_fb_create(crtc, data, width, height,
+                                    crtc->scrn->depth,
                                     &drmmode_crtc->rotate_bo,
                                     &drmmode_crtc->rotate_fb_id);
 }
@@ -3925,7 +3987,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
     drmmode->fb_id = 0;
 
     if (!drmmode_create_bo(drmmode, &drmmode->front_bo,
-                           width, height, drmmode->kbpp,
+                           width, height, drmmode->kbpp, scrn->depth,
 #ifdef HAVE_GBM_BO_USE_FRONT_RENDERING
                            GBM_BO_USE_FRONT_RENDERING))
 #else
@@ -4717,6 +4779,7 @@ drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
 
     if (!drmmode->tearfree_enable) {
         if (!drmmode_create_bo(drmmode, &drmmode->front_bo, width, height, bpp,
+                               pScrn->depth,
 #ifdef HAVE_GBM_BO_USE_FRONT_RENDERING
                                GBM_BO_USE_FRONT_RENDERING))
 #else
@@ -4990,7 +5053,13 @@ drmmode_output_get_hdr_props(drmmode_output_private_ptr drmmode_output,
         values[DRMMODE_CONNECTOR_CONTENT_TYPE] = graphics->value;
 }
 
-static const struct drm_color_ctm *
+static Bool
+drmmode_hdr_mode_signals_hdr(enum drmmode_hdr_mode mode)
+{
+    return mode == DRMMODE_HDR_DESKTOP || mode == DRMMODE_HDR_PASSTHROUGH;
+}
+
+const struct drm_color_ctm *
 drmmode_crtc_user_ctm(xf86CrtcPtr crtc)
 {
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
@@ -5026,38 +5095,46 @@ drmmode_crtc_create_sdr_color_blobs(xf86CrtcPtr crtc,
 }
 
 static Bool
-drmmode_crtc_create_hdr_desktop_color_blobs(xf86CrtcPtr crtc,
-                                            int sdr_white_level,
-                                            drmmode_color_blobs *blobs)
+drmmode_crtc_create_lut_color_blobs(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
+                                    const struct hdr_output_metadata *metadata,
+                                    int sdr_white_level,
+                                    drmmode_color_blobs *blobs)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
-    int degamma_size = drmmode_crtc->props[DRMMODE_CRTC_DEGAMMA_LUT_SIZE].value;
-    int gamma_size = drmmode_crtc->props[DRMMODE_CRTC_GAMMA_LUT_SIZE].value;
-    struct drm_color_lut *lut = calloc(max(degamma_size, gamma_size),
-                                       sizeof(*lut));
-    struct drm_color_ctm ctm;
+    const struct drm_color_ctm *user_ctm = drmmode_crtc_user_ctm(crtc);
+    ms_hdr_color_rec color = {
+        .degamma_size = drmmode_crtc->props[DRMMODE_CRTC_DEGAMMA_LUT_SIZE].value,
+        .gamma_size = drmmode_crtc->props[DRMMODE_CRTC_GAMMA_LUT_SIZE].value,
+    };
 
-    if (!lut)
-        return FALSE;
+    color.degamma = calloc(color.degamma_size, sizeof(*color.degamma));
+    color.gamma = calloc(color.gamma_size, sizeof(*color.gamma));
+    if (color.degamma && color.gamma) {
+        if (mode == DRMMODE_HDR_DESKTOP)
+            ms_hdr_desktop_color(crtc, user_ctm, sdr_white_level, &color);
+        else
+            ms_hdr_tonemap_color(crtc, user_ctm, metadata, sdr_white_level,
+                                 &color);
 
-    ms_hdr_desktop_degamma_lut(crtc, lut, degamma_size);
-    blobs->degamma_lut = drmmode_create_blob(drmmode, lut,
-                                             sizeof(*lut) * degamma_size);
-
-    ms_hdr_desktop_gamma_lut(sdr_white_level, lut, gamma_size);
-    blobs->gamma_lut = drmmode_create_blob(drmmode, lut,
-                                           sizeof(*lut) * gamma_size);
-    free(lut);
-
-    ms_hdr_desktop_ctm(drmmode_crtc_user_ctm(crtc), &ctm);
-    blobs->ctm = drmmode_create_blob(drmmode, &ctm, sizeof(ctm));
+        blobs->degamma_lut =
+            drmmode_create_blob(drmmode, color.degamma,
+                                sizeof(*color.degamma) * color.degamma_size);
+        blobs->gamma_lut =
+            drmmode_create_blob(drmmode, color.gamma,
+                                sizeof(*color.gamma) * color.gamma_size);
+        blobs->ctm = drmmode_create_blob(drmmode, &color.ctm,
+                                         sizeof(color.ctm));
+    }
+    free(color.degamma);
+    free(color.gamma);
 
     return blobs->degamma_lut && blobs->gamma_lut && blobs->ctm;
 }
 
 static Bool
 drmmode_crtc_create_color_blobs(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
+                                const struct hdr_output_metadata *metadata,
                                 int sdr_white_level, drmmode_color_blobs *blobs)
 {
     *blobs = (drmmode_color_blobs) { 0 };
@@ -5066,8 +5143,9 @@ drmmode_crtc_create_color_blobs(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
     case DRMMODE_HDR_OFF:
         return drmmode_crtc_create_sdr_color_blobs(crtc, blobs);
     case DRMMODE_HDR_DESKTOP:
-        return drmmode_crtc_create_hdr_desktop_color_blobs(crtc, sdr_white_level,
-                                                           blobs);
+    case DRMMODE_HDR_TONEMAP:
+        return drmmode_crtc_create_lut_color_blobs(crtc, mode, metadata,
+                                                   sdr_white_level, blobs);
     case DRMMODE_HDR_PASSTHROUGH:
         return TRUE;
     }
@@ -5114,14 +5192,14 @@ drmmode_crtc_commit_hdr(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
     }
 
     if (drmmode_crtc->use_gamma_lut) {
-        if (drmmode_crtc_create_color_blobs(crtc, mode, sdr_white_level,
-                                            &color_blobs))
+        if (drmmode_crtc_create_color_blobs(crtc, mode, metadata,
+                                            sdr_white_level, &color_blobs))
             ret |= drmmode_crtc_set_color_props(req, crtc, &color_blobs);
         else
             ret = -1;
     }
 
-    if (update_connectors && metadata &&
+    if (update_connectors && drmmode_hdr_mode_signals_hdr(mode) &&
         drmModeCreatePropertyBlob(drmmode->fd, metadata, sizeof(*metadata),
                                   &metadata_blob) != 0)
         ret = -1;
@@ -5136,8 +5214,8 @@ drmmode_crtc_commit_hdr(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
             !drmmode_output->props_connector[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA].prop_id)
             continue;
 
-        if (mode != DRMMODE_HDR_OFF) {
-            if (drmmode_crtc->hdr_mode == DRMMODE_HDR_OFF)
+        if (drmmode_hdr_mode_signals_hdr(mode)) {
+            if (!drmmode_hdr_mode_signals_hdr(drmmode_crtc->hdr_mode))
                 drmmode_output_save_sdr_props(drmmode_output);
             drmmode_output_get_hdr_props(drmmode_output, metadata_blob, hdr_props);
             values = hdr_props;
@@ -5169,7 +5247,8 @@ drmmode_crtc_update_color(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-    if (!drmmode_crtc_commit_hdr(crtc, drmmode_crtc->hdr_mode, NULL,
+    if (!drmmode_crtc_commit_hdr(crtc, drmmode_crtc->hdr_mode,
+                                 &drmmode_crtc->hdr_metadata,
                                  drmmode_crtc->sdr_white_level, FALSE))
         xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
                    "Failed to update color management on CRTC %d: %s\n",
@@ -5177,17 +5256,24 @@ drmmode_crtc_update_color(xf86CrtcPtr crtc)
 }
 
 static Bool
-drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc, int *sdr_white_level)
+drmmode_crtc_supports_color_conversion(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return !drmmode_crtc->hdr_failed && drmmode_crtc->use_gamma_lut &&
+        drmmode_crtc->props[DRMMODE_CRTC_CTM].prop_id &&
+        drmmode_crtc->props[DRMMODE_CRTC_DEGAMMA_LUT].prop_id &&
+        drmmode_crtc->props[DRMMODE_CRTC_DEGAMMA_LUT_SIZE].value >= 2;
+}
+
+Bool
+drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc)
 {
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     Bool has_output = FALSE;
     int i;
 
-    if (drmmode_crtc->hdr_failed || !drmmode_crtc->use_gamma_lut ||
-        !drmmode_crtc->props[DRMMODE_CRTC_CTM].prop_id ||
-        !drmmode_crtc->props[DRMMODE_CRTC_DEGAMMA_LUT].prop_id ||
-        drmmode_crtc->props[DRMMODE_CRTC_DEGAMMA_LUT_SIZE].value < 2)
+    if (!drmmode_crtc_supports_color_conversion(crtc))
         return FALSE;
 
     for (i = 0; i < config->num_output; i++) {
@@ -5200,56 +5286,87 @@ drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc, int *sdr_white_level)
         if (!drmmode_output->hdr_enabled || !drmmode_output->hdr_pq_supported)
             return FALSE;
 
-        if (!has_output)
-            *sdr_white_level = drmmode_output->sdr_white_level;
         has_output = TRUE;
     }
 
     return has_output;
 }
 
-static void
+Bool
+drmmode_crtc_can_show_pq(xf86CrtcPtr crtc)
+{
+    return drmmode_crtc_supports_color_conversion(crtc);
+}
+
+int
+drmmode_crtc_sdr_white_level(xf86CrtcPtr crtc)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    int i;
+
+    for (i = 0; i < config->num_output; i++) {
+        xf86OutputPtr output = config->output[i];
+        drmmode_output_private_ptr drmmode_output = output->driver_private;
+
+        if (output->crtc == crtc && drmmode_output->output_id != -1 &&
+            drmmode_output->sdr_white_level > 0)
+            return drmmode_output->sdr_white_level;
+    }
+
+    return drmmode_crtc->drmmode->sdr_white_level_default;
+}
+
+static Bool
 drmmode_crtc_set_hdr_mode(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
                           const struct hdr_output_metadata *metadata,
                           int sdr_white_level)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    Bool uses_metadata = mode == DRMMODE_HDR_PASSTHROUGH ||
+        mode == DRMMODE_HDR_TONEMAP;
+    Bool uses_white_level = mode == DRMMODE_HDR_DESKTOP ||
+        mode == DRMMODE_HDR_TONEMAP;
 
     if (mode == drmmode_crtc->hdr_mode &&
-        (mode != DRMMODE_HDR_DESKTOP ||
+        (!uses_white_level ||
          sdr_white_level == drmmode_crtc->sdr_white_level) &&
-        (mode != DRMMODE_HDR_PASSTHROUGH ||
+        (!uses_metadata ||
          memcmp(metadata, &drmmode_crtc->hdr_metadata, sizeof(*metadata)) == 0))
-        return;
+        return TRUE;
 
-    if (!drmmode_crtc_commit_hdr(crtc, mode, metadata, sdr_white_level, TRUE)) {
+    if (!drmmode_crtc_commit_hdr(crtc, mode, metadata, sdr_white_level,
+                                 drmmode_hdr_mode_signals_hdr(mode) ||
+                                 drmmode_hdr_mode_signals_hdr(drmmode_crtc->hdr_mode))) {
         if (!drmmode_crtc->hdr_failed)
             xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
                        "Failed to change HDR mode on CRTC %d: %s\n",
                        drmmode_crtc->mode_crtc->crtc_id, strerror(errno));
         drmmode_crtc->hdr_failed = TRUE;
-        return;
+        return FALSE;
     }
 
     drmmode_crtc->hdr_mode = mode;
     drmmode_crtc->sdr_white_level = sdr_white_level;
-    if (metadata)
+    if (uses_metadata)
         memcpy(&drmmode_crtc->hdr_metadata, metadata, sizeof(*metadata));
+    return TRUE;
 }
 
-void
+Bool
 drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
                                      const struct hdr_output_metadata *metadata)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     enum drmmode_hdr_mode mode = DRMMODE_HDR_OFF;
-    int sdr_white_level = drmmode_crtc->sdr_white_level;
 
-    if (drmmode_crtc_hdr_enabled(crtc, &sdr_white_level))
+    if (drmmode_crtc_hdr_enabled(crtc))
         mode = metadata ? DRMMODE_HDR_PASSTHROUGH : DRMMODE_HDR_DESKTOP;
+    else if (metadata && drmmode_crtc_supports_color_conversion(crtc))
+        mode = DRMMODE_HDR_TONEMAP;
 
-    drmmode_crtc_set_hdr_mode(crtc, mode, mode == DRMMODE_HDR_PASSTHROUGH ?
-                              metadata : NULL, sdr_white_level);
+    return drmmode_crtc_set_hdr_mode(crtc, mode, metadata,
+                                     drmmode_crtc_sdr_white_level(crtc)) &&
+        (!metadata || mode != DRMMODE_HDR_OFF);
 }
 
 void

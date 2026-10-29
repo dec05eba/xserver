@@ -55,51 +55,49 @@ present_window_flips(ScreenPtr screen)
 }
 
 static WindowPtr
-present_flip_toplevel(WindowPtr window)
+present_flip_pixmap_window(WindowPtr window)
 {
-    if (!window->parent)
-        return NULL;
-
-    while (window->parent->parent)
+    while (window->parent && window->redirectDraw == RedirectDrawNone)
         window = window->parent;
-    return window;
+    return window->parent ? window : NULL;
 }
 
 static present_flip_slot_ptr
-present_get_flip_slot(present_screen_priv_ptr screen_priv, WindowPtr toplevel)
+present_get_flip_slot(present_screen_priv_ptr screen_priv,
+                      WindowPtr pixmap_window)
 {
     present_flip_slot_ptr slot;
 
     if (!screen_priv)
         return NULL;
     xorg_list_for_each_entry(slot, &screen_priv->flip_slots, entry) {
-        if (slot->toplevel == toplevel &&
-            slot->window_flip == (toplevel != NULL))
+        if (slot->pixmap_window == pixmap_window &&
+            slot->window_flip == (pixmap_window != NULL))
             return slot;
     }
     return NULL;
 }
 
 static Bool
-present_flip_slot_key(WindowPtr window, WindowPtr *toplevel)
+present_flip_slot_key(WindowPtr window, WindowPtr *pixmap_window)
 {
-    *toplevel = NULL;
+    *pixmap_window = NULL;
     if (!present_window_flips(window->drawable.pScreen))
         return TRUE;
 
-    *toplevel = present_flip_toplevel(window);
-    return *toplevel != NULL;
+    *pixmap_window = present_flip_pixmap_window(window);
+    return *pixmap_window != NULL;
 }
 
 static present_flip_slot_ptr
 present_get_window_flip_slot(present_screen_priv_ptr screen_priv,
                              WindowPtr window)
 {
-    WindowPtr toplevel;
+    WindowPtr pixmap_window;
 
-    if (!present_flip_slot_key(window, &toplevel))
+    if (!present_flip_slot_key(window, &pixmap_window))
         return NULL;
-    return present_get_flip_slot(screen_priv, toplevel);
+    return present_get_flip_slot(screen_priv, pixmap_window);
 }
 
 static present_flip_slot_ptr
@@ -107,20 +105,20 @@ present_create_window_flip_slot(present_screen_priv_ptr screen_priv,
                                 WindowPtr window)
 {
     present_flip_slot_ptr slot;
-    WindowPtr toplevel;
+    WindowPtr pixmap_window;
 
-    if (!present_flip_slot_key(window, &toplevel))
+    if (!present_flip_slot_key(window, &pixmap_window))
         return NULL;
 
-    slot = present_get_flip_slot(screen_priv, toplevel);
+    slot = present_get_flip_slot(screen_priv, pixmap_window);
     if (slot)
         return slot;
 
     slot = calloc(1, sizeof(*slot));
     if (!slot)
         return NULL;
-    slot->toplevel = toplevel;
-    slot->window_flip = toplevel != NULL;
+    slot->pixmap_window = pixmap_window;
+    slot->window_flip = pixmap_window != NULL;
     xorg_list_add(&slot->entry, &screen_priv->flip_slots);
     return slot;
 }
@@ -164,13 +162,13 @@ present_pixmap_is_flipping(present_screen_priv_ptr screen_priv,
 }
 
 static Bool
-present_window_matches_toplevel(WindowPtr window, WindowPtr toplevel)
+present_window_matches_pixmap_window(WindowPtr window, WindowPtr pixmap_window)
 {
-    return !wBorderWidth(toplevel) &&
-        window->drawable.x == toplevel->drawable.x &&
-        window->drawable.y == toplevel->drawable.y &&
-        window->drawable.width == toplevel->drawable.width &&
-        window->drawable.height == toplevel->drawable.height &&
+    return !wBorderWidth(pixmap_window) &&
+        window->drawable.x == pixmap_window->drawable.x &&
+        window->drawable.y == pixmap_window->drawable.y &&
+        window->drawable.width == pixmap_window->drawable.width &&
+        window->drawable.height == pixmap_window->drawable.height &&
         RegionEqual(&window->clipList, &window->winSize);
 }
 
@@ -200,15 +198,15 @@ present_window_covers_crtc(WindowPtr window)
 }
 
 static Bool
-present_can_window_flip_toplevel(present_screen_priv_ptr screen_priv,
-                                 WindowPtr window)
+present_can_flip_pixmap_window(present_screen_priv_ptr screen_priv,
+                               WindowPtr window)
 {
-    WindowPtr toplevel = present_flip_toplevel(window);
+    WindowPtr pixmap_window = present_flip_pixmap_window(window);
 
-    return toplevel &&
+    return pixmap_window &&
         screen_priv->info->version >= 2 && screen_priv->info->window_flip &&
-        CompositeIsServerToplevel(toplevel) &&
-        present_window_matches_toplevel(window, toplevel);
+        CompositeIsServerRedirected(pixmap_window) &&
+        present_window_matches_pixmap_window(window, pixmap_window);
 }
 
 static Bool
@@ -271,7 +269,7 @@ present_check_window_flip(present_screen_priv_ptr screen_priv,
     if (reason)
         *reason = PRESENT_FLIP_REASON_DRIVER_TEARFREE;
 
-    if (!present_can_window_flip_toplevel(screen_priv, window))
+    if (!present_can_flip_pixmap_window(screen_priv, window))
         return FALSE;
 
     if (x_off || y_off ||
@@ -281,7 +279,9 @@ present_check_window_flip(present_screen_priv_ptr screen_priv,
 
     if (window->drawable.width != pixmap->drawable.width ||
         window->drawable.height != pixmap->drawable.height ||
-        window->drawable.depth != pixmap->drawable.depth)
+        window->drawable.depth != pixmap->drawable.depth ||
+        present_flip_pixmap_window(window)->drawable.depth !=
+        pixmap->drawable.depth)
         return FALSE;
 
     if (!present_ask_driver_to_flip(screen_priv, crtc, window, pixmap,
@@ -415,20 +415,21 @@ present_flip(RRCrtcPtr crtc,
 static Bool
 present_window_flip(present_flip_slot_ptr slot, present_vblank_ptr vblank)
 {
-    WindowPtr                   toplevel = slot->toplevel;
-    ScreenPtr                   screen = toplevel->drawable.pScreen;
+    WindowPtr                   pixmap_window = slot->pixmap_window;
+    ScreenPtr                   screen = pixmap_window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
-    PixmapPtr                   old_pixmap = screen->GetWindowPixmap(toplevel);
+    PixmapPtr                   old_pixmap =
+        screen->GetWindowPixmap(pixmap_window);
     PixmapPtr                   pixmap = vblank->pixmap;
 
     if (!(*screen_priv->info->window_flip) (vblank->crtc, vblank->event_id,
-                                            toplevel, pixmap,
+                                            pixmap_window, pixmap,
                                             vblank->sync_flip))
         return FALSE;
 
     pixmap->screen_x = old_pixmap->screen_x;
     pixmap->screen_y = old_pixmap->screen_y;
-    present_set_tree_pixmap(toplevel, old_pixmap, pixmap);
+    present_set_tree_pixmap(pixmap_window, old_pixmap, pixmap);
     pixmap->refcnt++;
 
     if (slot->window_pixmap && old_pixmap == slot->flip_pixmap) {
@@ -467,18 +468,18 @@ present_flip_slot(ScreenPtr screen, present_flip_slot_ptr slot,
 }
 
 PixmapPtr
-present_window_flip_pixmap(WindowPtr toplevel)
+present_window_flip_pixmap(WindowPtr pixmap_window)
 {
-    ScreenPtr                   screen = toplevel->drawable.pScreen;
+    ScreenPtr                   screen = pixmap_window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
     present_flip_slot_ptr       slot;
     PixmapPtr                   pixmap;
 
-    slot = present_get_flip_slot(screen_priv, toplevel);
+    slot = present_get_flip_slot(screen_priv, pixmap_window);
     if (!slot || !slot->window_pixmap)
         return NULL;
 
-    pixmap = screen->GetWindowPixmap(toplevel);
+    pixmap = screen->GetWindowPixmap(pixmap_window);
     if (pixmap == slot->flip_pixmap ||
         (slot->flip_pending && pixmap == slot->flip_pending->pixmap))
         return pixmap;
@@ -657,12 +658,13 @@ present_restore_window_slot(ScreenPtr screen, present_flip_slot_ptr slot)
 
     slot->window_pixmap = NULL;
 
-    if (slot->toplevel && flip_pixmap &&
-        screen->GetWindowPixmap(slot->toplevel) == flip_pixmap) {
+    if (slot->pixmap_window && flip_pixmap &&
+        screen->GetWindowPixmap(slot->pixmap_window) == flip_pixmap) {
         present_copy_region(&window_pixmap->drawable, flip_pixmap, NULL, 0, 0);
         window_pixmap->screen_x = flip_pixmap->screen_x;
         window_pixmap->screen_y = flip_pixmap->screen_y;
-        present_set_tree_pixmap(slot->toplevel, flip_pixmap, window_pixmap);
+        present_set_tree_pixmap(slot->pixmap_window, flip_pixmap,
+                                window_pixmap);
         dixDestroyPixmap(flip_pixmap, flip_pixmap->drawable.id);
     }
     else {
@@ -724,7 +726,7 @@ present_unflip_slot(ScreenPtr screen, present_flip_slot_ptr slot)
     DebugPresent(("u %" PRIu64 "\n", slot->unflip_event_id));
 
     if (slot->window_flip)
-        (*screen_priv->info->window_unflip) (screen, slot->toplevel,
+        (*screen_priv->info->window_unflip) (screen, slot->pixmap_window,
                                              slot->unflip_event_id);
     else
         (*screen_priv->info->unflip) (screen, slot->unflip_event_id);
@@ -887,8 +889,8 @@ present_scmd_can_window_flip(WindowPtr window)
         return FALSE;
 
     if (present_window_flips(screen))
-        return present_can_window_flip_toplevel(screen_priv, window) &&
-            present_window_covers_crtc(present_flip_toplevel(window));
+        return present_can_flip_pixmap_window(screen_priv, window) &&
+            present_window_covers_crtc(present_flip_pixmap_window(window));
 
     /* Check to see if the driver supports flips at all */
     if (!screen_priv->info->flip)
@@ -940,8 +942,8 @@ restart:
             }
             present_restore_slot(screen, slot);
         }
-        if (slot->window_flip && slot->toplevel == window)
-            slot->toplevel = NULL;
+        if (slot->window_flip && slot->pixmap_window == window)
+            slot->pixmap_window = NULL;
     }
 }
 

@@ -95,6 +95,7 @@ enum drmmode_hdr_mode {
     DRMMODE_HDR_OFF,
     DRMMODE_HDR_DESKTOP,
     DRMMODE_HDR_PASSTHROUGH,
+    DRMMODE_HDR_TONEMAP,
 };
 
 typedef struct {
@@ -213,8 +214,14 @@ typedef struct {
 } drmmode_scanout_rec;
 
 typedef struct {
+    PixmapPtr intermediate;
+    Bool pq;
+    int sdr_white_level;
+} drmmode_composition_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
-    PixmapPtr untransformed;
+    drmmode_composition_rec composition;
     drmmode_scanout_rec scanout;
     struct xorg_list dri_flip_list;
     uint32_t back_idx;
@@ -400,8 +407,12 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
-void drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
+Bool drmmode_crtc_set_hdr_output_metadata(xf86CrtcPtr crtc,
                                           const struct hdr_output_metadata *metadata);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
+Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);
+Bool drmmode_crtc_can_show_pq(xf86CrtcPtr crtc);
+int drmmode_crtc_sdr_white_level(xf86CrtcPtr crtc);
+const struct drm_color_ctm *drmmode_crtc_user_ctm(xf86CrtcPtr crtc);
 
 #endif
