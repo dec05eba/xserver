@@ -1992,7 +1992,7 @@ drmmode_set_cursor_position(xf86CrtcPtr crtc, int x, int y)
 }
 
 static Bool
-drmmode_set_cursor(xf86CrtcPtr crtc, int width, int height)
+drmmode_set_cursor(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
@@ -2004,14 +2004,16 @@ drmmode_set_cursor(xf86CrtcPtr crtc, int width, int height)
 	    return TRUE;
 
     ret = drmModeSetCursor2(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                            handle, width, height,
+                            handle, drmmode_crtc->cursor_width,
+                            drmmode_crtc->cursor_height,
                             cursor->bits->xhot, cursor->bits->yhot);
 
     /* -EINVAL can mean that an old kernel supports drmModeSetCursor but
      * not drmModeSetCursor2, though it can mean other things too. */
     if (ret == -EINVAL)
         ret = drmModeSetCursor(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                               handle, width, height);
+                               handle, drmmode_crtc->cursor_width,
+                               drmmode_crtc->cursor_height);
 
     /* -ENXIO normally means that the current drm driver supports neither
      * cursor_set nor cursor_set2.  Disable hardware cursor support for
@@ -2024,14 +2026,8 @@ drmmode_set_cursor(xf86CrtcPtr crtc, int width, int height)
         drmmode_crtc->drmmode->sw_cursor = TRUE;
     }
 
-    if (ret)
-        /* fallback to swcursor */
-        return FALSE;
-
-    drmmode_crtc->cursor_width = width;
-    drmmode_crtc->cursor_height = height;
-
-    return TRUE;
+    /* fallback to swcursor */
+    return ret == 0;
 }
 
 static void drmmode_hide_cursor(xf86CrtcPtr crtc);
@@ -2098,6 +2094,9 @@ drmmode_load_cursor_argb_check(xf86CrtcPtr crtc, CARD32 *image)
         height = ms->max_cursor_height;
     }
 
+    drmmode_crtc->cursor_width = width;
+    drmmode_crtc->cursor_height = height;
+
     i = 0;
     for (y = 0; y < height; y++) {
         for (x = 0; x < width; x++) {
@@ -2112,7 +2111,7 @@ drmmode_load_cursor_argb_check(xf86CrtcPtr crtc, CARD32 *image)
         ptr[i++] = 0;
 
     if (drmmode_crtc->cursor_up)
-        return drmmode_set_cursor(crtc, width, height);
+        return drmmode_set_cursor(crtc);
     return TRUE;
 }
 
@@ -2132,7 +2131,7 @@ drmmode_show_cursor(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_crtc->cursor_up = TRUE;
-    return drmmode_set_cursor(crtc, drmmode_crtc->cursor_width, drmmode_crtc->cursor_height);
+    return drmmode_set_cursor(crtc);
 }
 
 static uint32_t
