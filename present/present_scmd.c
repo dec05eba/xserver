@@ -819,6 +819,14 @@ present_event_notify(uint64_t event_id, uint64_t ust, uint64_t msc)
     }
 }
 
+static void
+present_vblank_copy_instead(present_vblank_ptr vblank)
+{
+    vblank->flip = FALSE;
+    if (vblank->reason < PRESENT_FLIP_REASON_DRIVER_TEARFREE)
+        vblank->exec_msc = vblank->target_msc;
+}
+
 /*
  * 'window' is being reconfigured. Check to see if it is involved
  * in flipping and clean up as necessary
@@ -864,12 +872,10 @@ restart:
     /* Now check any queued vblanks */
     xorg_list_for_each_entry(vblank, &window_priv->vblank, window_list) {
         if (vblank->queued && vblank->flip && !present_check_flip(vblank->crtc, window, vblank->pixmap, vblank->sync_flip, NULL, 0, 0, &reason)) {
-            vblank->flip = FALSE;
             /* Don't spuriously flag this as a TearFree presentation */
             if (reason < PRESENT_FLIP_REASON_DRIVER_TEARFREE)
                 vblank->reason = reason;
-            if (vblank->sync_flip)
-                vblank->exec_msc = vblank->target_msc;
+            present_vblank_copy_instead(vblank);
         }
     }
 }
@@ -1032,8 +1038,7 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
               */
             slot->flip_pending = NULL;
             present_maybe_free_flip_slot(slot);
-            vblank->flip = FALSE;
-            vblank->exec_msc = vblank->target_msc;
+            present_vblank_copy_instead(vblank);
         }
         DebugPresent(("\tc %p %" PRIu64 ": %08" PRIx32 " -> %08" PRIx32 "\n",
                       vblank, crtc_msc, vblank->pixmap->drawable.id, vblank->window->drawable.id));
