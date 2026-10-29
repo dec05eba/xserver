@@ -226,6 +226,7 @@ typedef struct {
     struct xorg_list dri_flip_list;
     uint32_t back_idx;
     uint32_t flip_seq;
+    uint64_t compose_usec;
 } drmmode_tearfree_rec, *drmmode_tearfree_ptr;
 
 typedef struct {

@@ -668,7 +668,7 @@ dispatch_dirty_region(ScrnInfoPtr scrn, xf86CrtcPtr crtc,
 }
 
 static void
-ms_tearfree_do_flips(ScreenPtr pScreen)
+ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
 {
 #ifdef HAVE_GBM
     ScrnInfoPtr scrn = xf86ScreenToScrn(pScreen);
@@ -702,6 +702,9 @@ ms_tearfree_do_flips(ScreenPtr pScreen)
          * screen already
          */
         if (RegionNil(&trf->buf[trf->back_idx ^ 1].dmg) && !trf->scanout.fb_id)
+            continue;
+
+        if (!ms_tearfree_compose_due(crtc, timeout))
             continue;
 
         /* Flip. If it fails, notify the kernel of the front buffer damages */
@@ -890,7 +893,7 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
 
     ms_dirty_update(pScreen, timeout);
     ms_hdr_update(pScreen);
-    ms_tearfree_do_flips(pScreen);
+    ms_tearfree_do_flips(pScreen, timeout);
 }
 
 static void

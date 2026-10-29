@@ -15,7 +15,8 @@ glamoregl_lib = shared_module(
         dependency('libdrm', version: '>= 2.4.46'),
         gbm_dep,
     ],
-    link_with: [glamor, libxserver_glx],
+    link_whole: glamor,
+    link_with: libxserver_glx,
 
     install: true,
     install_dir: module_dir,

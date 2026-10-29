@@ -267,6 +267,8 @@ ms_tearfree_dri_abort(xf86CrtcPtr crtc,
 void
 ms_tearfree_dri_abort_all(xf86CrtcPtr crtc);
 
+Bool ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout);
+
 Bool ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc);
 
 Bool ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,

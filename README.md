@@ -48,7 +48,9 @@ with Present (Vulkan and OpenGL do) its buffer is put on the monitor directly.
 This also works for a window inside a window manager frame. HDR and variable
 refresh rate follow the window that is shown this way on each monitor.
 
-Since the X server is the compositor:
+In this fork the Xorg server now also does the compositing work, so other compositors aren't
+needed and that also allows for lower latency while compositing.
+When you have a fullscreen window the compositing is bypassed, for maximum performance.
 
 - Windows with an alpha channel are transparent and `_NET_WM_WINDOW_OPACITY`
   is supported, so you don't need a compositor such as picom.
@@ -163,3 +165,22 @@ can be changed while the X server runs:
 The X server doesn't use the value itself, it's up to applications to read it.
 Applications should prefer this `DPI` RandR property and only fallback to other properties, such as `XResources` `Xft.dpi` it the RandR property isn't set.
 Applications should also use the DPI of the monitor that the center of the window is inside and when changing scale the size of the window itself shouldn't change, only the content should scale.
+
+NVIDIA
+------
+
+The modesetting driver also works with the proprietary NVIDIA driver, instead
+of NVIDIA's own Xorg driver, so per-monitor framebuffers, HDR and the other
+features above can be used on NVIDIA GPUs. This is untested.
+
+It needs kernel modesetting enabled in the NVIDIA kernel driver
+(`nvidia-drm.modeset=1`) and an NVIDIA driver with GBM support (495 or newer).
+Select the modesetting driver in the Device section of xorg.conf:
+
+    Section "Device"
+        Identifier "GPU"
+        Driver     "modesetting"
+    EndSection
+
+HDR also needs the NVIDIA kernel driver to expose the properties listed in the
+HDR section.

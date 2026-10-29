@@ -851,6 +851,57 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     return TRUE;
 }
 
+#define MS_TEARFREE_COMPOSE_SLACK_USEC 2000
+
+static Bool
+ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next)
+{
+    double refresh = xf86ModeVRefresh(&crtc->mode);
+    uint64_t ust, msc, period, elapsed;
+
+    if (refresh <= 0.0 || ms_get_crtc_ust_msc(crtc, &ust, &msc) != Success ||
+        !ust)
+        return FALSE;
+
+    /* The vblank timestamp is the end of vblank, so it's slightly in the future
+     * while the vblank is being handled.
+     */
+    period = 1000000.0 / refresh;
+    elapsed = now > ust ? now - ust : 0;
+    *next = ust + (elapsed / period + 1) * period;
+    return TRUE;
+}
+
+Bool
+ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint64_t margin = drmmode_crtc->tearfree.compose_usec +
+        MS_TEARFREE_COMPOSE_SLACK_USEC;
+    uint64_t now = GetTimeInMicros();
+    uint64_t next;
+
+    if (!ms_tearfree_next_vblank(crtc, now, &next) || next - now <= margin)
+        return TRUE;
+
+    AdjustWaitForDelay(timeout, (next - margin - now + 999) / 1000);
+    return FALSE;
+}
+
+static void
+ms_tearfree_compose(xf86CrtcPtr crtc, drmmode_shadow_fb_ptr buf)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    uint64_t start = GetTimeInMicros();
+    uint64_t elapsed;
+
+    drmmode_compose_damage(crtc, buf->px, &buf->dmg, TRUE);
+
+    elapsed = GetTimeInMicros() - start;
+    trf->compose_usec = max(elapsed, trf->compose_usec - trf->compose_usec / 8);
+}
+
 Bool
 ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
 {
@@ -870,7 +921,7 @@ ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
     }
 
     /* Copy the damage to the back buffer and then flip it at the vblank */
-    drmmode_compose_damage(crtc, trf->buf[idx].px, &trf->buf[idx].dmg, TRUE);
+    ms_tearfree_compose(crtc, &trf->buf[idx]);
     if (do_queue_flip_on_crtc(screen, crtc, DRM_MODE_PAGE_FLIP_EVENT,
                               seq, trf->buf[idx].fb_id, 0, 0))
         goto no_flip;
