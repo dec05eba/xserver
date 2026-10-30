@@ -39,6 +39,9 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#ifdef __linux__
+#include <linux/dma-buf.h>
+#endif
 
 #include "xf86.h"
 #include "xf86Priv.h"
@@ -794,8 +797,9 @@ dispatch_secondary_dirty(ScreenPtr pScreen)
 }
 
 static void
-redisplay_dirty(ScreenPtr screen, PixmapDirtyUpdatePtr dirty, int *timeout)
+ms_dirty_paint(PixmapDirtyUpdatePtr dirty)
 {
+    ScreenPtr screen = dirty->src->pScreen;
     RegionRec pixregion;
 
     PixmapRegionInit(&pixregion, dirty->secondary_dst);
@@ -804,6 +808,15 @@ redisplay_dirty(ScreenPtr screen, PixmapDirtyUpdatePtr dirty, int *timeout)
         ms_compositor_sync_dirty(dirty);
     else
         PixmapSyncDirtyHelper(dirty);
+
+    DamageRegionProcessPending(&dirty->secondary_dst->drawable);
+    RegionUninit(&pixregion);
+}
+
+static void
+redisplay_dirty(ScreenPtr screen, PixmapDirtyUpdatePtr dirty, int *timeout)
+{
+    ms_dirty_paint(dirty);
 
     if (!screen->isGPU) {
 #ifdef HAVE_GBM
@@ -821,9 +834,6 @@ redisplay_dirty(ScreenPtr screen, PixmapDirtyUpdatePtr dirty, int *timeout)
         if (timeout)
             *timeout = 0;
     }
-
-    DamageRegionProcessPending(&dirty->secondary_dst->drawable);
-    RegionUninit(&pixregion);
 }
 
 static void
@@ -1714,10 +1724,6 @@ msEnableSharedPixmapFlipping(RRCrtcPtr crtc, PixmapPtr front, PixmapPtr back)
     if (!ms->drmmode.pageflip)
         return FALSE;
 
-    /* Not currently supported with reverse PRIME */
-    if (ms->drmmode.reverse_prime_offload_mode)
-        return FALSE;
-
 #ifdef XSERVER_PLATFORM_BUS
     if (ms->pEnt->location.type == BUS_PLATFORM) {
         const char *syspath =
@@ -1752,6 +1758,23 @@ msDisableSharedPixmapFlipping(RRCrtcPtr crtc)
         drmmode_DisableSharedPixmapFlipping(xf86Crtc, &ms->drmmode);
 }
 
+static int
+ms_shared_pixmap_dmabuf_fd(PixmapPtr secondary_dst)
+{
+#ifdef HAVE_GBM
+    PixmapPtr pixmap = secondary_dst->primary_pixmap;
+    ScreenPtr screen = pixmap->drawable.pScreen;
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+    CARD16 stride;
+    CARD32 size;
+
+    if (ms->drmmode.glamor)
+        return ms->glamor.shareable_fd_from_pixmap(screen, pixmap, &stride,
+                                                   &size);
+#endif
+    return -1;
+}
+
 static Bool
 msStartFlippingPixmapTracking(RRCrtcPtr crtc, DrawablePtr src,
                               PixmapPtr secondary_dst1, PixmapPtr secondary_dst2,
@@ -1784,7 +1807,45 @@ msStartFlippingPixmapTracking(RRCrtcPtr crtc, DrawablePtr src,
     ppriv1->defer_dirty_update = TRUE;
     ppriv2->defer_dirty_update = TRUE;
 
+    ppriv1->dmabuf_fd = ms_shared_pixmap_dmabuf_fd(secondary_dst1);
+    ppriv2->dmabuf_fd = ms_shared_pixmap_dmabuf_fd(secondary_dst2);
+
     return TRUE;
+}
+
+static Bool
+ms_dmabuf_add_writer(int dmabuf_fd, int fence_fd)
+{
+#ifdef DMA_BUF_IOCTL_IMPORT_SYNC_FILE
+    struct dma_buf_import_sync_file args = {
+        .flags = DMA_BUF_SYNC_WRITE,
+        .fd = fence_fd,
+    };
+
+    return dmabuf_fd >= 0 && fence_fd >= 0 &&
+        drmIoctl(dmabuf_fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &args) == 0;
+#else
+    return FALSE;
+#endif
+}
+
+static void
+ms_fence_shared_pixmap(ScreenPtr screen, msPixmapPrivPtr ppriv)
+{
+#ifdef HAVE_GBM
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+    int fence_fd = -1;
+
+    if (!ms->drmmode.glamor)
+        return;
+
+    if (ms->glamor.egl_create_fence_fd)
+        fence_fd = ms->glamor.egl_create_fence_fd(screen);
+    if (!ms_dmabuf_add_writer(ppriv->dmabuf_fd, fence_fd))
+        ms->glamor.finish(screen);
+    if (fence_fd >= 0)
+        close(fence_fd);
+#endif
 }
 
 static Bool
@@ -1798,7 +1859,8 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
     RegionPtr region = DamageRegion(ppriv->dirty->damage);
 
     if (RegionNotEmpty(region)) {
-        redisplay_dirty(ppriv->secondary_src->pScreen, ppriv->dirty, NULL);
+        ms_dirty_paint(ppriv->dirty);
+        ms_fence_shared_pixmap(pScreen, ppriv);
         DamageEmpty(ppriv->dirty->damage);
 
         return TRUE;
@@ -1832,6 +1894,13 @@ msStopFlippingPixmapTracking(DrawablePtr src,
         ppriv1->defer_dirty_update = FALSE;
         ppriv2->defer_dirty_update = FALSE;
     }
+
+    if (ppriv1->dmabuf_fd >= 0)
+        close(ppriv1->dmabuf_fd);
+    if (ppriv2->dmabuf_fd >= 0)
+        close(ppriv2->dmabuf_fd);
+    ppriv1->dmabuf_fd = -1;
+    ppriv2->dmabuf_fd = -1;
 
     return ret;
 }

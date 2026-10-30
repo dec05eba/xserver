@@ -257,6 +257,11 @@ typedef struct {
 } drmmode_tearfree_rec, *drmmode_tearfree_ptr;
 
 typedef struct {
+    drmmode_shadow_fb_rec buf[2];
+    uint32_t back_idx;
+} drmmode_prime_scanout_rec;
+
+typedef struct {
     uint64_t base_ust;
     uint64_t base_msc;
     uint64_t period;
@@ -286,6 +291,7 @@ typedef struct {
     PixmapPtr prime_pixmap;
     PixmapPtr prime_pixmap_back;
     unsigned prime_pixmap_x;
+    drmmode_prime_scanout_rec prime_scanout;
 
     int src_x, src_y;
     drmmode_fb_layout_rec scanout_layout;
@@ -376,6 +382,7 @@ typedef struct _msPixmapPriv {
     PixmapDirtyUpdatePtr dirty; /* cached dirty ent to avoid searching list */
     DrawablePtr secondary_src; /* if we exported shared pixmap, dirty tracking src */
     Bool notify_on_damage; /* if sink has requested damage notification */
+    int dmabuf_fd;
 } msPixmapPrivRec, *msPixmapPrivPtr;
 
 #define msGetPixmapPriv(drmmode, p) ((msPixmapPrivPtr)dixGetPrivateAddr(&(p)->devPrivates, &(drmmode)->pixmapPrivateKeyRec))

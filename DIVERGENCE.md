@@ -50,7 +50,7 @@ Limitations:
 - Reading the root window works with GetImage (screenshots, `xwd`, ffmpeg
   x11grab), but not with CopyArea or Render.
 - Fullscreen windows on monitors connected to a secondary GPU (reverse PRIME)
-  don't bypass compositing.
+  don't bypass compositing, and HDR can't be enabled on those monitors.
 - With a software cursor, fullscreen windows on the monitor with the cursor
   don't bypass compositing.
 

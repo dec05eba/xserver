@@ -689,12 +689,17 @@ drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    drmmode_prime_scanout_rec *prime_scanout = &drmmode_crtc->prime_scanout;
     int ret;
 
     *fb_id = 0;
 
     if (trf->scanout.fb_id) {
         *fb_id = trf->scanout.fb_id;
+        *x = *y = 0;
+    }
+    else if (prime_scanout->buf[0].px) {
+        *fb_id = prime_scanout->buf[prime_scanout->back_idx ^ 1].fb_id;
         *x = *y = 0;
     }
     else if (drmmode_crtc->prime_pixmap) {
@@ -1419,6 +1424,100 @@ drmmode_SetSlaveBO(PixmapPtr ppix,
     return TRUE;
 }
 
+static PixmapPtr
+drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width, int height,
+                         int depth, drmmode_bo *bo, uint32_t *fb_id);
+static void
+drmmode_shadow_fb_destroy(xf86CrtcPtr crtc, PixmapPtr pixmap,
+                          void *data, drmmode_bo *bo, uint32_t *fb_id);
+static void
+drmmode_clear_pixmap(PixmapPtr pixmap);
+
+static Bool
+drmmode_crtc_can_fence_flip(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return ms->atomic_modeset && ms->glamor.egl_create_fence_fd &&
+        drmmode_crtc->props_plane[DRMMODE_PLANE_IN_FENCE_FD].prop_id;
+}
+
+static void
+drmmode_destroy_prime_scanout(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = &drmmode_crtc->prime_scanout;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++) {
+        if (prime_scanout->buf[i].px) {
+            drmmode_shadow_fb_destroy(crtc, prime_scanout->buf[i].px,
+                                      (void *)(long)1,
+                                      &prime_scanout->buf[i].bo,
+                                      &prime_scanout->buf[i].fb_id);
+            prime_scanout->buf[i].px = NULL;
+        }
+    }
+    prime_scanout->back_idx = 0;
+}
+
+static Bool
+drmmode_create_prime_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = &drmmode_crtc->prime_scanout;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++) {
+        prime_scanout->buf[i].px =
+            drmmode_shadow_fb_create(crtc, NULL, ppix->drawable.width,
+                                     ppix->drawable.height,
+                                     ppix->drawable.depth,
+                                     &prime_scanout->buf[i].bo,
+                                     &prime_scanout->buf[i].fb_id);
+        if (!prime_scanout->buf[i].px) {
+            drmmode_destroy_prime_scanout(crtc);
+            return FALSE;
+        }
+        drmmode_clear_pixmap(prime_scanout->buf[i].px);
+    }
+    return TRUE;
+}
+
+static Bool
+drmmode_prime_scanout_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
+{
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = &drmmode_crtc->prime_scanout;
+    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
+    int fence_fd = -1;
+    GCPtr gc;
+    int ret;
+
+    gc = GetScratchGC(ppix->drawable.depth, screen);
+    if (!gc)
+        return FALSE;
+
+    ValidateGC(&back->px->drawable, gc);
+    gc->ops->CopyArea(&ppix->drawable, &back->px->drawable, gc, 0, 0,
+                      ppix->drawable.width, ppix->drawable.height, 0, 0);
+    FreeScratchGC(gc);
+
+    if (drmmode_crtc_can_fence_flip(crtc))
+        fence_fd = ms->glamor.egl_create_fence_fd(screen);
+    if (fence_fd < 0)
+        ms->glamor.finish(screen);
+
+    ret = drmmode_crtc_flip(crtc, back->fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
+                            fence_fd, (void *)(intptr_t) seq);
+    if (fence_fd >= 0)
+        close(fence_fd);
+    return ret == 0;
+}
+
 static Bool
 drmmode_SharedPixmapPresent(PixmapPtr ppix, xf86CrtcPtr crtc,
                             drmmode_ptr drmmode)
@@ -1472,6 +1571,8 @@ drmmode_SharedPixmapVBlankEventHandler(uint64_t frame, uint64_t usec,
         /* frontTarget is being displayed, update crtc to reflect */
         drmmode_crtc->prime_pixmap = args->frontTarget;
         drmmode_crtc->prime_pixmap_back = args->backTarget;
+        if (args->drmmode->reverse_prime_offload_mode)
+            drmmode_crtc->prime_scanout.back_idx ^= 1;
 
         /* Safe to present on backTarget, no longer displayed */
         drmmode_SharedPixmapPresent(args->backTarget, args->crtc, args->drmmode);
@@ -1530,6 +1631,7 @@ drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     msPixmapPrivPtr ppriv_front = msGetPixmapPriv(drmmode, frontTarget);
+    Bool flipped;
 
     struct vblank_event_args *event_args;
 
@@ -1548,9 +1650,15 @@ drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
                            drmmode_SharedPixmapVBlankEventHandler,
                            drmmode_SharedPixmapVBlankEventAbort);
 
-    if (drmModePageFlip(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                        ppriv_front->fb_id, DRM_MODE_PAGE_FLIP_EVENT,
-                        (void *)(intptr_t) ppriv_front->flip_seq) < 0) {
+    if (drmmode->reverse_prime_offload_mode)
+        flipped = drmmode_prime_scanout_flip(frontTarget, crtc,
+                                             ppriv_front->flip_seq);
+    else
+        flipped = drmModePageFlip(drmmode->fd,
+                                  drmmode_crtc->mode_crtc->crtc_id,
+                                  ppriv_front->fb_id, DRM_MODE_PAGE_FLIP_EVENT,
+                                  (void *)(intptr_t) ppriv_front->flip_seq) >= 0;
+    if (!flipped) {
         ms_drm_abort_seq(crtc->scrn, ppriv_front->flip_seq);
         return FALSE;
     }
@@ -1608,6 +1716,16 @@ drmmode_EnableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode,
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
+    if (drmmode->reverse_prime_offload_mode) {
+        if (!drmmode_create_prime_scanout(crtc, front))
+            return FALSE;
+
+        drmmode_crtc->prime_pixmap = front;
+        drmmode_crtc->prime_pixmap_back = back;
+        drmmode_crtc->enable_flipping = TRUE;
+        return TRUE;
+    }
+
     drmmode_crtc->enable_flipping = TRUE;
 
     /* Set front scanout pixmap */
@@ -1638,6 +1756,13 @@ drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode)
     drmmode_crtc->enable_flipping = FALSE;
 
     drmmode_FiniSharedPixmapFlipping(crtc, drmmode);
+
+    if (drmmode->reverse_prime_offload_mode) {
+        drmmode_crtc->prime_pixmap = NULL;
+        drmmode_crtc->prime_pixmap_back = NULL;
+        drmmode_destroy_prime_scanout(crtc);
+        return;
+    }
 
     drmmode_set_target_scanout_pixmap(crtc, NULL, &drmmode_crtc->prime_pixmap);
 
@@ -1833,16 +1958,6 @@ drmmode_compose_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg,
 #endif
 }
 
-static Bool
-drmmode_crtc_can_fence_flip(xf86CrtcPtr crtc)
-{
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-
-    return ms->atomic_modeset && ms->glamor.egl_create_fence_fd &&
-        drmmode_crtc->props_plane[DRMMODE_PLANE_IN_FENCE_FD].prop_id;
-}
-
 /* Returns a fence that signals when the composition is done, or -1 if it is
  * done already.
  */
@@ -1871,9 +1986,6 @@ drmmode_compose_damage_fenced(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg)
 #endif
 }
 
-static void
-drmmode_shadow_fb_destroy(xf86CrtcPtr crtc, PixmapPtr pixmap,
-                          void *data, drmmode_bo *bo, uint32_t *fb_id);
 static void
 drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
 {
@@ -1907,10 +2019,6 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
     trf->scanout.pixmap = NULL;
     trf->scanout.output_mode_dirty = TRUE;
 }
-
-static PixmapPtr
-drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width, int height,
-                         int depth, drmmode_bo *bo, uint32_t *fb_id);
 
 static int
 drmmode_crtc_tearfree_depth(xf86CrtcPtr crtc)
