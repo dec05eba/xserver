@@ -9,8 +9,8 @@ Note that when installing this Xorg server version you also need to rebuild
 and install the latest versions of Xorg drivers from source, such as
 [xf86-input-libinput](https://github.com/dec05eba/xf86-input-libinput).
 
-Per-monitor framebuffers
-------------------------
+Compositing
+-----------
 
 With the modesetting driver every monitor has its own framebuffer and the X
 server composites the windows itself, without tearing. Other compositors
@@ -26,9 +26,22 @@ refresh rate works with them.
   run with their compositor disabled. Mutter based window managers always composite
   and may refuse to start unless they are started with `--replace`.
 
-This is enabled when the modesetting driver uses glamor. Set
-`Option "TearFree" "false"` in the Device section to go back to one shared
-framebuffer for all monitors.
+Compositing is on by default when the modesetting driver uses glamor. To turn
+it off, set the `Compositing` option in the Device section of xorg.conf:
+
+    Section "Device"
+        Identifier "GPU"
+        Driver     "modesetting"
+        Option     "Compositing" "false"
+    EndSection
+
+All monitors then share one framebuffer like in upstream, and a separate
+compositor such as picom can be used. Without compositing you lose tear-free
+output, transparency without a separate compositor, HDR windows that aren't
+fullscreen, synchronized window resizing.
+
+`TearFree` is the old name of this option. It still works but is deprecated,
+and if both are set `Compositing` is used.
 
 Limitations:
 
@@ -68,7 +81,7 @@ HDR
 The modesetting driver can run monitors that support HDR10 in HDR mode.
 On a monitor without HDR, or with HDR turned off, HDR windows are tone mapped to SDR.
 
-Without per-monitor framebuffers (see above) only fullscreen HDR windows are
+Without compositing (see above) only fullscreen HDR windows are
 supported. The gamma ramp (`xrandr --gamma`, night light tools) isn't applied
 to HDR monitors that are composited in HDR10, and rotated or scaled HDR
 monitors tone map HDR windows instead of showing them as HDR.
@@ -144,7 +157,7 @@ NVIDIA
 ------
 
 The modesetting driver also works with the proprietary NVIDIA driver, instead
-of NVIDIA's own Xorg driver, so per-monitor framebuffers, HDR and the other
+of NVIDIA's own Xorg driver, so compositing, HDR and the other
 features above can be used on NVIDIA GPUs. This is untested.
 
 It needs kernel modesetting enabled in the NVIDIA kernel driver

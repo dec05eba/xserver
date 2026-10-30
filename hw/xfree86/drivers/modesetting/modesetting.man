@@ -118,17 +118,27 @@ When enabled, this option allows the driver to use gamma ramps with more
 entries, if supported by the kernel. By default, GAMMA_LUT will be used for
 kms drivers which are known to be safe for use of GAMMA_LUT.
 .TP
-.BI "Option \*qTearFree\*q \*q" boolean \*q
-Give every CRTC its own scanout buffers instead of one framebuffer for the
-whole screen. The X server composites the visible windows into each CRTC's
-buffers, only where something changed, and flips them without tearing. It
-works on transformed screens too, such as rotated and scaled CRTCs. When
-PageFlip is enabled, a fullscreen window that presents with the Present
-extension is scanned out directly on its CRTC. Requires glamor and the
-Composite extension; when disabled all CRTCs scan out one shared framebuffer.
+.BI "Option \*qCompositing\*q \*q" boolean \*q
+Let the X server composite the windows itself, without tearing, so no separate
+compositor is needed. Every CRTC gets its own scanout buffers instead of one
+framebuffer for the whole screen, also on transformed screens such as rotated
+and scaled CRTCs. Windows with an alpha channel are transparent and
+_NET_WM_WINDOW_OPACITY is supported. When PageFlip is enabled, a fullscreen
+window that presents with the Present extension is scanned out directly on its
+CRTC. HDR windows that aren't fullscreen and synchronized window resizing also
+need compositing. Requires glamor and the Composite extension; when disabled
+all CRTCs scan out one shared framebuffer and a separate compositor can be
+used.
 .br
 The default is
 .B on.
+.TP
+.BI "Option \*qTearFree\*q \*q" boolean \*q
+Deprecated name for the
+.B Compositing
+option. It is used when
+.B Compositing
+isn't set.
 .TP
 .BI "Option \*qAtomic\*q \*q" boolean \*q
 Enable atomic modesetting when supported.  The default is
@@ -139,9 +149,9 @@ Enable HDR on monitors that support HDR10. The desktop is treated as gamma 2.2
 content with BT.709 primaries and is converted to HDR10 with the DEGAMMA_LUT,
 CTM and GAMMA_LUT CRTC properties. Fullscreen windows with the
 hdr_output_metadata property are passed through unconverted. Switching between
-them does not require a modeset, so it is instant. With TearFree, the monitor
-is composited in HDR10, so other windows with the property are shown as HDR
-too. The monitor always gets metadata with the luminance it reports in its
+them does not require a modeset, so it is instant. With Compositing, the
+monitor is composited in HDR10, so other windows with the property are shown
+as HDR too. The monitor always gets metadata with the luminance it reports in its
 EDID.
 On monitors with HDR disabled these windows are tone mapped to SDR. This
 sets the initial value

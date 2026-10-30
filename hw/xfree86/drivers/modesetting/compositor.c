@@ -212,8 +212,8 @@ ms_compositor_create_screen_resources(ScreenPtr screen)
 
     if (!CompositeServerInit(screen, ms_compositor_paint_hdr_proc(scrn))) {
         xf86DrvMsg(scrn->scrnIndex, X_ERROR,
-                   "Failed to set up per-monitor framebuffers, use "
-                   "Option \"TearFree\" \"false\" for a shared framebuffer\n");
+                   "Failed to set up compositing, use "
+                   "Option \"Compositing\" \"false\" for a shared framebuffer\n");
         return FALSE;
     }
 

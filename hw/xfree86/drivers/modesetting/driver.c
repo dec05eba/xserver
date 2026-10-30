@@ -157,6 +157,7 @@ static const OptionInfoRec Options[] = {
     {OPTION_USE_GAMMA_LUT, "UseGammaLUT", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_ASYNC_FLIP_SECONDARIES, "AsyncFlipSecondaries", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_TEARFREE, "TearFree", OPTV_BOOLEAN, {0}, FALSE},
+    {OPTION_COMPOSITING, "Compositing", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_HDR, "HDR", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_SDR_WHITE_LEVEL, "SDRWhiteLevel", OPTV_INTEGER, {0}, FALSE},
     {-1, NULL, OPTV_NONE, {0}, FALSE}
@@ -1154,6 +1155,26 @@ try_enable_glamor(ScrnInfoPtr pScrn)
 }
 
 static Bool
+msCompositingOption(ScrnInfoPtr pScrn, modesettingPtr ms)
+{
+    Bool compositing = TRUE;
+    Bool tearfree;
+    Bool tearfree_set = xf86GetOptValBool(ms->drmmode.Options,
+                                          OPTION_TEARFREE, &tearfree);
+
+    if (tearfree_set)
+        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+                   "Option \"TearFree\" is deprecated, use Option "
+                   "\"Compositing\" instead\n");
+
+    if (!xf86GetOptValBool(ms->drmmode.Options, OPTION_COMPOSITING,
+                           &compositing) && tearfree_set)
+        compositing = tearfree;
+
+    return compositing;
+}
+
+static Bool
 msShouldDoubleShadow(ScrnInfoPtr pScrn, modesettingPtr ms)
 {
     Bool ret = FALSE, asked;
@@ -1493,34 +1514,31 @@ PreInit(ScrnInfoPtr pScrn, int flags)
 
     if (pScrn->is_gpu) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Per-monitor framebuffer disabled on PRIME secondary GPU; "
+                   "Compositing disabled on PRIME secondary GPU; "
                    "use 'PRIME Synchronization' instead\n");
-    } else if (!xf86ReturnOptValBool(ms->drmmode.Options,
-                                     OPTION_TEARFREE, TRUE)) {
-        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Per-monitor framebuffer explicitly disabled "
-                   "(Option \"TearFree\" \"off\"); falling back to shared "
-                   "framebuffer.\n");
+    } else if (!msCompositingOption(pScrn, ms)) {
+        xf86DrvMsg(pScrn->scrnIndex, X_INFO,
+                   "Compositing disabled (Option \"Compositing\" \"false\"); "
+                   "using a shared framebuffer.\n");
     } else if (!ms->drmmode.glamor) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Per-monitor framebuffer requires Glamor acceleration; "
-                   "falling back to shared framebuffer.\n");
+                   "Compositing requires Glamor acceleration; "
+                   "falling back to a shared framebuffer.\n");
     } else if (noCompositeExtension) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Per-monitor framebuffer requires the Composite "
-                   "extension; falling back to shared framebuffer.\n");
+                   "Compositing requires the Composite extension; "
+                   "falling back to a shared framebuffer.\n");
     } else if (ms->drmmode.pageflip &&
                /* Atomic modesetting implicitly enables universal planes */
                !ms->atomic_modeset &&
                drmSetClientCap(ms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Per-monitor framebuffer requires either universal planes "
-                   "or 'Option \"PageFlip\" \"off\"'; falling back to shared "
-                   "framebuffer.\n");
+                   "Compositing requires either universal planes "
+                   "or 'Option \"PageFlip\" \"off\"'; falling back to a "
+                   "shared framebuffer.\n");
     } else {
         ms->drmmode.tearfree_enable = TRUE;
-        xf86DrvMsg(pScrn->scrnIndex, X_INFO,
-                   "Per-monitor framebuffer: enabled (TearFree)\n");
+        xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Compositing: enabled\n");
     }
 
     ms->kms_has_modifiers = FALSE;
