@@ -128,15 +128,40 @@ typedef struct _CompImplicitRedirectException {
 
 typedef struct _CompServerHeldFrame {
     PixmapPtr pPixmap;
-    BoxRec box;
+    int x, y;
+    RegionRec region;
 } CompServerHeldFrameRec;
 
-typedef struct _CompServerPendingConfigure {
-    ClientPtr client;
+typedef enum {
+    COMP_SERVER_DEFERRED_CONFIGURE,
+    COMP_SERVER_DEFERRED_EVENT,
+} CompServerDeferredKind;
+
+typedef struct _CompServerDeferredConfigure {
     Mask mask;
     INT16 x, y;
     CARD16 width, height, borderWidth;
-} CompServerPendingConfigureRec;
+} CompServerDeferredConfigureRec;
+
+typedef struct _CompServerDeferredEvent {
+    Mask eventMask;
+    xEvent event;
+} CompServerDeferredEventRec;
+
+typedef struct _CompServerDeferredOp {
+    struct xorg_list entry;
+    CompServerDeferredKind kind;
+    XID window;
+    union {
+        CompServerDeferredConfigureRec configure;
+        CompServerDeferredEventRec event;
+    } u;
+} CompServerDeferredOpRec, *CompServerDeferredOpPtr;
+
+typedef struct _CompServerDeferredWm {
+    ClientPtr client;
+    struct xorg_list ops;
+} CompServerDeferredWmRec, *CompServerDeferredWmPtr;
 
 typedef struct _CompServerSyncRequest {
     SyncTrigger trigger;
@@ -147,9 +172,10 @@ typedef struct _CompServerSyncRequest {
 
 typedef struct _CompServerFrameWait {
     Bool active;
+    Bool clientResized;
     OsTimerPtr timer;
     CompServerSyncRequestRec sync;
-    CompServerPendingConfigureRec pending;
+    CompServerDeferredWmRec deferred;
 } CompServerFrameWaitRec;
 
 typedef struct _CompServerWindow {
@@ -391,6 +417,9 @@ void
 void
  compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap);
 
+WindowPtr
+ compServerToplevel(WindowPtr pWin);
+
 Bool
  compServerHasSublayers(CompServerPtr server, WindowPtr pToplevel);
 
@@ -440,7 +469,41 @@ void
                             int w, int h);
 
 void
+ compServerInitFrameWait(CompServerWindowPtr sw);
+
+void
  compServerFreeFrameWait(CompServerWindowPtr sw);
+
+void
+ compServerDeliverWmEvent(ClientPtr client, WindowPtr pWin, Mask eventMask,
+                          xEvent *event);
+
+/*
+ * compdefer.c
+ */
+
+void
+ compServerInitDeferred(CompServerDeferredWmPtr deferred);
+
+Bool
+ compServerHasDeferred(CompServerDeferredWmPtr deferred);
+
+Bool
+ compServerDeferConfigure(CompServerDeferredWmPtr deferred, ClientPtr client,
+                          WindowPtr pWin, Mask mask, const CARD32 *values);
+
+Bool
+ compServerDeferEvent(CompServerDeferredWmPtr deferred, ClientPtr client,
+                      WindowPtr pWin, Mask eventMask, const xEvent *event);
+
+Bool
+ compServerDeferredResizes(CompServerDeferredWmPtr deferred, WindowPtr pWin);
+
+void
+ compServerReplayDeferred(CompServerDeferredWmPtr deferred);
+
+void
+ compServerFreeDeferred(CompServerDeferredWmPtr deferred);
 
 /*
  * compframe.c

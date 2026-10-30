@@ -143,7 +143,7 @@ CompositeIsServerRedirected(WindowPtr pWin)
     return TRUE;
 }
 
-static WindowPtr
+WindowPtr
 compServerToplevel(WindowPtr pWin)
 {
     while (pWin->parent->parent)
@@ -223,6 +223,7 @@ compServerTrackWindow(CompServerPtr server, WindowPtr pWin)
 
     sw->pWin = pWin;
     RegionNull(&sw->painted);
+    compServerInitFrameWait(sw);
     xorg_list_add(&sw->entry, &server->windows);
     dixSetPrivate(&pWin->devPrivates, CompServerWindowPrivateKey, sw);
     return sw;

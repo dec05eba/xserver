@@ -37,6 +37,8 @@
 #include "present.h"
 #include "propertyst.h"
 #include "syncsrv.h"
+#include "xace.h"
+#include "xacestr.h"
 
 #define COMP_SERVER_FRAME_TIMEOUT_MS 200
 #define COMP_SERVER_GEOMETRY_MASK (CWX | CWY | CWWidth | CWHeight | CWBorderWidth)
@@ -46,11 +48,39 @@ static int (*compServerSendEvent) (ClientPtr client);
 static Bool compServerApplyQueued;
 
 static Bool
-compServerWmSyncsResizes(ScreenPtr pScreen)
+compServerHasWmState(WindowPtr pWin)
 {
-    return compServerPropertyHasAtom(pScreen->root,
-                                     compServerAtom("_NET_SUPPORTED"),
-                                     compServerAtom("_NET_WM_SYNC_REQUEST"));
+    PropertyPtr pProp;
+
+    return dixLookupProperty(&pProp, pWin, compServerAtom("WM_STATE"),
+                             serverClient, DixReadAccess) == Success;
+}
+
+static WindowPtr
+compServerFindClientWindow(WindowPtr pParent, int depth)
+{
+    WindowPtr pChild, pClient;
+
+    for (pChild = pParent->firstChild; pChild; pChild = pChild->nextSib) {
+        if (compServerHasWmState(pChild))
+            return pChild;
+        if (depth > 1 &&
+            (pClient = compServerFindClientWindow(pChild, depth - 1)))
+            return pClient;
+    }
+    return NULL;
+}
+
+static WindowPtr
+compServerClientWindow(WindowPtr pToplevel)
+{
+    WindowPtr pClient;
+
+    if (compServerHasWmState(pToplevel))
+        return pToplevel;
+
+    pClient = compServerFindClientWindow(pToplevel, 2);
+    return pClient ? pClient : pToplevel;
 }
 
 static SyncCounter *
@@ -86,6 +116,23 @@ compServerStopSyncWait(CompServerWindowPtr sw)
 }
 
 static void
+compServerNoteClientResized(CompServerWindowPtr sw)
+{
+    CompServerFrameWaitRec *wait = &sw->wait;
+
+    if (wait->active || wait->sync.waiting)
+        wait->clientResized = TRUE;
+}
+
+static void
+compServerEndWait(CompServerWindowPtr sw)
+{
+    sw->wait.clientResized = FALSE;
+    if (compServerHasDeferred(&sw->wait.deferred))
+        compServerQueueApply();
+}
+
+static void
 compServerFinishFrame(CompServerWindowPtr sw)
 {
     CompServerFrameWaitRec *wait = &sw->wait;
@@ -95,8 +142,7 @@ compServerFinishFrame(CompServerWindowPtr sw)
     compServerStopSyncWait(sw);
     wait->sync.sent = FALSE;
     wait->active = FALSE;
-    if (wait->pending.mask)
-        compServerQueueApply();
+    compServerEndWait(sw);
 }
 
 static CARD32
@@ -125,11 +171,14 @@ static void
 compServerSyncReady(CompServerWindowPtr sw)
 {
     CompServerSyncRequestRec *sync = &sw->wait.sync;
+    WindowPtr pClient = compServerClientWindow(sw->pWin);
 
     sync->waiting = FALSE;
-    if (!sw->wait.active)
+    if (!sw->wait.active) {
         sync->sent = FALSE;
-    else if (!present_window_has_pending_frames(sw->pWin))
+        compServerEndWait(sw);
+    }
+    else if (!present_window_has_pending_frames(pClient))
         compServerFinishFrame(sw);
 }
 
@@ -156,9 +205,31 @@ compServerSyncCounterDestroyed(SyncTrigger *pTrigger)
 }
 
 static void
+compServerWaitForSync(CompServerWindowPtr sw, SyncCounter *pCounter,
+                      int64_t value)
+{
+    CompServerSyncRequestRec *sync = &sw->wait.sync;
+
+    compServerStopSyncWait(sw);
+    sw->wait.clientResized = FALSE;
+    sync->value = value;
+    sync->sent = TRUE;
+    sync->waiting = TRUE;
+    sync->trigger = (SyncTrigger) {
+        .pSync = &pCounter->sync,
+        .test_value = value,
+        .CheckTrigger = compServerSyncCheck,
+        .TriggerFired = compServerSyncFired,
+        .CounterDestroyed = compServerSyncCounterDestroyed,
+    };
+    SyncAddTriggerToSyncObject(&sync->trigger);
+    compServerArmFrameTimeout(sw);
+}
+
+static void
 compServerSendSyncRequest(CompServerWindowPtr sw)
 {
-    WindowPtr pWin = sw->pWin;
+    WindowPtr pWin = compServerClientWindow(sw->pWin);
     CompServerSyncRequestRec *sync = &sw->wait.sync;
     SyncCounter *pCounter = compServerSyncCounter(pWin);
     xEvent event = { .u.clientMessage.window = pWin->drawable.id };
@@ -166,21 +237,7 @@ compServerSendSyncRequest(CompServerWindowPtr sw)
     if (!pCounter)
         return;
 
-    compServerStopSyncWait(sw);
-    if (sync->value < pCounter->value)
-        sync->value = pCounter->value;
-    sync->value++;
-    sync->sent = TRUE;
-    sync->waiting = TRUE;
-    sync->trigger = (SyncTrigger) {
-        .pSync = &pCounter->sync,
-        .test_value = sync->value,
-        .CheckTrigger = compServerSyncCheck,
-        .TriggerFired = compServerSyncFired,
-        .CounterDestroyed = compServerSyncCounterDestroyed,
-    };
-    SyncAddTriggerToSyncObject(&sync->trigger);
-    compServerArmFrameTimeout(sw);
+    compServerWaitForSync(sw, pCounter, max(sync->value, pCounter->value) + 1);
 
     event.u.u.type = ClientMessage;
     event.u.u.detail = 32;
@@ -194,33 +251,22 @@ compServerSendSyncRequest(CompServerWindowPtr sw)
 }
 
 static void
-compServerApplyPending(CompServerWindowPtr sw)
+compServerApplyDeferred(CompServerWindowPtr sw)
 {
-    CompServerPendingConfigureRec pending = sw->wait.pending;
-    WindowPtr pWin = sw->pWin;
-    XID values[5];
-    int n = 0;
+    CompServerDeferredWmPtr deferred = &sw->wait.deferred;
+    WindowPtr pClient = compServerClientWindow(sw->pWin);
+    Bool resizes;
 
-    if (!pending.mask)
+    if (!compServerHasDeferred(deferred))
         return;
 
-    sw->wait.pending.mask = 0;
-    if (pending.mask & CWX)
-        values[n++] = (XID) pending.x;
-    if (pending.mask & CWY)
-        values[n++] = (XID) pending.y;
-    if (pending.mask & CWWidth)
-        values[n++] = pending.width;
-    if (pending.mask & CWHeight)
-        values[n++] = pending.height;
-    if (pending.mask & CWBorderWidth)
-        values[n++] = pending.borderWidth;
-
-    if (((pending.mask & CWWidth) && pending.width != pWin->drawable.width) ||
-        ((pending.mask & CWHeight) && pending.height != pWin->drawable.height))
+    resizes = compServerDeferredResizes(deferred, pClient);
+    if (resizes)
         compServerSendSyncRequest(sw);
 
-    ConfigureWindow(pWin, pending.mask, values, pending.client);
+    compServerReplayDeferred(deferred);
+    if (resizes)
+        compServerNoteClientResized(sw);
 }
 
 static Bool
@@ -239,7 +285,7 @@ compServerApplyWork(ClientPtr client, void *closure)
 
         xorg_list_for_each_entry(sw, &server->windows, entry) {
             if (!sw->wait.active && !sw->wait.sync.waiting)
-                compServerApplyPending(sw);
+                compServerApplyDeferred(sw);
         }
     }
     return TRUE;
@@ -280,12 +326,18 @@ compServerReconfigureFrame(WindowPtr pWin, PixmapPtr pOld, int x, int y,
 }
 
 void
+compServerInitFrameWait(CompServerWindowPtr sw)
+{
+    compServerInitDeferred(&sw->wait.deferred);
+}
+
+void
 compServerFreeFrameWait(CompServerWindowPtr sw)
 {
     compServerStopSyncWait(sw);
     TimerFree(sw->wait.timer);
     sw->wait.timer = NULL;
-    sw->wait.pending.mask = 0;
+    compServerFreeDeferred(&sw->wait.deferred);
 }
 
 void
@@ -294,12 +346,11 @@ CompositeServerPresented(WindowPtr pWin, PixmapPtr pPixmap)
     CompServerWindowPtr sw;
     Bool matches;
 
-    if (!pWin->parent || pWin->parent->parent ||
-        !CompositeServerActive(pWin->drawable.pScreen))
+    if (!pWin->parent || !CompositeServerActive(pWin->drawable.pScreen))
         return;
 
-    sw = GetCompServerWindow(pWin);
-    if (!sw)
+    sw = GetCompServerWindow(compServerToplevel(pWin));
+    if (!sw || pWin != compServerClientWindow(sw->pWin))
         return;
 
     sw->presentCount++;
@@ -313,61 +364,74 @@ CompositeServerPresented(WindowPtr pWin, PixmapPtr pPixmap)
         !sw->wait.sync.waiting && !present_window_has_pending_frames(pWin) :
         matches)
         compServerFinishFrame(sw);
-    else if (!matches)
+    else if (!matches && pWin == sw->pWin)
         compServerUpdateHeldFrame(sw, pPixmap);
 }
 
 static Bool
-compServerConfiguresDirectly(ClientPtr client, WindowPtr pWin)
+compServerIsWm(ClientPtr client, WindowPtr pRoot)
 {
-    WindowPtr pParent = pWin->parent;
     OtherClientsPtr other;
 
-    if (pWin->overrideRedirect)
-        return TRUE;
-
-    if (pParent->eventMask & SubstructureRedirectMask)
-        return wClient(pParent) == client;
-
-    for (other = wOtherClients(pParent); other; other = other->next) {
+    for (other = wOtherClients(pRoot); other; other = other->next) {
         if (other->mask & SubstructureRedirectMask)
             return CLIENT_ID(other->resource) == client->index;
     }
-    return TRUE;
+    return FALSE;
 }
 
 static CompServerWindowPtr
-compServerWindowManagedBy(ClientPtr client, WindowPtr pWin)
+compServerWmTarget(ClientPtr client, XID id, WindowPtr *ppWin)
 {
-    if (!pWin->parent || client->swapped ||
-        CLIENT_ID(pWin->drawable.id) == client->index ||
-        !compServerConfiguresDirectly(client, pWin) ||
-        !CompositeServerActive(pWin->drawable.pScreen) ||
-        compServerWmSyncsResizes(pWin->drawable.pScreen))
+    WindowPtr pWin, pToplevel;
+    CompServerWindowPtr sw;
+
+    if (dixLookupWindow(&pWin, id, client, DixGetAttrAccess) != Success ||
+        !pWin->parent || !CompositeServerActive(pWin->drawable.pScreen) ||
+        !compServerIsWm(client, pWin->drawable.pScreen->root))
         return NULL;
 
-    return GetCompServerWindow(pWin);
+    pToplevel = compServerToplevel(pWin);
+    sw = GetCompServerWindow(pToplevel);
+    if (!sw || pToplevel->overrideRedirect ||
+        !compServerHasWmState(compServerClientWindow(pToplevel)))
+        return NULL;
+
+    *ppWin = pWin;
+    return sw;
+}
+
+static Bool
+compServerShouldDefer(CompServerWindowPtr sw, Bool startsStep)
+{
+    CompServerFrameWaitRec *wait = &sw->wait;
+
+    return compServerHasDeferred(&wait->deferred) ||
+        (startsStep && wait->clientResized &&
+         (wait->active || wait->sync.waiting));
 }
 
 static void
-compServerMergeConfigure(ClientPtr client, CompServerPendingConfigureRec *pending)
+compServerHideSyncCounter(CallbackListPtr *pcbl, void *closure, void *data)
 {
-    REQUEST(xConfigureWindowReq);
-    CARD32 *values = (CARD32 *) &stuff[1];
-    Mask mask = stuff->mask;
+    XacePropertyAccessRec *rec = data;
+    WindowPtr pWin = rec->pWin;
 
-    if (mask & CWX)
-        pending->x = (INT16) *values++;
-    if (mask & CWY)
-        pending->y = (INT16) *values++;
-    if (mask & CWWidth)
-        pending->width = (CARD16) *values++;
-    if (mask & CWHeight)
-        pending->height = (CARD16) *values++;
-    if (mask & CWBorderWidth)
-        pending->borderWidth = (CARD16) *values;
-    pending->mask |= mask;
-    pending->client = client;
+    if (!(rec->access_mode & ~(DixReadAccess | DixGetAttrAccess)) &&
+        (*rec->ppProp)->propertyName ==
+        compServerAtom("_NET_WM_SYNC_REQUEST_COUNTER") &&
+        CompositeServerActive(pWin->drawable.pScreen) &&
+        compServerIsWm(rec->client, pWin->drawable.pScreen->root))
+        rec->status = BadMatch;
+}
+
+void
+compServerDeliverWmEvent(ClientPtr client, WindowPtr pWin, Mask eventMask,
+                         xEvent *event)
+{
+    event->u.u.type |= 0x80;
+    DeliverEventsToWindow(PickPointer(client), pWin, event, 1, eventMask,
+                          NullGrab);
 }
 
 static Bool
@@ -391,44 +455,52 @@ compServerProcConfigureWindow(ClientPtr client)
 {
     REQUEST(xConfigureWindowReq);
     CompServerWindowPtr sw = NULL;
-    WindowPtr pWin;
+    WindowPtr pWin, pClient;
+    Bool resizes;
+    int rc;
 
     if (client->req_len >= bytes_to_int32(sizeof(*stuff)) &&
-        Ones(stuff->mask) == client->req_len - bytes_to_int32(sizeof(*stuff)) &&
-        dixLookupWindow(&pWin, stuff->window, client,
-                        DixGetAttrAccess) == Success)
-        sw = compServerWindowManagedBy(client, pWin);
+        Ones(stuff->mask) == client->req_len - bytes_to_int32(sizeof(*stuff)))
+        sw = compServerWmTarget(client, stuff->window, &pWin);
 
     if (!sw)
         return (*compServerConfigureWindow) (client);
 
-    if (sw->wait.active || sw->wait.sync.waiting) {
-        if (!(stuff->mask & ~COMP_SERVER_GEOMETRY_MASK)) {
-            compServerMergeConfigure(client, &sw->wait.pending);
+    pClient = compServerClientWindow(sw->pWin);
+    resizes = (pWin == sw->pWin || pWin == pClient) &&
+        compServerConfigureResizes(client, pWin);
+
+    if (compServerShouldDefer(sw, resizes)) {
+        if (!(stuff->mask & ~COMP_SERVER_GEOMETRY_MASK) &&
+            compServerDeferConfigure(&sw->wait.deferred, client, pWin,
+                                     stuff->mask, (CARD32 *) &stuff[1]))
             return Success;
-        }
-        compServerApplyPending(sw);
+        compServerApplyDeferred(sw);
     }
-    else if (compServerConfigureResizes(client, pWin))
+    else if (resizes && pWin == pClient && !sw->wait.sync.waiting)
         compServerSendSyncRequest(sw);
 
-    return (*compServerConfigureWindow) (client);
+    rc = (*compServerConfigureWindow) (client);
+    if (rc == Success && resizes && pWin == pClient)
+        compServerNoteClientResized(sw);
+    return rc;
 }
 
 static int
 compServerProcSendEvent(ClientPtr client)
 {
     REQUEST(xSendEventReq);
-    CompServerWindowPtr sw;
+    CompServerWindowPtr sw = NULL;
     WindowPtr pWin;
 
     if (client->req_len == bytes_to_int32(sizeof(*stuff)) &&
-        (stuff->event.u.u.type & 0x7f) == ConfigureNotify &&
-        stuff->destination == stuff->event.u.configureNotify.window &&
-        dixLookupWindow(&pWin, stuff->destination, client,
-                        DixGetAttrAccess) == Success &&
-        (sw = compServerWindowManagedBy(client, pWin)) &&
-        sw->wait.pending.mask)
+        stuff->propagate == xFalse &&
+        (stuff->event.u.u.type & 0x7f) == ConfigureNotify)
+        sw = compServerWmTarget(client, stuff->destination, &pWin);
+
+    if (sw && compServerShouldDefer(sw, FALSE) &&
+        compServerDeferEvent(&sw->wait.deferred, client, pWin,
+                             stuff->eventMask, &stuff->event))
         return Success;
 
     return (*compServerSendEvent) (client);
@@ -451,8 +523,8 @@ compServerClientState(CallbackListPtr *pcbl, void *closure, void *data)
             continue;
 
         xorg_list_for_each_entry(sw, &server->windows, entry) {
-            if (sw->wait.pending.client == client)
-                sw->wait.pending.mask = 0;
+            if (sw->wait.deferred.client == client)
+                compServerFreeDeferred(&sw->wait.deferred);
         }
     }
 }
@@ -465,6 +537,12 @@ compServerInitFrameSync(void)
 
     if (!AddCallback(&ClientStateCallback, compServerClientState, NULL))
         return FALSE;
+
+    if (!XaceRegisterCallback(XACE_PROPERTY_ACCESS, compServerHideSyncCounter,
+                              NULL)) {
+        DeleteCallback(&ClientStateCallback, compServerClientState, NULL);
+        return FALSE;
+    }
 
     compServerConfigureWindow = ProcVector[X_ConfigureWindow];
     ProcVector[X_ConfigureWindow] = compServerProcConfigureWindow;
@@ -481,5 +559,6 @@ compServerCloseFrameSync(void)
 
     ProcVector[X_ConfigureWindow] = compServerConfigureWindow;
     ProcVector[X_SendEvent] = compServerSendEvent;
+    XaceDeleteCallback(XACE_PROPERTY_ACCESS, compServerHideSyncCounter, NULL);
     DeleteCallback(&ClientStateCallback, compServerClientState, NULL);
 }
