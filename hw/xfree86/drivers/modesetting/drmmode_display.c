@@ -1376,6 +1376,28 @@ drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
     return bo->dumb != NULL;
 }
 
+static Bool
+drmmode_create_front_bo(drmmode_ptr drmmode, unsigned width, unsigned height)
+{
+    ScrnInfoPtr scrn = drmmode->scrn;
+
+#ifdef HAVE_GBM_BO_USE_FRONT_RENDERING
+    /* Front rendering is only a hint and NVIDIA's GBM rejects it */
+    if (drmmode_create_bo(drmmode, &drmmode->front_bo, width, height,
+                          drmmode->kbpp, scrn->depth,
+                          GBM_BO_USE_FRONT_RENDERING))
+        return TRUE;
+#endif
+
+    if (drmmode_create_bo(drmmode, &drmmode->front_bo, width, height,
+                          drmmode->kbpp, scrn->depth, 0))
+        return TRUE;
+
+    xf86DrvMsg(scrn->scrnIndex, X_ERROR,
+               "Failed to allocate a %ux%u front buffer\n", width, height);
+    return FALSE;
+}
+
 Bool
 drmmode_SetSlaveBO(PixmapPtr ppix,
                    drmmode_ptr drmmode, int fd_handle, int pitch, int size)
@@ -4221,13 +4243,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
     old_fb_id = drmmode->fb_id;
     drmmode->fb_id = 0;
 
-    if (!drmmode_create_bo(drmmode, &drmmode->front_bo,
-                           width, height, drmmode->kbpp, scrn->depth,
-#ifdef HAVE_GBM_BO_USE_FRONT_RENDERING
-                           GBM_BO_USE_FRONT_RENDERING))
-#else
-                           0))
-#endif
+    if (!drmmode_create_front_bo(drmmode, width, height))
         goto fail;
 
     pitch = drmmode_bo_get_pitch(&drmmode->front_bo);
@@ -5013,13 +5029,7 @@ drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
     height = pScrn->virtualY;
 
     if (!drmmode->tearfree_enable) {
-        if (!drmmode_create_bo(drmmode, &drmmode->front_bo, width, height, bpp,
-                               pScrn->depth,
-#ifdef HAVE_GBM_BO_USE_FRONT_RENDERING
-                               GBM_BO_USE_FRONT_RENDERING))
-#else
-                               0))
-#endif
+        if (!drmmode_create_front_bo(drmmode, width, height))
             return FALSE;
         pScrn->displayWidth = drmmode_bo_get_pitch(&drmmode->front_bo) / cpp;
     }

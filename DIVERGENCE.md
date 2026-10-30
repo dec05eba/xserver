@@ -162,7 +162,7 @@ features above can be used on NVIDIA GPUs.
 
 It needs kernel modesetting enabled in the NVIDIA kernel driver
 (`nvidia-drm.modeset=1`) and an NVIDIA driver with GBM support (495 or newer).
-Select the modesetting driver in the Device section of xorg.conf:
+Select the modesetting driver in the Device section of xorg.conf (for example `/etc/X11/xorg.conf.d/10-modesetting.conf`):
 
     Section "Device"
         Identifier "GPU"
