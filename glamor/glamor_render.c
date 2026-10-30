@@ -1729,6 +1729,9 @@ glamor_composite(CARD8 op,
             goto fail;
     }
 
+    glamor_external_update(source_pixmap);
+    glamor_external_update(mask_pixmap);
+
     DEBUGF
         ("source pixmap %p (%d %d) mask(%d %d) dest(%d %d) width %d height %d \n",
          source_pixmap, x_source, y_source, x_mask, y_mask, x_dest, y_dest,

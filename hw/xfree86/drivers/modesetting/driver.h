@@ -184,6 +184,7 @@ typedef struct _modesettingRec {
         Bool (*egl_init)(ScrnInfoPtr, int);
         void (*finish)(ScreenPtr);
         struct gbm_bo *(*gbm_bo_from_pixmap)(ScreenPtr, PixmapPtr);
+        Bool (*pixmap_is_external)(PixmapPtr);
         Bool (*init)(ScreenPtr, unsigned int);
         int (*name_from_pixmap)(PixmapPtr, CARD16 *, CARD32 *);
         void (*set_drawable_modifiers_func)(ScreenPtr,

@@ -251,10 +251,12 @@ static Bool
 ms_present_format_supported(ScreenPtr screen, PixmapPtr pixmap,
                             PresentFlipReason *reason)
 {
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+
     if (ms_pixmap_scanout_format_supported(screen, pixmap))
         return TRUE;
 
-    if (reason)
+    if (reason && !ms->glamor.pixmap_is_external(pixmap))
         *reason = PRESENT_FLIP_REASON_BUFFER_FORMAT;
     return FALSE;
 }
@@ -344,11 +346,13 @@ ms_present_check_window_flip(RRCrtcPtr crtc,
                              PresentFlipReason *reason)
 {
     xf86CrtcPtr xf86_crtc = crtc->devPrivate;
+    modesettingPtr ms = modesettingPTR(xf86_crtc->scrn);
 
     if (!ms_tearfree_is_active_on_crtc(xf86_crtc))
         return FALSE;
 
     if (ms_present_window_covers_crtc(window, xf86_crtc) &&
+        !ms->glamor.pixmap_is_external(pixmap) &&
         !ms_present_format_supported(window->drawable.pScreen, pixmap, reason))
         return FALSE;
 

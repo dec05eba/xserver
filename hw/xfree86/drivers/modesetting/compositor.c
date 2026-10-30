@@ -150,6 +150,10 @@ ms_compositor_paint_hdr_window(PicturePtr dst, int x, int y, WindowPtr window,
 
     RegionNull(&dst_region);
     RegionCopy(&dst_region, region);
+    if (paint && paint->pq) {
+        ms_compositor_copy_pq(scrn, paint->pq, window, exposed);
+        RegionSubtract(&dst_region, &dst_region, &paint->pq->copied);
+    }
     RegionTranslate(&dst_region, -x, -y);
     painted = ms->glamor.convert_color(src, (PixmapPtr) dst->pDrawable,
                                        &dst_region, x - src->screen_x,
@@ -158,9 +162,6 @@ ms_compositor_paint_hdr_window(PicturePtr dst, int x, int y, WindowPtr window,
                                        format->direct.alphaMask,
                                        opacity, &conversion);
     RegionUninit(&dst_region);
-
-    if (painted && paint && paint->pq)
-        ms_compositor_copy_pq(scrn, paint->pq, window, exposed);
     return painted;
 }
 #endif

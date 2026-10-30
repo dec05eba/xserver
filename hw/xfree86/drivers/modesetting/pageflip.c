@@ -512,6 +512,9 @@ ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap)
     uint32_t format;
     uint64_t modifier;
 
+    if (ms->glamor.pixmap_is_external(pixmap))
+        return FALSE;
+
     /* Check if buffer format/modifier is supported by all active CRTCs */
     gbm = ms->glamor.gbm_bo_from_pixmap(screen, pixmap);
     if (!gbm)

@@ -40,8 +40,30 @@ glamor_destroy_fbo(glamor_screen_private *glamor_priv,
         glDeleteFramebuffers(1, &fbo->fb);
     if (fbo->tex)
         glDeleteTextures(1, &fbo->tex);
+    if (fbo->external)
+        fbo->external->destroy(fbo->external);
 
     free(fbo);
+}
+
+Bool
+glamor_pixmap_is_external(PixmapPtr pixmap)
+{
+    glamor_pixmap_private *pixmap_priv = glamor_get_pixmap_private(pixmap);
+
+    return pixmap_priv && pixmap_priv->fbo && pixmap_priv->fbo->external;
+}
+
+void
+glamor_external_update(PixmapPtr pixmap)
+{
+    glamor_external *external;
+
+    if (!glamor_pixmap_is_external(pixmap))
+        return;
+
+    external = glamor_get_pixmap_private(pixmap)->fbo->external;
+    external->update(external);
 }
 
 static int

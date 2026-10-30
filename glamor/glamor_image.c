@@ -119,6 +119,7 @@ glamor_get_image_gl(DrawablePtr drawable, int x, int y, int w, int h,
     if (format != ZPixmap)
         goto bail;
 
+    glamor_external_update(pixmap);
     glamor_get_drawable_deltas(drawable, pixmap, &off_x, &off_y);
     box.x1 = x;
     box.x2 = x + w;

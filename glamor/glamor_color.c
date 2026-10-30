@@ -167,6 +167,7 @@ glamor_convert_color(PixmapPtr src, PixmapPtr dst, RegionPtr region,
         !GLAMOR_PIXMAP_PRIV_HAS_FBO(dst_priv))
         return FALSE;
 
+    glamor_external_update(src);
     glamor_make_current(glamor_priv);
 
     if (color->prog.failed)

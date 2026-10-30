@@ -259,6 +259,11 @@ extern _X_EXPORT int glamor_name_from_pixmap(PixmapPtr pixmap,
 extern _X_EXPORT struct gbm_bo *glamor_gbm_bo_from_pixmap(ScreenPtr screen,
                                                           PixmapPtr pixmap);
 
+/* @glamor_pixmap_is_external: Whether the pixmap is a copy of a buffer that
+ * glamor can't render from directly.
+ * */
+extern _X_EXPORT Bool glamor_pixmap_is_external(PixmapPtr pixmap);
+
 /* @glamor_pixmap_from_fds: Creates a pixmap to wrap a dma-buf fds.
  *
  * @screen: Current screen pointer.

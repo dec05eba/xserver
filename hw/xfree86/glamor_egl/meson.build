@@ -1,5 +1,6 @@
 glamoregl_src = [
     '../../../glamor/glamor_egl.c',
+    '../../../glamor/glamor_egl_external.c',
     '../../../glamor/glamor_eglmodule.c',
     'glamor_xf86_xv.c',
 ]

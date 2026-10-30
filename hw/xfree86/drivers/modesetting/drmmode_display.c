@@ -117,9 +117,46 @@ get_opaque_format(uint32_t format)
         return DRM_FORMAT_XRGB8888;
     case DRM_FORMAT_ARGB2101010:
         return DRM_FORMAT_XRGB2101010;
+    case DRM_FORMAT_ABGR2101010:
+        return DRM_FORMAT_XBGR2101010;
     default:
         return format;
     }
+}
+
+static Bool
+drmmode_crtc_supports_format(xf86CrtcPtr crtc, uint32_t format)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    int i;
+
+    for (i = 0; i < drmmode_crtc->num_formats; i++) {
+        if (drmmode_crtc->formats[i].format == format)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static Bool
+drmmode_supports_format(ScrnInfoPtr scrn, uint32_t format)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    int c;
+
+    for (c = 0; c < config->num_crtc; c++) {
+        if (drmmode_crtc_supports_format(config->crtc[c], format))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static uint32_t
+drmmode_depth30_format(ScrnInfoPtr scrn)
+{
+    if (!drmmode_supports_format(scrn, DRM_FORMAT_XRGB2101010) &&
+        drmmode_supports_format(scrn, DRM_FORMAT_XBGR2101010))
+        return DRM_FORMAT_ABGR2101010;
+    return DRM_FORMAT_ARGB2101010;
 }
 
 Bool
@@ -1278,7 +1315,7 @@ drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
             format = GBM_FORMAT_RGB565;
             break;
         case 30:
-            format = GBM_FORMAT_ARGB2101010;
+            format = drmmode_depth30_format(drmmode->scrn);
             break;
         default:
             format = GBM_FORMAT_ARGB8888;
@@ -1835,19 +1872,6 @@ static PixmapPtr
 drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width, int height,
                          int depth, drmmode_bo *bo, uint32_t *fb_id);
 
-static Bool
-drmmode_crtc_supports_format(xf86CrtcPtr crtc, uint32_t format)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    int i;
-
-    for (i = 0; i < drmmode_crtc->num_formats; i++) {
-        if (drmmode_crtc->formats[i].format == format)
-            return TRUE;
-    }
-    return FALSE;
-}
-
 static int
 drmmode_crtc_tearfree_depth(xf86CrtcPtr crtc)
 {
@@ -1857,7 +1881,8 @@ drmmode_crtc_tearfree_depth(xf86CrtcPtr crtc)
     int i;
 
     if (!drmmode_crtc->drmmode->glamor || scrn->depth != 24 ||
-        !drmmode_crtc_supports_format(crtc, DRM_FORMAT_XRGB2101010))
+        !drmmode_crtc_supports_format(crtc,
+                                      get_opaque_format(drmmode_depth30_format(scrn))))
         return scrn->depth;
 
     for (i = 0; i < config->num_output; i++) {

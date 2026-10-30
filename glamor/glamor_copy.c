@@ -738,6 +738,8 @@ glamor_copy(DrawablePtr src,
     if (nbox == 0)
 	return;
 
+    glamor_external_update(glamor_get_drawable_pixmap(src));
+
     if (glamor_copy_gl(src, dst, gc, box, nbox, dx, dy, reverse, upsidedown, bitplane, closure))
         return;
     glamor_copy_bail(src, dst, gc, box, nbox, dx, dy, reverse, upsidedown, bitplane, closure);

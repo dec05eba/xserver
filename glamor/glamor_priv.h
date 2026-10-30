@@ -380,12 +380,20 @@ enum glamor_fbo_state {
     GLAMOR_FBO_NORMAL,
 };
 
+typedef struct glamor_external glamor_external;
+
+struct glamor_external {
+    void (*update)(glamor_external *external);
+    void (*destroy)(glamor_external *external);
+};
+
 typedef struct glamor_pixmap_fbo {
     GLuint tex; /**< GL texture name */
     GLuint fb; /**< GL FBO name */
     int width; /**< width in pixels */
     int height; /**< height in pixels */
     Bool is_red;
+    glamor_external *external;
 } glamor_pixmap_fbo;
 
 typedef struct glamor_pixmap_clipped_regions {
@@ -631,6 +639,7 @@ glamor_pixmap_fbo *glamor_create_fbo(glamor_screen_private *glamor_priv,
 void glamor_destroy_fbo(glamor_screen_private *glamor_priv,
                         glamor_pixmap_fbo *fbo);
 void glamor_pixmap_destroy_fbo(PixmapPtr pixmap);
+void glamor_external_update(PixmapPtr pixmap);
 Bool glamor_pixmap_fbo_fixup(ScreenPtr screen, PixmapPtr pixmap);
 void glamor_pixmap_clear_fbo(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo,
                              const struct glamor_format *pixmap_format);

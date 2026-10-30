@@ -46,6 +46,7 @@
 
 #include "glamor.h"
 #include "glamor_priv.h"
+#include "glamor_egl_external.h"
 #include "glamor_glx_provider.h"
 #include "dri3.h"
 
@@ -64,6 +65,11 @@ struct glamor_egl_screen_private {
     int dmabuf_capable;
     int has_native_fence_sync;
     char *glvnd_vendor; /* GLVND vendor if forced from options or NULL otherwise */
+
+    struct {
+        struct glamor_egl_external_context *context;
+        Bool tried;
+    } external;
 
     CloseScreenProcPtr saved_close_screen;
     DestroyPixmapProcPtr saved_destroy_pixmap;
@@ -220,21 +226,74 @@ glamor_egl_create_textured_pixmap(PixmapPtr pixmap, int handle, int stride)
     return TRUE;
 }
 
-Bool
-glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
-                                              struct gbm_bo *bo,
-                                              Bool used_modifiers)
+#ifdef HAVE_EGL_QUERY_DMABUF
+static EGLint
+glamor_egl_query_modifiers(struct glamor_egl_screen_private *glamor_egl,
+                           uint32_t format, uint64_t **modifiers,
+                           EGLBoolean **external_only)
 {
-    ScreenPtr screen = pixmap->drawable.pScreen;
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
-    struct glamor_screen_private *glamor_priv =
-        glamor_get_screen_private(screen);
-    struct glamor_egl_screen_private *glamor_egl;
-    EGLImageKHR image;
-    GLuint texture;
+    EGLint num;
+
+    *modifiers = NULL;
+    *external_only = NULL;
+
+    if (!eglQueryDmaBufModifiersEXT(glamor_egl->display, format, 0, NULL,
+                                    NULL, &num))
+        return -1;
+
+    if (num == 0)
+        return 0;
+
+    *modifiers = calloc(num, sizeof(uint64_t));
+    *external_only = calloc(num, sizeof(EGLBoolean));
+    if (*modifiers && *external_only &&
+        eglQueryDmaBufModifiersEXT(glamor_egl->display, format, num,
+                                   (EGLuint64KHR *) *modifiers, *external_only,
+                                   &num))
+        return num;
+
+    free(*modifiers);
+    free(*external_only);
+    *modifiers = NULL;
+    *external_only = NULL;
+    return -1;
+}
+#endif
+
+static Bool
+glamor_egl_is_external_only(struct glamor_egl_screen_private *glamor_egl,
+                            struct gbm_bo *bo)
+{
+#if defined(GBM_BO_FD_FOR_PLANE) && defined(HAVE_EGL_QUERY_DMABUF)
+    uint64_t modifier = gbm_bo_get_modifier(bo);
+    uint64_t *modifiers;
+    EGLBoolean *external_only;
+    EGLint num, i;
     Bool ret = FALSE;
 
-    glamor_egl = glamor_egl_get_screen_private(scrn);
+    if (!glamor_egl->dmabuf_capable)
+        return FALSE;
+
+    num = glamor_egl_query_modifiers(glamor_egl, gbm_bo_get_format(bo),
+                                     &modifiers, &external_only);
+    for (i = 0; i < num; i++) {
+        if (modifiers[i] == modifier) {
+            ret = external_only[i];
+            break;
+        }
+    }
+    free(modifiers);
+    free(external_only);
+    return ret;
+#else
+    return FALSE;
+#endif
+}
+
+static EGLImageKHR
+glamor_egl_create_image(struct glamor_egl_screen_private *glamor_egl,
+                        struct gbm_bo *bo, uint32_t format)
+{
 #ifdef GBM_BO_FD_FOR_PLANE
     uint64_t modifier = gbm_bo_get_modifier(bo);
     const int num_planes = gbm_bo_get_plane_count(bo);
@@ -242,6 +301,7 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
     int plane;
     int attr_num = 0;
     EGLint img_attrs[64] = {0};
+    EGLImageKHR image;
     enum PlaneAttrs {
         PLANE_FD,
         PLANE_OFFSET,
@@ -281,12 +341,6 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
         },
     };
 
-    for (plane = 0; plane < num_planes; plane++) fds[plane] = -1;
-#endif
-
-    glamor_make_current(glamor_priv);
-
-#ifdef GBM_BO_FD_FOR_PLANE
     if (glamor_egl->dmabuf_capable) {
 #define ADD_ATTR(attrs, num, attr)                                      \
         do {                                                            \
@@ -298,7 +352,7 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
         ADD_ATTR(img_attrs, attr_num, EGL_HEIGHT);
         ADD_ATTR(img_attrs, attr_num, gbm_bo_get_height(bo));
         ADD_ATTR(img_attrs, attr_num, EGL_LINUX_DRM_FOURCC_EXT);
-        ADD_ATTR(img_attrs, attr_num, gbm_bo_get_format(bo));
+        ADD_ATTR(img_attrs, attr_num, format);
 
         for (plane = 0; plane < num_planes; plane++) {
             fds[plane] = gbm_bo_get_fd_for_plane(bo, plane);
@@ -322,31 +376,168 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
                                   NULL,
                                   img_attrs);
 
-        for (plane = 0; plane < num_planes; plane++) {
+        for (plane = 0; plane < num_planes; plane++)
             close(fds[plane]);
-            fds[plane] = -1;
-        }
+
+        return image;
     }
-    else
 #endif
-    {
-        image = eglCreateImageKHR(glamor_egl->display,
-                                  EGL_NO_CONTEXT,
-                                  EGL_NATIVE_PIXMAP_KHR, bo, NULL);
+    return eglCreateImageKHR(glamor_egl->display,
+                             EGL_NO_CONTEXT,
+                             EGL_NATIVE_PIXMAP_KHR, bo, NULL);
+}
+
+/* NVIDIA's Vulkan driver only shares 30-bit swapchains as pitch linear
+ * A2B10G10R10 buffers, regardless of the channel order of the window.
+ */
+static uint32_t
+glamor_egl_external_format(uint32_t format)
+{
+    switch (format) {
+    case DRM_FORMAT_ARGB2101010:
+        return DRM_FORMAT_ABGR2101010;
+    case DRM_FORMAT_XRGB2101010:
+        return DRM_FORMAT_XBGR2101010;
+    default:
+        return format;
+    }
+}
+
+static struct glamor_egl_external_context *
+glamor_egl_get_external_context(ScrnInfoPtr scrn, ScreenPtr screen)
+{
+    struct glamor_egl_screen_private *glamor_egl =
+        glamor_egl_get_screen_private(scrn);
+
+    if (!glamor_egl->external.tried) {
+        glamor_egl->external.tried = TRUE;
+        glamor_egl->external.context =
+            glamor_egl_external_context_create(screen, glamor_egl->display);
+        if (!glamor_egl->external.context)
+            xf86DrvMsg(scrn->scrnIndex, X_WARNING,
+                       "glamor: Failed to create an OpenGL ES context for external-only buffers\n");
+    }
+    return glamor_egl->external.context;
+}
+
+static EGLImageKHR
+glamor_egl_create_external_shadow(ScreenPtr screen, struct gbm_bo *bo)
+{
+#ifdef GBM_BO_WITH_MODIFIERS
+    struct glamor_egl_screen_private *glamor_egl =
+        glamor_egl_get_screen_private(xf86ScreenToScrn(screen));
+    uint32_t format = gbm_bo_get_format(bo);
+    uint32_t num_modifiers = 0;
+    uint64_t *modifiers = NULL;
+    struct gbm_bo *shadow = NULL;
+    EGLImageKHR image;
+
+    glamor_get_modifiers(screen, format, &num_modifiers, &modifiers);
+    if (num_modifiers > 0) {
+#ifdef GBM_BO_WITH_MODIFIERS2
+        shadow = gbm_bo_create_with_modifiers2(glamor_egl->gbm,
+                                               gbm_bo_get_width(bo),
+                                               gbm_bo_get_height(bo),
+                                               format, modifiers, num_modifiers,
+                                               GBM_BO_USE_RENDERING);
+#else
+        shadow = gbm_bo_create_with_modifiers(glamor_egl->gbm,
+                                              gbm_bo_get_width(bo),
+                                              gbm_bo_get_height(bo),
+                                              format, modifiers, num_modifiers);
+#endif
+    }
+    free(modifiers);
+    if (!shadow)
+        return EGL_NO_IMAGE_KHR;
+
+    image = glamor_egl_create_image(glamor_egl, shadow, format);
+    gbm_bo_destroy(shadow);
+    return image;
+#else
+    return EGL_NO_IMAGE_KHR;
+#endif
+}
+
+static Bool
+glamor_egl_set_pixmap_external(PixmapPtr pixmap, struct gbm_bo *bo)
+{
+    ScreenPtr screen = pixmap->drawable.pScreen;
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    struct glamor_egl_screen_private *glamor_egl =
+        glamor_egl_get_screen_private(scrn);
+    struct glamor_egl_external_context *context;
+    EGLImageKHR src, shadow;
+    GLuint texture;
+    Bool ret = FALSE;
+
+    context = glamor_egl_get_external_context(scrn, screen);
+    if (!context)
+        return FALSE;
+
+    shadow = glamor_egl_create_external_shadow(screen, bo);
+    if (shadow == EGL_NO_IMAGE_KHR)
+        return FALSE;
+
+    glamor_create_texture_from_image(screen, shadow, &texture);
+    if (glamor_set_pixmap_texture(pixmap, texture)) {
+        src = glamor_egl_create_image(glamor_egl, bo,
+                                      glamor_egl_external_format(gbm_bo_get_format(bo)));
+        if (src != EGL_NO_IMAGE_KHR) {
+            ret = glamor_egl_external_attach(context, pixmap, src, shadow);
+            eglDestroyImageKHR(glamor_egl->display, src);
+        }
+    } else {
+        glDeleteTextures(1, &texture);
     }
 
+    eglDestroyImageKHR(glamor_egl->display, shadow);
+
+    return ret;
+}
+
+Bool
+glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
+                                              struct gbm_bo *bo,
+                                              Bool used_modifiers)
+{
+    ScreenPtr screen = pixmap->drawable.pScreen;
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    struct glamor_screen_private *glamor_priv =
+        glamor_get_screen_private(screen);
+    struct glamor_egl_screen_private *glamor_egl;
+    EGLImageKHR image;
+    GLuint texture;
+    Bool textured;
+
+    glamor_egl = glamor_egl_get_screen_private(scrn);
+
+    glamor_make_current(glamor_priv);
+
+    image = glamor_egl_create_image(glamor_egl, bo, gbm_bo_get_format(bo));
     if (image == EGL_NO_IMAGE_KHR) {
         glamor_set_pixmap_type(pixmap, GLAMOR_DRM_ONLY);
-        goto done;
+        return FALSE;
     }
-    glamor_create_texture_from_image(screen, image, &texture);
-    glamor_set_pixmap_type(pixmap, GLAMOR_TEXTURE_DRM);
-    glamor_set_pixmap_texture(pixmap, texture);
-    glamor_egl_set_pixmap_image(pixmap, image, used_modifiers);
-    ret = TRUE;
 
- done:
-    return ret;
+    glamor_set_pixmap_type(pixmap, GLAMOR_TEXTURE_DRM);
+    if (glamor_egl_is_external_only(glamor_egl, bo)) {
+        textured = glamor_egl_set_pixmap_external(pixmap, bo);
+    } else {
+        glamor_create_texture_from_image(screen, image, &texture);
+        textured = glamor_set_pixmap_texture(pixmap, texture);
+        if (!textured)
+            glDeleteTextures(1, &texture);
+    }
+
+    if (!textured) {
+        eglDestroyImageKHR(glamor_egl->display, image);
+        glamor_set_pixmap_type(pixmap, GLAMOR_DRM_ONLY);
+        return FALSE;
+    }
+
+    glamor_egl_set_pixmap_image(pixmap, image, used_modifiers);
+    return TRUE;
 }
 
 static void
@@ -850,7 +1041,10 @@ glamor_get_modifiers(ScreenPtr screen, uint32_t format,
 {
 #ifdef HAVE_EGL_QUERY_DMABUF
     struct glamor_egl_screen_private *glamor_egl;
-    EGLint num;
+    uint64_t *importable;
+    EGLBoolean *external_only;
+    EGLint num, i;
+    uint32_t kept = 0;
 
     /* Explicitly zero the count as the caller may ignore the return value */
     *num_modifiers = 0;
@@ -860,25 +1054,24 @@ glamor_get_modifiers(ScreenPtr screen, uint32_t format,
     if (!glamor_egl->dmabuf_capable)
         return FALSE;
 
-    if (!eglQueryDmaBufModifiersEXT(glamor_egl->display, format, 0, NULL,
-                                    NULL, &num))
+    num = glamor_egl_query_modifiers(glamor_egl, format, &importable,
+                                     &external_only);
+    if (num < 0)
         return FALSE;
 
-    if (num == 0)
+    for (i = 0; i < num; i++) {
+        if (!external_only[i])
+            importable[kept++] = importable[i];
+    }
+    free(external_only);
+
+    if (kept == 0) {
+        free(importable);
         return TRUE;
-
-    *modifiers = calloc(num, sizeof(uint64_t));
-    if (*modifiers == NULL)
-        return FALSE;
-
-    if (!eglQueryDmaBufModifiersEXT(glamor_egl->display, format, num,
-                                    (EGLuint64KHR *) *modifiers, NULL, &num)) {
-        free(*modifiers);
-        *modifiers = NULL;
-        return FALSE;
     }
 
-    *num_modifiers = num;
+    *modifiers = importable;
+    *num_modifiers = kept;
     return TRUE;
 #else
     *num_modifiers = 0;
@@ -1045,6 +1238,35 @@ glamor_dri3_open_client(ClientPtr client,
     return Success;
 }
 
+static Bool
+glamor_egl_get_drawable_modifiers(DrawablePtr draw, uint32_t format,
+                                  uint32_t *num_modifiers, uint64_t **modifiers)
+{
+    uint64_t *importable = NULL;
+    uint32_t num_importable = 0, i, j, kept = 0;
+
+    if (!glamor_get_drawable_modifiers(draw, format, num_modifiers, modifiers))
+        return FALSE;
+
+    if (!*num_modifiers ||
+        !glamor_get_modifiers(draw->pScreen, format, &num_importable,
+                              &importable))
+        return TRUE;
+
+    for (i = 0; i < *num_modifiers; i++) {
+        for (j = 0; j < num_importable; j++) {
+            if ((*modifiers)[i] == importable[j]) {
+                (*modifiers)[kept++] = (*modifiers)[i];
+                break;
+            }
+        }
+    }
+    free(importable);
+
+    *num_modifiers = kept;
+    return TRUE;
+}
+
 static const dri3_screen_info_rec glamor_dri3_info = {
     .version = 2,
     .open_client = glamor_dri3_open_client,
@@ -1053,7 +1275,7 @@ static const dri3_screen_info_rec glamor_dri3_info = {
     .fds_from_pixmap = glamor_egl_fds_from_pixmap,
     .get_formats = glamor_get_formats,
     .get_modifiers = glamor_get_modifiers,
-    .get_drawable_modifiers = glamor_get_drawable_modifiers,
+    .get_drawable_modifiers = glamor_egl_get_drawable_modifiers,
 };
 #endif /* DRI3 */
 
@@ -1135,6 +1357,7 @@ static void glamor_egl_cleanup(struct glamor_egl_screen_private *glamor_egl)
          * (on hot unplug another GPU may still be using glamor)
          */
         lastGLContext = NULL;
+        glamor_egl_external_context_destroy(glamor_egl->external.context);
         eglTerminate(glamor_egl->display);
     }
     if (glamor_egl->gbm)

@@ -1098,6 +1098,7 @@ load_glamor(ScrnInfoPtr pScrn)
     ms->glamor.egl_init = LoaderSymbolFromModule(mod, "glamor_egl_init");
     ms->glamor.finish = LoaderSymbolFromModule(mod, "glamor_finish");
     ms->glamor.gbm_bo_from_pixmap = LoaderSymbolFromModule(mod, "glamor_gbm_bo_from_pixmap");
+    ms->glamor.pixmap_is_external = LoaderSymbolFromModule(mod, "glamor_pixmap_is_external");
     ms->glamor.init = LoaderSymbolFromModule(mod, "glamor_init");
     ms->glamor.name_from_pixmap = LoaderSymbolFromModule(mod, "glamor_name_from_pixmap");
     ms->glamor.set_drawable_modifiers_func = LoaderSymbolFromModule(mod, "glamor_set_drawable_modifiers_func");
