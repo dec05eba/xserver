@@ -3892,6 +3892,18 @@ drmmode_connector_check_vrr_capable(uint32_t drm_fd, int connector_id)
     return FALSE;
 }
 
+static void
+drmmode_output_clear_sdr_hdr_signal(drmmode_output_private_ptr drmmode_output)
+{
+    drmmode_prop_enum_info_ptr colorspace_default =
+        &drmmode_output->props_connector[DRMMODE_CONNECTOR_COLORSPACE].enum_values[DRMMODE_COLORSPACE_DEFAULT];
+
+    drmmode_output->sdr_props[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = 0;
+    if (colorspace_default->valid)
+        drmmode_output->sdr_props[DRMMODE_CONNECTOR_COLORSPACE] =
+            colorspace_default->value;
+}
+
 static unsigned int
 drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res, int num, Bool dynamic, int crtcshift)
 {
@@ -3908,6 +3920,7 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_r
     const char *s;
     drmModeObjectPropertiesPtr props;
     static drmmode_prop_enum_info_rec colorspace_enums[] = {
+        [DRMMODE_COLORSPACE_DEFAULT] = { .name = "Default", },
         [DRMMODE_COLORSPACE_BT2020_RGB] = { .name = "BT2020_RGB", },
     };
     static drmmode_prop_enum_info_rec content_type_enums[] = {
@@ -4029,7 +4042,7 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_r
     }
     for (i = 0; i < DRMMODE_CONNECTOR__COUNT; i++)
         drmmode_output->sdr_props[i] = drmmode_output->props_connector[i].value;
-    drmmode_output->sdr_props[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = 0;
+    drmmode_output_clear_sdr_hdr_signal(drmmode_output);
 
     if (!ms->atomic_modeset) {
         drmmode_output->dpms_enum_id =
@@ -5225,7 +5238,7 @@ drmmode_output_save_sdr_props(drmmode_output_private_ptr drmmode_output)
         }
         drmModeFreeObjectProperties(props);
     }
-    drmmode_output->sdr_props[DRMMODE_CONNECTOR_HDR_OUTPUT_METADATA] = 0;
+    drmmode_output_clear_sdr_hdr_signal(drmmode_output);
 }
 
 static void

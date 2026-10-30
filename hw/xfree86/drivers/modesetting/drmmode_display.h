@@ -72,6 +72,7 @@ enum drmmode_connector_property {
 };
 
 enum drmmode_colorspace {
+    DRMMODE_COLORSPACE_DEFAULT,
     DRMMODE_COLORSPACE_BT2020_RGB,
     DRMMODE_COLORSPACE__COUNT
 };
