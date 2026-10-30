@@ -3229,6 +3229,24 @@ drmmode_output_add_gtf_modes(xf86OutputPtr output, DisplayModePtr Modes)
 }
 
 static void
+drmmode_output_update_hdr_property(xf86OutputPtr output)
+{
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+    INT32 values[2] = { 0, drmmode_output->hdr.pq_supported };
+    INT32 enabled = drmmode_output->hdr.enabled &&
+        drmmode_output->hdr.pq_supported;
+
+    if (!drmmode_output->hdr.atom)
+        return;
+
+    RRConfigureOutputProperty(output->randr_output, drmmode_output->hdr.atom,
+                              FALSE, TRUE, FALSE, 2, values);
+    RRChangeOutputProperty(output->randr_output, drmmode_output->hdr.atom,
+                           XA_INTEGER, 32, PropModeReplace, 1, &enabled, TRUE,
+                           FALSE);
+}
+
+static void
 drmmode_output_update_hdr_capable(xf86OutputPtr output)
 {
     drmmode_output_private_ptr drmmode_output = output->driver_private;
@@ -3253,6 +3271,7 @@ drmmode_output_update_hdr_capable(xf86OutputPtr output)
         RRChangeOutputProperty(output->randr_output,
                                drmmode_output->hdr.capable_atom, XA_INTEGER, 32,
                                PropModeReplace, 1, &capable, TRUE, FALSE);
+    drmmode_output_update_hdr_property(output);
 }
 
 static DisplayModePtr
@@ -3500,6 +3519,7 @@ drmmode_output_create_resources(xf86OutputPtr output)
                                                  1, 10000,
                                                  drmmode_output->hdr.sdr_white_level,
                                                  FALSE);
+        drmmode_output_update_hdr_property(output);
     }
 
     for (i = 0; i < drmmode_output->num_props; i++) {
@@ -3665,7 +3685,9 @@ drmmode_output_set_property(xf86OutputPtr output, Atom property,
     if (property == drmmode_output->hdr.atom) {
         INT32 enabled;
 
-        if (!drmmode_property_value_get_int(value, 0, 1, &enabled))
+        if (!drmmode_property_value_get_int(value, 0,
+                                            drmmode_output->hdr.pq_supported,
+                                            &enabled))
             return FALSE;
 
         drmmode_output->hdr.enabled = enabled;
