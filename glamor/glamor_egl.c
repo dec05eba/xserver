@@ -484,7 +484,8 @@ glamor_egl_set_pixmap_external(PixmapPtr pixmap, struct gbm_bo *bo)
         src = glamor_egl_create_image(glamor_egl, bo,
                                       glamor_egl_external_format(gbm_bo_get_format(bo)));
         if (src != EGL_NO_IMAGE_KHR) {
-            ret = glamor_egl_external_attach(context, pixmap, src, shadow);
+            ret = glamor_egl_external_attach(context, pixmap, src, shadow,
+                                             gbm_bo_get_fd(bo));
             eglDestroyImageKHR(glamor_egl->display, src);
         }
     } else {
@@ -880,6 +881,28 @@ gbm_format_for_depth(CARD8 depth, uint32_t *format)
     }
 }
 
+static struct gbm_bo *
+glamor_egl_import_linear_fd(struct glamor_egl_screen_private *glamor_egl,
+                            const struct gbm_import_fd_data *data)
+{
+#ifdef GBM_BO_WITH_MODIFIERS
+    struct gbm_import_fd_modifier_data modifier_data = {
+        .width = data->width,
+        .height = data->height,
+        .format = data->format,
+        .num_fds = 1,
+        .fds = { data->fd },
+        .strides = { data->stride },
+        .modifier = DRM_FORMAT_MOD_LINEAR,
+    };
+
+    return gbm_bo_import(glamor_egl->gbm, GBM_BO_IMPORT_FD_MODIFIER,
+                         &modifier_data, 0);
+#else
+    return gbm_bo_import(glamor_egl->gbm, GBM_BO_IMPORT_FD, (void *) data, 0);
+#endif
+}
+
 Bool
 glamor_back_pixmap_from_fd(PixmapPtr pixmap,
                            int fd,
@@ -892,9 +915,12 @@ glamor_back_pixmap_from_fd(PixmapPtr pixmap,
     struct glamor_egl_screen_private *glamor_egl;
     struct gbm_bo *bo;
     struct gbm_import_fd_data import_data = { 0 };
+    Bool linear;
     Bool ret;
 
     glamor_egl = glamor_egl_get_screen_private(scrn);
+    linear = pixmap->usage_hint == CREATE_PIXMAP_USAGE_SHARED &&
+        glamor_egl->dmabuf_capable;
 
     if (!gbm_format_for_depth(depth, &import_data.format) ||
         width == 0 || height == 0)
@@ -904,13 +930,16 @@ glamor_back_pixmap_from_fd(PixmapPtr pixmap,
     import_data.width = width;
     import_data.height = height;
     import_data.stride = stride;
-    bo = gbm_bo_import(glamor_egl->gbm, GBM_BO_IMPORT_FD, &import_data, 0);
+    if (linear)
+        bo = glamor_egl_import_linear_fd(glamor_egl, &import_data);
+    else
+        bo = gbm_bo_import(glamor_egl->gbm, GBM_BO_IMPORT_FD, &import_data, 0);
     if (!bo)
         return FALSE;
 
     screen->ModifyPixmapHeader(pixmap, width, height, 0, 0, stride, NULL);
 
-    ret = glamor_egl_create_textured_pixmap_from_gbm_bo(pixmap, bo, FALSE);
+    ret = glamor_egl_create_textured_pixmap_from_gbm_bo(pixmap, bo, linear);
     gbm_bo_destroy(bo);
     return ret;
 }

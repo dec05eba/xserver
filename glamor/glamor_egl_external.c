@@ -23,6 +23,10 @@
 
 #include "dix-config.h"
 
+#include <unistd.h>
+#include <linux/dma-buf.h>
+#include <xf86drm.h>
+
 #include "glamor_priv.h"
 #include "glamor_egl_external.h"
 
@@ -32,6 +36,7 @@ struct glamor_egl_external_context {
     EGLContext context;
     GLuint program;
     Bool has_wait_sync;
+    Bool has_native_fence;
     unsigned long generation;
 };
 
@@ -43,6 +48,7 @@ struct glamor_egl_external_pixmap {
     GLuint fb;
     int width;
     int height;
+    int dmabuf_fd;
     unsigned long generation;
 };
 
@@ -114,6 +120,60 @@ glamor_egl_external_wait(struct glamor_egl_external_context *context,
     eglDestroySyncKHR(context->display, sync);
 }
 
+static void
+glamor_egl_external_wait_writers(struct glamor_egl_external_pixmap *pixmap)
+{
+#ifdef DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+    struct glamor_egl_external_context *context = pixmap->context;
+    struct dma_buf_export_sync_file args = {
+        .flags = DMA_BUF_SYNC_READ,
+        .fd = -1,
+    };
+    EGLint attribs[] = { EGL_SYNC_NATIVE_FENCE_FD_ANDROID, -1, EGL_NONE };
+    EGLSyncKHR sync;
+
+    if (pixmap->dmabuf_fd < 0 || !context->has_native_fence ||
+        drmIoctl(pixmap->dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &args) != 0)
+        return;
+
+    attribs[1] = args.fd;
+    sync = eglCreateSyncKHR(context->display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+                            attribs);
+    if (sync == EGL_NO_SYNC_KHR) {
+        close(args.fd);
+        return;
+    }
+    glamor_egl_external_wait(context, sync);
+#endif
+}
+
+static void
+glamor_egl_external_add_reader(struct glamor_egl_external_pixmap *pixmap)
+{
+#ifdef DMA_BUF_IOCTL_IMPORT_SYNC_FILE
+    struct glamor_egl_external_context *context = pixmap->context;
+    struct dma_buf_import_sync_file args = { .flags = DMA_BUF_SYNC_READ };
+    EGLSyncKHR sync;
+
+    if (pixmap->dmabuf_fd < 0 || !context->has_native_fence)
+        return;
+
+    sync = eglCreateSyncKHR(context->display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+                            NULL);
+    if (sync == EGL_NO_SYNC_KHR)
+        return;
+
+    glFlush();
+    args.fd = eglDupNativeFenceFDANDROID(context->display, sync);
+    eglDestroySyncKHR(context->display, sync);
+    if (args.fd < 0)
+        return;
+
+    drmIoctl(pixmap->dmabuf_fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &args);
+    close(args.fd);
+#endif
+}
+
 static GLuint
 glamor_egl_external_texture(GLenum target, EGLImageKHR image)
 {
@@ -167,6 +227,7 @@ glamor_egl_external_update(glamor_external *external)
     sync = glamor_egl_external_fence(context);
     glamor_egl_external_enter(context);
     glamor_egl_external_wait(context, sync);
+    glamor_egl_external_wait_writers(pixmap);
 
     glBindFramebuffer(GL_FRAMEBUFFER, pixmap->fb);
     glViewport(0, 0, pixmap->width, pixmap->height);
@@ -175,6 +236,7 @@ glamor_egl_external_update(glamor_external *external)
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
+    glamor_egl_external_add_reader(pixmap);
     sync = glamor_egl_external_fence(context);
     glamor_egl_external_leave(context);
     glamor_egl_external_wait(context, sync);
@@ -191,25 +253,31 @@ glamor_egl_external_destroy(glamor_external *external)
     glDeleteTextures(1, &pixmap->src_tex);
     glDeleteTextures(1, &pixmap->dst_tex);
     glamor_egl_external_leave(pixmap->context);
+    if (pixmap->dmabuf_fd >= 0)
+        close(pixmap->dmabuf_fd);
     free(pixmap);
 }
 
 Bool
 glamor_egl_external_attach(struct glamor_egl_external_context *context,
                            PixmapPtr pixmap, EGLImageKHR src_image,
-                           EGLImageKHR dst_image)
+                           EGLImageKHR dst_image, int dmabuf_fd)
 {
     glamor_pixmap_private *pixmap_priv = glamor_get_pixmap_private(pixmap);
     struct glamor_egl_external_pixmap *external;
     Bool complete;
 
     external = calloc(1, sizeof(*external));
-    if (!external)
+    if (!external) {
+        if (dmabuf_fd >= 0)
+            close(dmabuf_fd);
         return FALSE;
+    }
 
     external->base.update = glamor_egl_external_update;
     external->base.destroy = glamor_egl_external_destroy;
     external->context = context;
+    external->dmabuf_fd = dmabuf_fd;
     external->width = pixmap->drawable.width;
     external->height = pixmap->drawable.height;
 
@@ -269,6 +337,8 @@ glamor_egl_external_context_create(ScreenPtr screen, EGLDisplay egl_display)
     context->has_wait_sync =
         epoxy_has_egl_extension(egl_display, "EGL_KHR_fence_sync") &&
         epoxy_has_egl_extension(egl_display, "EGL_KHR_wait_sync");
+    context->has_native_fence = context->has_wait_sync &&
+        epoxy_has_egl_extension(egl_display, "EGL_ANDROID_native_fence_sync");
 
     eglBindAPI(EGL_OPENGL_ES_API);
     context->context = eglCreateContext(egl_display, EGL_NO_CONFIG_KHR,

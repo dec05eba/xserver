@@ -35,6 +35,6 @@ glamor_egl_external_context_destroy(struct glamor_egl_external_context *context)
 Bool
 glamor_egl_external_attach(struct glamor_egl_external_context *context,
                            PixmapPtr pixmap, EGLImageKHR src_image,
-                           EGLImageKHR dst_image);
+                           EGLImageKHR dst_image, int dmabuf_fd);
 
 #endif /* GLAMOR_EGL_EXTERNAL_H */

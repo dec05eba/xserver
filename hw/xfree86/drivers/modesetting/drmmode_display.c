@@ -3293,13 +3293,20 @@ drmmode_output_add_gtf_modes(xf86OutputPtr output, DisplayModePtr Modes)
     return xf86ModesAdd(Modes, m);
 }
 
+static Bool
+drmmode_output_can_enable_hdr(xf86OutputPtr output)
+{
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+
+    return drmmode_output->hdr.pq_supported && !output->scrn->is_gpu;
+}
+
 static void
 drmmode_output_update_hdr_property(xf86OutputPtr output)
 {
     drmmode_output_private_ptr drmmode_output = output->driver_private;
-    INT32 values[2] = { 0, drmmode_output->hdr.pq_supported };
-    INT32 enabled = drmmode_output->hdr.enabled &&
-        drmmode_output->hdr.pq_supported;
+    INT32 values[2] = { 0, drmmode_output_can_enable_hdr(output) };
+    INT32 enabled = drmmode_output->hdr.enabled && values[1];
 
     if (!drmmode_output->hdr.atom)
         return;
@@ -3751,7 +3758,7 @@ drmmode_output_set_property(xf86OutputPtr output, Atom property,
         INT32 enabled;
 
         if (!drmmode_property_value_get_int(value, 0,
-                                            drmmode_output->hdr.pq_supported,
+                                            drmmode_output_can_enable_hdr(output),
                                             &enabled))
             return FALSE;
 
