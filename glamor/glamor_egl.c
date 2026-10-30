@@ -47,6 +47,7 @@
 #include "glamor.h"
 #include "glamor_priv.h"
 #include "glamor_egl_external.h"
+#include "glamor_egl_nvidia.h"
 #include "glamor_glx_provider.h"
 #include "dri3.h"
 
@@ -61,6 +62,7 @@ struct glamor_egl_screen_private {
     int has_image_dma_buf_export;
 #endif
     int fd;
+    int nvidia_fd;
     struct gbm_device *gbm;
     int dmabuf_capable;
     int has_native_fence_sync;
@@ -387,20 +389,65 @@ glamor_egl_create_image(struct glamor_egl_screen_private *glamor_egl,
                              EGL_NATIVE_PIXMAP_KHR, bo, NULL);
 }
 
-/* NVIDIA's Vulkan driver only shares 30-bit swapchains as pitch linear
+static Bool
+glamor_egl_screens_own_dmabuf(ScrnInfoPtr *screens, int num_screens,
+                              int dmabuf_fd)
+{
+    int i;
+
+    for (i = 0; i < num_screens; i++) {
+        struct glamor_egl_screen_private *glamor_egl =
+            glamor_egl_get_screen_private(screens[i]);
+
+        if (glamor_egl && glamor_egl->nvidia_fd >= 0 &&
+            glamor_egl_nvidia_owns_dmabuf(glamor_egl->nvidia_fd, dmabuf_fd))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static Bool
+glamor_egl_bo_from_nvidia(struct gbm_bo *bo)
+{
+    int fd = gbm_bo_get_fd(bo);
+    Bool nvidia;
+
+    if (fd < 0)
+        return FALSE;
+
+    nvidia = glamor_egl_screens_own_dmabuf(xf86Screens, xf86NumScreens, fd) ||
+        glamor_egl_screens_own_dmabuf(xf86GPUScreens, xf86NumGPUScreens, fd);
+    close(fd);
+    return nvidia;
+}
+
+/* NVIDIA's Vulkan driver shares 30-bit swapchains as pitch linear
  * A2B10G10R10 buffers, regardless of the channel order of the window.
  */
 static uint32_t
-glamor_egl_external_format(uint32_t format)
+glamor_egl_bo_format(struct gbm_bo *bo)
 {
+    uint32_t format = gbm_bo_get_format(bo);
+    uint32_t nvidia_format;
+
     switch (format) {
     case DRM_FORMAT_ARGB2101010:
-        return DRM_FORMAT_ABGR2101010;
+        nvidia_format = DRM_FORMAT_ABGR2101010;
+        break;
     case DRM_FORMAT_XRGB2101010:
-        return DRM_FORMAT_XBGR2101010;
+        nvidia_format = DRM_FORMAT_XBGR2101010;
+        break;
     default:
         return format;
     }
+
+#ifdef GBM_BO_WITH_MODIFIERS
+    if (gbm_bo_get_modifier(bo) != DRM_FORMAT_MOD_LINEAR &&
+        gbm_bo_get_modifier(bo) != DRM_FORMAT_MOD_INVALID)
+        return format;
+#endif
+
+    return glamor_egl_bo_from_nvidia(bo) ? nvidia_format : format;
 }
 
 static struct glamor_egl_external_context *
@@ -460,7 +507,8 @@ glamor_egl_create_external_shadow(ScreenPtr screen, struct gbm_bo *bo)
 }
 
 static Bool
-glamor_egl_set_pixmap_external(PixmapPtr pixmap, struct gbm_bo *bo)
+glamor_egl_set_pixmap_external(PixmapPtr pixmap, struct gbm_bo *bo,
+                               uint32_t format)
 {
     ScreenPtr screen = pixmap->drawable.pScreen;
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
@@ -481,8 +529,7 @@ glamor_egl_set_pixmap_external(PixmapPtr pixmap, struct gbm_bo *bo)
 
     glamor_create_texture_from_image(screen, shadow, &texture);
     if (glamor_set_pixmap_texture(pixmap, texture)) {
-        src = glamor_egl_create_image(glamor_egl, bo,
-                                      glamor_egl_external_format(gbm_bo_get_format(bo)));
+        src = glamor_egl_create_image(glamor_egl, bo, format);
         if (src != EGL_NO_IMAGE_KHR) {
             ret = glamor_egl_external_attach(context, pixmap, src, shadow,
                                              gbm_bo_get_fd(bo));
@@ -507,6 +554,7 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
     struct glamor_screen_private *glamor_priv =
         glamor_get_screen_private(screen);
     struct glamor_egl_screen_private *glamor_egl;
+    uint32_t format = glamor_egl_bo_format(bo);
     EGLImageKHR image;
     GLuint texture;
     Bool textured;
@@ -515,7 +563,7 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
 
     glamor_make_current(glamor_priv);
 
-    image = glamor_egl_create_image(glamor_egl, bo, gbm_bo_get_format(bo));
+    image = glamor_egl_create_image(glamor_egl, bo, format);
     if (image == EGL_NO_IMAGE_KHR) {
         glamor_set_pixmap_type(pixmap, GLAMOR_DRM_ONLY);
         return FALSE;
@@ -523,7 +571,7 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
 
     glamor_set_pixmap_type(pixmap, GLAMOR_TEXTURE_DRM);
     if (glamor_egl_is_external_only(glamor_egl, bo)) {
-        textured = glamor_egl_set_pixmap_external(pixmap, bo);
+        textured = glamor_egl_set_pixmap_external(pixmap, bo, format);
     } else {
         glamor_create_texture_from_image(screen, image, &texture);
         textured = glamor_set_pixmap_texture(pixmap, texture);
@@ -1391,6 +1439,8 @@ static void glamor_egl_cleanup(struct glamor_egl_screen_private *glamor_egl)
     }
     if (glamor_egl->gbm)
         gbm_device_destroy(glamor_egl->gbm);
+    if (glamor_egl->nvidia_fd >= 0)
+        close(glamor_egl->nvidia_fd);
     free(glamor_egl->device_path);
     free(glamor_egl->glvnd_vendor);
     free(glamor_egl);
@@ -1541,6 +1591,7 @@ glamor_egl_init(ScrnInfoPtr scrn, int fd)
 
     scrn->privates[xf86GlamorEGLPrivateIndex].ptr = glamor_egl;
     glamor_egl->fd = fd;
+    glamor_egl->nvidia_fd = glamor_egl_nvidia_open(fd);
     glamor_egl->gbm = gbm_create_device(glamor_egl->fd);
     if (glamor_egl->gbm == NULL) {
         ErrorF("couldn't get display device\n");
