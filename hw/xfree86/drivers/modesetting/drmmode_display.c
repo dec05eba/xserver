@@ -1070,6 +1070,23 @@ drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode)
     return mode == DRMMODE_HDR_PASSTHROUGH || mode == DRMMODE_HDR_TONEMAP;
 }
 
+static Bool
+drmmode_crtc_test_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    int ret;
+
+    if (!req)
+        return FALSE;
+
+    ret = plane_add_props(req, crtc, fb_id, x, y);
+    if (ret == 0)
+        ret = drmModeAtomicCommit(ms->fd, req, DRM_MODE_ATOMIC_TEST_ONLY, NULL);
+    drmModeAtomicFree(req);
+    return ret == 0;
+}
+
 int
 drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                   uint32_t flags, int in_fence_fd, void *data)
@@ -1121,7 +1138,8 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                 drmmode_crtc_set_current_hdr(crtc, &hdr->pending);
             }
         }
-        else if (with_hdr && ret != -EBUSY) {
+        else if (with_hdr && ret != -EBUSY &&
+                 drmmode_crtc_test_flip(crtc, fb_id, x, y)) {
             xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
                        "Failed to change HDR mode with a flip on CRTC %d: %s\n",
                        drmmode_crtc->mode_crtc->crtc_id, strerror(-ret));
