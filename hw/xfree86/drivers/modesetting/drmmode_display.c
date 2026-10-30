@@ -1290,7 +1290,9 @@ drmmode_create_bo(drmmode_ptr drmmode, drmmode_bo *bo,
             bo->gbm = gbm_bo_create_with_modifiers2(drmmode->gbm, width, height,
                                                     format, modifiers,
                                                     num_modifiers,
-                                                    GBM_BO_USE_SCANOUT | gbm_bo_use_flag);
+                                                    GBM_BO_USE_RENDERING |
+                                                    GBM_BO_USE_SCANOUT |
+                                                    gbm_bo_use_flag);
 #else
             bo->gbm = gbm_bo_create_with_modifiers(drmmode->gbm, width, height,
                                                    format, modifiers,

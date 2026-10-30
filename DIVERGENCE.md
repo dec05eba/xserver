@@ -2,7 +2,7 @@ Divergence from upstream
 ========================
 
 This fork of the X.Org X server adds server side compositing, per-monitor
-framebuffers, HDR, NVIDIA support to the modesetting driver, per-monitor DPI and synchronized window resizing. This file
+framebuffers, HDR, NVIDIA support in the modesetting driver, per-monitor DPI and synchronized window resizing. This file
 describes what is different from upstream.
 
 Note that when installing this Xorg server version you also need to rebuild
