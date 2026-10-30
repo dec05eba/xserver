@@ -57,6 +57,41 @@ typedef struct {
     ms_compositor_pq_rec *pq;
 } ms_compositor_paint_rec;
 
+typedef struct {
+    ScrnInfoPtr scrn;
+    BoxRec bounds;
+    drmmode_composition_rec *composition;
+    const struct drm_color_ctm *user_ctm;
+} ms_compositor_target_rec;
+
+static Bool
+ms_compositor_update_composition(drmmode_composition_rec *composition, Bool pq,
+                                 int sdr_white_level)
+{
+    if (composition->pq == pq &&
+        composition->sdr_white_level == sdr_white_level)
+        return FALSE;
+
+    composition->pq = pq;
+    composition->sdr_white_level = sdr_white_level;
+    if (composition->intermediate) {
+        dixDestroyPixmap(composition->intermediate, 0);
+        composition->intermediate = NULL;
+    }
+    return TRUE;
+}
+
+static void
+ms_compositor_crtc_target(xf86CrtcPtr crtc, ms_compositor_target_rec *target)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    target->scrn = crtc->scrn;
+    target->bounds = crtc->bounds;
+    target->composition = &drmmode_crtc->tearfree.composition;
+    target->user_ctm = drmmode_crtc_user_ctm(crtc);
+}
+
 static PicturePtr
 ms_compositor_create_picture(ScreenPtr screen, PixmapPtr pixmap)
 {
@@ -304,13 +339,13 @@ ms_compositor_paint_layers(ScrnInfoPtr scrn, PicturePtr dst, int x, int y,
 }
 
 static PixmapPtr
-ms_compositor_intermediate_pixmap(xf86CrtcPtr crtc, Bool *created)
+ms_compositor_intermediate_pixmap(ms_compositor_target_rec *target,
+                                  Bool *created)
 {
-    ScreenPtr screen = crtc->scrn->pScreen;
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_composition_rec *composition = &drmmode_crtc->tearfree.composition;
-    int width = crtc->bounds.x2 - crtc->bounds.x1;
-    int height = crtc->bounds.y2 - crtc->bounds.y1;
+    ScreenPtr screen = target->scrn->pScreen;
+    drmmode_composition_rec *composition = target->composition;
+    int width = target->bounds.x2 - target->bounds.x1;
+    int height = target->bounds.y2 - target->bounds.y1;
 
     *created = FALSE;
     if (composition->intermediate &&
@@ -328,16 +363,17 @@ ms_compositor_intermediate_pixmap(xf86CrtcPtr crtc, Bool *created)
 }
 
 static PixmapPtr
-ms_compositor_paint_intermediate(xf86CrtcPtr crtc, RegionPtr region,
+ms_compositor_paint_intermediate(ms_compositor_target_rec *target,
+                                 RegionPtr region,
                                  ms_compositor_paint_rec *paint)
 {
-    ScrnInfoPtr scrn = crtc->scrn;
+    ScrnInfoPtr scrn = target->scrn;
     PixmapPtr pixmap;
     PicturePtr picture;
     RegionRec bounds;
     Bool created;
 
-    pixmap = ms_compositor_intermediate_pixmap(crtc, &created);
+    pixmap = ms_compositor_intermediate_pixmap(target, &created);
     if (!pixmap)
         return NULL;
 
@@ -345,9 +381,10 @@ ms_compositor_paint_intermediate(xf86CrtcPtr crtc, RegionPtr region,
     if (!picture)
         return NULL;
 
-    RegionInit(&bounds, &crtc->bounds, 1);
-    ms_compositor_paint_layers(scrn, picture, crtc->bounds.x1, crtc->bounds.y1,
-                               created ? &bounds : region, paint);
+    RegionInit(&bounds, &target->bounds, 1);
+    ms_compositor_paint_layers(scrn, picture, target->bounds.x1,
+                               target->bounds.y1, created ? &bounds : region,
+                               paint);
     RegionUninit(&bounds);
     FreePicture(picture, 0);
     return pixmap;
@@ -388,8 +425,10 @@ ms_compositor_copy_transformed(PicturePtr src, int x, int y, PicturePtr dst,
 }
 
 static void
-ms_compositor_paint_transformed(xf86CrtcPtr crtc, PicturePtr dst,
-                                RegionPtr region, ms_compositor_paint_rec *paint)
+ms_compositor_paint_transformed(xf86CrtcPtr crtc,
+                                ms_compositor_target_rec *target,
+                                PicturePtr dst, RegionPtr region,
+                                ms_compositor_paint_rec *paint)
 {
     ScrnInfoPtr scrn = crtc->scrn;
     ms_compositor_transform_rec transform = {
@@ -404,7 +443,7 @@ ms_compositor_paint_transformed(xf86CrtcPtr crtc, PicturePtr dst,
     PixmapPtr pixmap;
     PicturePtr src;
 
-    pixmap = ms_compositor_paint_intermediate(crtc, region, paint);
+    pixmap = ms_compositor_paint_intermediate(target, region, paint);
     if (!pixmap)
         return;
 
@@ -419,29 +458,31 @@ ms_compositor_paint_transformed(xf86CrtcPtr crtc, PicturePtr dst,
 
 #ifdef HAVE_GBM
 static void
-ms_compositor_paint_pq(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region,
-                       ms_compositor_paint_rec *paint)
+ms_compositor_paint_pq(ms_compositor_target_rec *target, PixmapPtr dst,
+                       RegionPtr region, ms_compositor_paint_rec *paint)
 {
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
-    ms_compositor_pq_rec pq = { .dst = dst, .x = crtc->x, .y = crtc->y };
+    modesettingPtr ms = modesettingPTR(target->scrn);
+    ms_compositor_pq_rec pq = {
+        .dst = dst,
+        .x = target->bounds.x1,
+        .y = target->bounds.y1,
+    };
     glamor_color_conversion conversion;
     PixmapPtr pixmap;
     RegionRec converted;
 
     RegionNull(&pq.copied);
     paint->pq = &pq;
-    pixmap = ms_compositor_paint_intermediate(crtc, region, paint);
+    pixmap = ms_compositor_paint_intermediate(target, region, paint);
     paint->pq = NULL;
 
     if (pixmap) {
         RegionNull(&converted);
         RegionSubtract(&converted, region, &pq.copied);
-        RegionTranslate(&converted, -crtc->x, -crtc->y);
-        ms_hdr_sdr_to_pq_conversion(drmmode_crtc_user_ctm(crtc),
-                                    paint->sdr_white_level, &conversion);
-        ms->glamor.convert_color(pixmap, dst, &converted,
-                                 crtc->x - crtc->bounds.x1,
-                                 crtc->y - crtc->bounds.y1, FALSE, 0xffff,
+        RegionTranslate(&converted, -pq.x, -pq.y);
+        ms_hdr_sdr_to_pq_conversion(target->user_ctm, paint->sdr_white_level,
+                                    &conversion);
+        ms->glamor.convert_color(pixmap, dst, &converted, 0, 0, FALSE, 0xffff,
                                  &conversion);
         RegionUninit(&converted);
     }
@@ -453,19 +494,21 @@ void
 ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region)
 {
     ScrnInfoPtr scrn = crtc->scrn;
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_composition_rec *composition = &drmmode_crtc->tearfree.composition;
-    ms_compositor_paint_rec paint = {
-        .sdr_white_level = composition->sdr_white_level,
-    };
+    ms_compositor_target_rec target;
+    ms_compositor_paint_rec paint;
     PicturePtr dst_picture;
 
     if (RegionNil(region))
         return;
 
+    ms_compositor_crtc_target(crtc, &target);
+    paint = (ms_compositor_paint_rec) {
+        .sdr_white_level = target.composition->sdr_white_level,
+    };
+
 #ifdef HAVE_GBM
-    if (composition->pq) {
-        ms_compositor_paint_pq(crtc, dst, region, &paint);
+    if (target.composition->pq) {
+        ms_compositor_paint_pq(&target, dst, region, &paint);
         return;
     }
 #endif
@@ -475,7 +518,8 @@ ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region)
         return;
 
     if (crtc->transform_in_use)
-        ms_compositor_paint_transformed(crtc, dst_picture, region, &paint);
+        ms_compositor_paint_transformed(crtc, &target, dst_picture, region,
+                                        &paint);
     else
         ms_compositor_paint_layers(scrn, dst_picture, crtc->x, crtc->y,
                                    region, &paint);
@@ -514,36 +558,81 @@ ms_compositor_paint_rotated(ScrnInfoPtr scrn, PicturePtr dst,
     FreePicture(src, 0);
 }
 
+static PixmapPtr
+ms_compositor_dirty_dst(PixmapDirtyUpdatePtr dirty)
+{
+    return dirty->secondary_dst->primary_pixmap ?
+        dirty->secondary_dst->primary_pixmap : dirty->secondary_dst;
+}
+
+static void
+ms_compositor_dirty_box(PixmapDirtyUpdatePtr dirty, BoxPtr box)
+{
+    PixmapPtr dst = ms_compositor_dirty_dst(dirty);
+    Bool rotated = dirty->rotation == RR_Rotate_90 ||
+        dirty->rotation == RR_Rotate_270;
+
+    box->x1 = dirty->x;
+    box->y1 = dirty->y;
+    box->x2 = dirty->x + (rotated ? dst->drawable.height : dst->drawable.width);
+    box->y2 = dirty->y + (rotated ? dst->drawable.width : dst->drawable.height);
+}
+
+static void
+ms_compositor_prime_target(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
+                           ms_compositor_target_rec *target)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    target->scrn = xf86ScreenToScrn(dirty->src->pScreen);
+    ms_compositor_dirty_box(dirty, &target->bounds);
+    target->composition = &drmmode_crtc->prime_scanout.composition;
+    target->user_ctm = drmmode_crtc_user_ctm(crtc);
+}
+
 Bool
 ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
 {
     ScreenPtr screen = dirty->src->pScreen;
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
-    PixmapPtr dst = dirty->secondary_dst->primary_pixmap ?
-        dirty->secondary_dst->primary_pixmap : dirty->secondary_dst;
-    Bool rotated = dirty->rotation == RR_Rotate_90 ||
-        dirty->rotation == RR_Rotate_270;
-    BoxRec box = {
-        .x1 = dirty->x,
-        .y1 = dirty->y,
-        .x2 = dirty->x + (rotated ? dst->drawable.height : dst->drawable.width),
-        .y2 = dirty->y + (rotated ? dst->drawable.width : dst->drawable.height),
+    PixmapPtr dst = ms_compositor_dirty_dst(dirty);
+    xf86CrtcPtr crtc = drmmode_prime_scanout_crtc(dirty->secondary_dst);
+    ms_compositor_paint_rec paint = {
+        .sdr_white_level = modesettingPTR(scrn)->drmmode.sdr_white_level_default,
     };
-    PicturePtr dst_picture = NULL;
+    ms_compositor_target_rec target;
+    PicturePtr dst_picture;
     Bool painted = FALSE;
     RegionRec region;
+    BoxRec box;
 
+    ms_compositor_dirty_box(dirty, &box);
     RegionInit(&region, &box, 1);
     RegionIntersect(&region, &region, DamageRegion(dirty->damage));
-    if (RegionNotEmpty(&region))
-        dst_picture = ms_compositor_create_picture(screen, dst);
+    if (RegionNil(&region)) {
+        RegionUninit(&region);
+        return FALSE;
+    }
 
+    if (crtc) {
+        ms_compositor_prime_target(dirty, crtc, &target);
+        paint.sdr_white_level = target.composition->sdr_white_level;
+#ifdef HAVE_GBM
+        if (target.composition->pq) {
+            ms_compositor_paint_pq(&target, dst, &region, &paint);
+            RegionUninit(&region);
+            return TRUE;
+        }
+#endif
+    }
+
+    dst_picture = ms_compositor_create_picture(screen, dst);
     if (dst_picture) {
         if (dirty->rotation == RR_Rotate_0)
             ms_compositor_paint_layers(scrn, dst_picture,
                                        dirty->x - dirty->dst_x,
                                        dirty->y - dirty->dst_y, &region,
-                                       NULL);
+                                       &paint);
         else
             ms_compositor_paint_rotated(scrn, dst_picture, dirty, &region);
         FreePicture(dst_picture, 0);
@@ -553,6 +642,53 @@ ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
     RegionUninit(&region);
     return painted;
 }
+
+#ifdef HAVE_GBM
+static void
+ms_compositor_damage_prime(ScreenPtr screen, xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    PixmapDirtyUpdatePtr dirty;
+
+    xorg_list_for_each_entry(dirty, &screen->pixmap_dirty_list, ent) {
+        RegionRec region;
+        BoxRec box;
+
+        if (dirty->secondary_dst != drmmode_crtc->prime_pixmap &&
+            dirty->secondary_dst != drmmode_crtc->prime_pixmap_back)
+            continue;
+
+        ms_compositor_dirty_box(dirty, &box);
+        RegionInit(&region, &box, 1);
+        RegionUnion(DamageRegion(dirty->damage), DamageRegion(dirty->damage),
+                    &region);
+        RegionUninit(&region);
+    }
+}
+
+void
+ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
+{
+    ScreenPtr screen = dirty->src->pScreen;
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+    xf86CrtcPtr crtc = drmmode_prime_scanout_crtc(dirty->secondary_dst);
+    drmmode_crtc_private_ptr drmmode_crtc;
+    Bool pq;
+
+    if (!crtc)
+        return;
+
+    drmmode_crtc = crtc->driver_private;
+    pq = ms->glamor.convert_color && dirty->rotation == RR_Rotate_0 &&
+        !dirty->dst_x && !dirty->dst_y &&
+        ms_compositor_dirty_dst(dirty)->drawable.depth == 30 &&
+        drmmode_crtc_hdr_enabled(crtc);
+
+    if (ms_compositor_update_composition(&drmmode_crtc->prime_scanout.composition,
+                                         pq, drmmode_crtc_sdr_white_level(crtc)))
+        ms_compositor_damage_prime(screen, crtc);
+}
+#endif
 
 #ifdef HAVE_GBM
 static Bool
@@ -632,20 +768,11 @@ ms_compositor_set_composition(xf86CrtcPtr crtc, Bool pq)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-    drmmode_composition_rec *composition = &trf->composition;
-    int sdr_white_level = drmmode_crtc_sdr_white_level(crtc);
     int i;
 
-    if (composition->pq == pq &&
-        composition->sdr_white_level == sdr_white_level)
+    if (!ms_compositor_update_composition(&trf->composition, pq,
+                                          drmmode_crtc_sdr_white_level(crtc)))
         return;
-
-    composition->pq = pq;
-    composition->sdr_white_level = sdr_white_level;
-    if (composition->intermediate) {
-        dixDestroyPixmap(composition->intermediate, 0);
-        composition->intermediate = NULL;
-    }
 
     for (i = 0; i < ARRAY_SIZE(trf->buf); i++)
         RegionReset(&trf->buf[i].dmg, &crtc->bounds);

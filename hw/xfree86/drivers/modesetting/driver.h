@@ -294,6 +294,7 @@ Bool ms_compositor_direct_flip(xf86CrtcPtr crtc);
 
 #endif
 
+Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
 int ms_flush_drm_events(ScreenPtr screen);
 void ms_drain_drm_events(ScreenPtr screen);
 Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
@@ -305,6 +306,7 @@ Bool ms_compositor_create_screen_resources(ScreenPtr screen);
 void ms_compositor_update_damages(ScreenPtr screen);
 void ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region);
 Bool ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty);
+void ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty);
 void ms_compositor_set_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,
                               CursorPtr cursor, int x, int y);
 void ms_compositor_move_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,

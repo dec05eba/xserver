@@ -394,6 +394,12 @@ ms_driver_func(ScrnInfoPtr scrn, xorgDriverFuncOp op, void *data)
     }
 }
 
+Bool
+ms_scrn_is_modesetting(ScrnInfoPtr scrn)
+{
+    return scrn->PreInit == PreInit;
+}
+
 static void
 ms_setup_scrn_hooks(ScrnInfoPtr scrn)
 {
@@ -1856,8 +1862,14 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
 
     msPixmapPrivPtr ppriv = msGetPixmapPriv(&ms->drmmode, secondary_dst->primary_pixmap);
 
-    RegionPtr region = DamageRegion(ppriv->dirty->damage);
+    RegionPtr region;
 
+#ifdef HAVE_GBM
+    if (ms->drmmode.tearfree_enable)
+        ms_compositor_update_prime(ppriv->dirty);
+#endif
+
+    region = DamageRegion(ppriv->dirty->damage);
     if (RegionNotEmpty(region)) {
         ms_dirty_paint(ppriv->dirty);
         ms_fence_shared_pixmap(pScreen, ppriv);
@@ -1867,6 +1879,25 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
     }
 
     return FALSE;
+}
+
+static int
+msSharedPixmapDepth(RRCrtcPtr crtc, int numOutputs, RROutputPtr *outputs)
+{
+    ScreenPtr primary = crtc->pScreen->current_primary;
+#ifdef HAVE_GBM
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(primary));
+    int i;
+
+    if (ms->drmmode.tearfree_enable && ms->glamor.convert_color &&
+        PictureMatchFormat(primary, 30, PICT_x2r10g10b10)) {
+        for (i = 0; i < numOutputs; i++) {
+            if (drmmode_prime_output_supports_hdr(outputs[i]))
+                return 30;
+        }
+    }
+#endif
+    return primary->rootDepth;
 }
 
 static Bool
@@ -1993,6 +2024,7 @@ CreateScreenResources(ScreenPtr pScreen)
         pScrPriv->rrDisableSharedPixmapFlipping = msDisableSharedPixmapFlipping;
 
         pScrPriv->rrStartFlippingPixmapTracking = msStartFlippingPixmapTracking;
+        pScrPriv->rrSharedPixmapDepth = msSharedPixmapDepth;
     }
 
     if (ms->vrr_support &&
@@ -2147,6 +2179,39 @@ CreateWindow_oneshot(WindowPtr pWin)
     return ret;
 }
 
+#ifdef HAVE_GBM
+/* enable reverse prime if we are a GPU screen, and accelerated, and not
+ * i915, evdi or udl. i915 is happy scanning out from sysmem.
+ * evdi and udl are virtual drivers scanning out from sysmem
+ * backed dumb buffers.
+ */
+static void
+ms_init_reverse_prime_offload_mode(ScrnInfoPtr pScrn)
+{
+    modesettingPtr ms = modesettingPTR(pScrn);
+    drmVersionPtr version;
+
+    ms->drmmode.reverse_prime_offload_mode = TRUE;
+
+    if ((version = drmGetVersion(ms->drmmode.fd))) {
+        if (!strncmp("i915", version->name, version->name_len)) {
+            ms->drmmode.reverse_prime_offload_mode = FALSE;
+        }
+        if (!strncmp("evdi", version->name, version->name_len)) {
+            ms->drmmode.reverse_prime_offload_mode = FALSE;
+        }
+        if (!strncmp("udl", version->name, version->name_len)) {
+            ms->drmmode.reverse_prime_offload_mode = FALSE;
+        }
+        if (!ms->drmmode.reverse_prime_offload_mode) {
+            xf86DrvMsg(pScrn->scrnIndex, X_INFO,
+               "Disable reverse prime offload mode for %s.\n", version->name);
+        }
+        drmFreeVersion(version);
+    }
+}
+#endif
+
 static Bool
 ScreenInit(ScreenPtr pScreen, int argc, char **argv)
 {
@@ -2295,6 +2360,11 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
     pScreen->PresentSharedPixmap = msPresentSharedPixmap;
     pScreen->StopFlippingPixmapTracking = msStopFlippingPixmapTracking;
 
+#ifdef HAVE_GBM
+    if (ms->drmmode.glamor && pScreen->isGPU)
+        ms_init_reverse_prime_offload_mode(pScrn);
+#endif
+
     if (!xf86CrtcScreenInit(pScreen))
         return FALSE;
 
@@ -2336,35 +2406,6 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
                        "Failed to initialize the DRI2 extension.\n");
         }
 #endif
-
-        /* enable reverse prime if we are a GPU screen, and accelerated, and not
-         * i915, evdi or udl. i915 is happy scanning out from sysmem.
-         * evdi and udl are virtual drivers scanning out from sysmem
-         * backed dumb buffers.
-         */
-        if (pScreen->isGPU) {
-            drmVersionPtr version;
-
-            /* enable if we are an accelerated GPU screen */
-            ms->drmmode.reverse_prime_offload_mode = TRUE;
-
-            if ((version = drmGetVersion(ms->drmmode.fd))) {
-                if (!strncmp("i915", version->name, version->name_len)) {
-                    ms->drmmode.reverse_prime_offload_mode = FALSE;
-                }
-                if (!strncmp("evdi", version->name, version->name_len)) {
-                    ms->drmmode.reverse_prime_offload_mode = FALSE;
-                }
-                if (!strncmp("udl", version->name, version->name_len)) {
-                    ms->drmmode.reverse_prime_offload_mode = FALSE;
-                }
-                if (!ms->drmmode.reverse_prime_offload_mode) {
-                    xf86DrvMsg(pScrn->scrnIndex, X_INFO,
-                       "Disable reverse prime offload mode for %s.\n", version->name);
-                }
-                drmFreeVersion(version);
-            }
-        }
     }
 #endif
     if (!(ms->drmmode.present_enable = ms_present_screen_init(pScreen))) {

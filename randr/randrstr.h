@@ -325,6 +325,8 @@ typedef Bool (*RREnableSharedPixmapFlippingProcPtr)(RRCrtcPtr,
 
 typedef void (*RRDisableSharedPixmapFlippingProcPtr)(RRCrtcPtr);
 
+typedef int (*RRSharedPixmapDepthProcPtr)(RRCrtcPtr crtc, int numOutputs,
+                                          RROutputPtr *outputs);
 
 typedef struct _rrScrPriv {
     /*
@@ -423,6 +425,8 @@ typedef struct _rrScrPriv {
 #if RANDR_12_INTERFACE
     RRCrtcGetProcPtr rrCrtcGet;
 #endif
+
+    RRSharedPixmapDepthProcPtr rrSharedPixmapDepth;
 } rrScrPrivRec, *rrScrPrivPtr;
 
 extern _X_EXPORT DevPrivateKeyRec rrPrivKeyRec;

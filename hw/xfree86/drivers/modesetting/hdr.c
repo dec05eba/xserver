@@ -89,7 +89,15 @@ ms_hdr_update(ScreenPtr screen)
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
     int i;
 
-    if (!ms->output_mode_dirty || !scrn->vtSema || !screen->root)
+    if (!ms->output_mode_dirty || !scrn->vtSema)
+        return;
+
+    if (screen->isGPU) {
+        ms->output_mode_dirty = !drmmode_prime_update_output_mode(scrn);
+        return;
+    }
+
+    if (!screen->root)
         return;
 
     ms->output_mode_dirty = FALSE;

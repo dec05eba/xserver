@@ -259,6 +259,7 @@ typedef struct {
 typedef struct {
     drmmode_shadow_fb_rec buf[2];
     uint32_t back_idx;
+    drmmode_composition_rec composition;
 } drmmode_prime_scanout_rec;
 
 typedef struct {
@@ -422,6 +423,9 @@ Bool drmmode_SharedPixmapPresentOnVBlank(PixmapPtr frontTarget, xf86CrtcPtr crtc
 Bool drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
                               drmmode_ptr drmmode);
 void drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode);
+xf86CrtcPtr drmmode_prime_scanout_crtc(PixmapPtr ppix);
+Bool drmmode_prime_update_output_mode(ScrnInfoPtr scrn);
+Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
 
 extern Bool drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp);
 extern Bool drmmode_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode);

@@ -527,6 +527,9 @@ rrSetupPixmapSharing(RRCrtcPtr crtc, int width, int height,
         return TRUE;
     }
 
+    if (sync && pPrimaryScrPriv->rrSharedPixmapDepth)
+        depth = pPrimaryScrPriv->rrSharedPixmapDepth(crtc, numOutputs, outputs);
+
     spix_front = rrCreateSharedPixmap(crtc, primary,
                                       width, height, depth,
                                       x, y, rotation);
@@ -583,6 +586,16 @@ fail: /* If flipping funcs fail, just fall back to unsynchronized */
 
         /* Set output property to 0 to indicate to user */
         rrSetPixmapSharingSyncProp(0, numOutputs, outputs);
+    }
+
+    if (depth != mrootdraw->depth) {
+        rrDestroySharedPixmap(crtc, spix_front);
+        spix_front = rrCreateSharedPixmap(crtc, primary, width, height,
+                                          mrootdraw->depth, x, y, rotation);
+        if (spix_front == NULL) {
+            ErrorF("randr: failed to create shared pixmap\n");
+            return FALSE;
+        }
     }
 
     if (!pSecondaryScrPriv->rrCrtcSetScanoutPixmap(crtc, spix_front)) {

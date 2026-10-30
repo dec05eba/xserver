@@ -1460,6 +1460,10 @@ drmmode_destroy_prime_scanout(xf86CrtcPtr crtc)
         }
     }
     prime_scanout->back_idx = 0;
+
+    if (prime_scanout->composition.intermediate)
+        dixDestroyPixmap(prime_scanout->composition.intermediate, 0);
+    memset(&prime_scanout->composition, 0, sizeof(prime_scanout->composition));
 }
 
 static Bool
@@ -1511,11 +1515,71 @@ drmmode_prime_scanout_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     if (fence_fd < 0)
         ms->glamor.finish(screen);
 
+    drmmode_crtc_set_scanout_content(crtc, prime_scanout->composition.pq, NULL,
+                                     TRUE);
     ret = drmmode_crtc_flip(crtc, back->fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
                             fence_fd, (void *)(intptr_t) seq);
     if (fence_fd >= 0)
         close(fence_fd);
     return ret == 0;
+}
+
+xf86CrtcPtr
+drmmode_prime_scanout_crtc(PixmapPtr ppix)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(ppix->drawable.pScreen);
+    xf86CrtcConfigPtr config;
+    int i;
+
+    if (!ms_scrn_is_modesetting(scrn))
+        return NULL;
+
+    config = XF86_CRTC_CONFIG_PTR(scrn);
+    for (i = 0; i < config->num_crtc; i++) {
+        xf86CrtcPtr crtc = config->crtc[i];
+        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+        if (drmmode_crtc->prime_scanout.buf[0].px &&
+            (drmmode_crtc->prime_pixmap == ppix ||
+             drmmode_crtc->prime_pixmap_back == ppix))
+            return crtc;
+    }
+    return NULL;
+}
+
+static Bool
+drmmode_prime_crtc_update_output_mode(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    msPixmapPrivPtr ppriv;
+
+    if (!drmmode_crtc->flipping_active || !drmmode_crtc->prime_scanout.buf[0].px)
+        return TRUE;
+
+    ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
+                            drmmode_crtc->prime_pixmap_back);
+    if (!ppriv->wait_for_damage)
+        return FALSE;
+
+    drmmode_crtc_set_scanout_content(crtc,
+                                     drmmode_crtc->prime_scanout.composition.pq,
+                                     NULL, FALSE);
+    ppriv->wait_for_damage =
+        !drmmode_SharedPixmapPresentOnVBlank(drmmode_crtc->prime_pixmap_back,
+                                             crtc, drmmode_crtc->drmmode);
+    return TRUE;
+}
+
+Bool
+drmmode_prime_update_output_mode(ScrnInfoPtr scrn)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    Bool updated = TRUE;
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++)
+        updated &= drmmode_prime_crtc_update_output_mode(config->crtc[i]);
+    return updated;
 }
 
 static Bool
@@ -3406,7 +3470,18 @@ drmmode_output_can_enable_hdr(xf86OutputPtr output)
 {
     drmmode_output_private_ptr drmmode_output = output->driver_private;
 
-    return drmmode_output->hdr.pq_supported && !output->scrn->is_gpu;
+    return drmmode_output->hdr.pq_supported &&
+        (!output->scrn->is_gpu ||
+         drmmode_output->drmmode->reverse_prime_offload_mode);
+}
+
+Bool
+drmmode_prime_output_supports_hdr(RROutputPtr randr_output)
+{
+    xf86OutputPtr output = randr_output->devPrivate;
+
+    return output && ms_scrn_is_modesetting(output->scrn) &&
+        output->scrn->is_gpu && drmmode_output_can_enable_hdr(output);
 }
 
 static void
@@ -5734,7 +5809,9 @@ drmmode_crtc_set_current_hdr(xf86CrtcPtr crtc,
 
     *current = *state;
     if (cursor_changed && crtc->scrn->vtSema)
-        xf86CursorResetCursor(crtc->scrn->pScreen);
+        xf86CursorResetCursor(crtc->scrn->pScreen->is_output_secondary ?
+                              crtc->scrn->pScreen->current_primary :
+                              crtc->scrn->pScreen);
 }
 
 static Bool
