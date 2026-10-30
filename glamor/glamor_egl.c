@@ -62,6 +62,7 @@ struct glamor_egl_screen_private {
     int fd;
     struct gbm_device *gbm;
     int dmabuf_capable;
+    int has_native_fence_sync;
     char *glvnd_vendor; /* GLVND vendor if forced from options or NULL otherwise */
 
     CloseScreenProcPtr saved_close_screen;
@@ -901,6 +902,29 @@ glamor_egl_get_driver_name(ScreenPtr screen)
 }
 
 
+int
+glamor_egl_create_fence_fd(ScreenPtr screen)
+{
+    struct glamor_egl_screen_private *glamor_egl =
+        glamor_egl_get_screen_private(xf86ScreenToScrn(screen));
+    EGLSyncKHR sync;
+    int fd;
+
+    if (!glamor_egl->has_native_fence_sync)
+        return -1;
+
+    glamor_make_current(glamor_get_screen_private(screen));
+    sync = eglCreateSyncKHR(glamor_egl->display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+                            NULL);
+    if (sync == EGL_NO_SYNC_KHR)
+        return -1;
+
+    glFlush();
+    fd = eglDupNativeFenceFDANDROID(glamor_egl->display, sync);
+    eglDestroySyncKHR(glamor_egl->display, sync);
+    return fd;
+}
+
 static Bool
 glamor_egl_destroy_pixmap(PixmapPtr pixmap)
 {
@@ -1287,6 +1311,9 @@ glamor_egl_init(ScrnInfoPtr scrn, int fd)
 #ifdef EGL_MESA_image_dma_buf_export
     glamor_egl->has_image_dma_buf_export = epoxy_has_egl_extension(glamor_egl->display, "EGL_MESA_image_dma_buf_export");
 #endif
+    glamor_egl->has_native_fence_sync =
+        epoxy_has_egl_extension(glamor_egl->display,
+                                "EGL_ANDROID_native_fence_sync");
 
 #define GLAMOR_CHECK_EGL_EXTENSION(EXT)  \
 	if (!epoxy_has_egl_extension(glamor_egl->display, "EGL_" #EXT)) {  \

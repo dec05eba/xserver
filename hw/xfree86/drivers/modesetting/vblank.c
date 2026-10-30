@@ -222,6 +222,153 @@ ms_randr_crtc_covering_drawable(DrawablePtr pDraw)
     return crtc;
 }
 
+static void
+ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit,
+                        uint64_t user_data);
+static void
+ms_drm_set_seq_queued(uint32_t seq, uint64_t msc);
+
+/*
+ * Some kernel drivers, such as nvidia-drm, don't support vblank queries or
+ * events, only page flip events. Emulate vblanks for them from the refresh
+ * rate of the mode, aligned to the page flip completion timestamps.
+ */
+static void
+ms_emulate_vblank(modesettingPtr ms, ScrnInfoPtr scrn)
+{
+    if (ms->emulate_vblank)
+        return;
+
+    ms->emulate_vblank = TRUE;
+    xf86DrvMsg(scrn->scrnIndex, X_INFO,
+               "Kernel doesn't support vblank events, emulating them\n");
+}
+
+static uint64_t
+ms_crtc_frame_period(xf86CrtcPtr crtc)
+{
+    double refresh = xf86ModeVRefresh(&crtc->mode);
+
+    return refresh > 0.0 ? 1000000.0 / refresh : 16667;
+}
+
+static void
+ms_vblank_emul_at(xf86CrtcPtr crtc, uint64_t now, uint64_t *msc,
+                  uint64_t *ust)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_vblank_emul_rec *emul = &drmmode_crtc->vblank_emul;
+    uint64_t period = ms_crtc_frame_period(crtc);
+    uint64_t frames;
+
+    if (!emul->base_ust || emul->period != period) {
+        if (emul->base_ust && now > emul->base_ust)
+            emul->base_msc += (now - emul->base_ust) / emul->period;
+        emul->base_ust = now;
+        emul->period = period;
+    }
+
+    frames = now > emul->base_ust ? (now - emul->base_ust) / period : 0;
+    *msc = emul->base_msc + frames;
+    *ust = emul->base_ust + frames * period;
+}
+
+static uint64_t
+ms_vblank_emul_flipped(xf86CrtcPtr crtc, uint64_t ust)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_vblank_emul_rec *emul = &drmmode_crtc->vblank_emul;
+    uint64_t msc, vblank_ust;
+
+    ms_vblank_emul_at(crtc, ust, &msc, &vblank_ust);
+    if (ust > vblank_ust && ust - vblank_ust > emul->period / 2)
+        msc++;
+
+    emul->base_msc = msc;
+    emul->base_ust = ust;
+    return msc;
+}
+
+static CARD32
+ms_vblank_emul_timeout(OsTimerPtr timer, CARD32 time, void *arg);
+
+static void
+ms_vblank_emul_arm(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_vblank_emul_rec *emul = &drmmode_crtc->vblank_emul;
+    uint64_t target = UINT64_MAX, now = GetTimeInMicros(), msc, ust, when;
+    struct ms_drm_queue *q;
+
+    xorg_list_for_each_entry(q, &ms_drm_queue, list) {
+        if (q->crtc == crtc && q->kernel_queued && q->msc < target)
+            target = q->msc;
+    }
+
+    if (target == UINT64_MAX) {
+        TimerCancel(emul->timer);
+        return;
+    }
+
+    ms_vblank_emul_at(crtc, now, &msc, &ust);
+    when = target > msc ? ust + (target - msc) * emul->period : now;
+    emul->timer = TimerSet(emul->timer, 0,
+                           max((when - min(when, now) + 999) / 1000, 1),
+                           ms_vblank_emul_timeout, crtc);
+}
+
+static CARD32
+ms_vblank_emul_timeout(OsTimerPtr timer, CARD32 time, void *arg)
+{
+    xf86CrtcPtr crtc = arg;
+    struct ms_drm_queue *q;
+    uint64_t msc, ust;
+
+    ms_vblank_emul_at(crtc, GetTimeInMicros(), &msc, &ust);
+    xorg_list_for_each_entry(q, &ms_drm_queue, list) {
+        if (q->crtc == crtc && q->kernel_queued && q->msc <= msc) {
+            ms_drm_sequence_handler(-1, msc, ust * 1000, TRUE, q->seq);
+            break;
+        }
+    }
+
+    ms_vblank_emul_arm(crtc);
+    return 0;
+}
+
+static Bool
+ms_vblank_emul_queue(xf86CrtcPtr crtc, ms_queue_flag flags, uint64_t msc,
+                     uint64_t *msc_queued, uint32_t seq)
+{
+    uint64_t now_msc, ust;
+
+    if (!xf86_crtc_on(crtc)) {
+        ms_drm_abort_seq(crtc->scrn, seq);
+        return FALSE;
+    }
+
+    ms_vblank_emul_at(crtc, GetTimeInMicros(), &now_msc, &ust);
+    if (flags & MS_QUEUE_RELATIVE)
+        msc += now_msc;
+    else if ((flags & MS_QUEUE_NEXT_ON_MISS) && msc <= now_msc)
+        msc = now_msc + 1;
+
+    ms_drm_set_seq_queued(seq, msc);
+    if (msc_queued)
+        *msc_queued = msc;
+    ms_vblank_emul_arm(crtc);
+    return TRUE;
+}
+
+void
+ms_vblank_crtc_fini(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    TimerFree(drmmode_crtc->vblank_emul.timer);
+    drmmode_crtc->vblank_emul.timer = NULL;
+}
+
 static Bool
 ms_get_kernel_ust_msc(xf86CrtcPtr crtc,
                       uint64_t *msc, uint64_t *ust)
@@ -233,12 +380,23 @@ ms_get_kernel_ust_msc(xf86CrtcPtr crtc,
     drmVBlank vbl;
     int ret;
 
+    if (ms->emulate_vblank) {
+        if (!xf86_crtc_on(crtc))
+            return FALSE;
+        ms_vblank_emul_at(crtc, GetTimeInMicros(), msc, ust);
+        return TRUE;
+    }
+
     if (ms->has_queue_sequence || !ms->tried_queue_sequence) {
         uint64_t ns;
         ms->tried_queue_sequence = TRUE;
 
         ret = drmCrtcGetSequence(ms->fd, drmmode_crtc->mode_crtc->crtc_id,
                                  msc, &ns);
+        if (ret == -1 && errno == EOPNOTSUPP) {
+            ms_emulate_vblank(ms, scrn);
+            return ms_get_kernel_ust_msc(crtc, msc, ust);
+        }
         if (ret != -1 || (errno != ENOTTY && errno != EINVAL)) {
             ms->has_queue_sequence = TRUE;
             if (ret == 0)
@@ -251,6 +409,10 @@ ms_get_kernel_ust_msc(xf86CrtcPtr crtc,
     vbl.request.sequence = 0;
     vbl.request.signal = 0;
     ret = drmWaitVBlank(ms->fd, &vbl);
+    if (ret && errno == EOPNOTSUPP) {
+        ms_emulate_vblank(ms, scrn);
+        return ms_get_kernel_ust_msc(crtc, msc, ust);
+    }
     if (ret) {
         *msc = 0;
         *ust = 0;
@@ -323,6 +485,9 @@ ms_queue_vblank(xf86CrtcPtr crtc, ms_queue_flag flags,
         return TRUE;
 
     for (;;) {
+        if (ms->emulate_vblank)
+            return ms_vblank_emul_queue(crtc, flags, msc, msc_queued, seq);
+
         /* Queue an event at the specified sequence */
         if (ms->has_queue_sequence || !ms->tried_queue_sequence) {
             uint32_t drm_flags = 0;
@@ -346,6 +511,10 @@ ms_queue_vblank(xf86CrtcPtr crtc, ms_queue_flag flags,
                 return TRUE;
             }
 
+            if (ret == -1 && errno == EOPNOTSUPP) {
+                ms_emulate_vblank(ms, scrn);
+                continue;
+            }
             if (ret != -1 || (errno != ENOTTY && errno != EINVAL)) {
                 ms->has_queue_sequence = TRUE;
                 goto check;
@@ -370,6 +539,10 @@ ms_queue_vblank(xf86CrtcPtr crtc, ms_queue_flag flags,
             return TRUE;
         }
     check:
+        if (errno == EOPNOTSUPP) {
+            ms_emulate_vblank(ms, scrn);
+            continue;
+        }
         if (errno != EBUSY) {
             ms_drm_abort_seq(scrn, seq);
             return FALSE;
@@ -431,7 +604,8 @@ ms_get_crtc_ust_msc(xf86CrtcPtr crtc, CARD64 *ust, CARD64 *msc)
 
     if (!ms_get_kernel_ust_msc(crtc, &kernel_msc, ust))
         return BadMatch;
-    *msc = ms_kernel_msc_to_crtc_msc(crtc, kernel_msc, ms->has_queue_sequence);
+    *msc = ms->emulate_vblank ? kernel_msc :
+        ms_kernel_msc_to_crtc_msc(crtc, kernel_msc, ms->has_queue_sequence);
 
     return Success;
 }
@@ -561,6 +735,17 @@ ms_drm_abort(ScrnInfoPtr scrn, Bool (*match)(void *data, void *match_data),
  * General DRM kernel handler. Looks for the matching sequence number in the
  * drm event queue and calls the handler for it.
  */
+static uint64_t
+ms_event_msc(xf86CrtcPtr crtc, uint64_t frame, uint64_t ns, Bool is64bit)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+
+    /* With emulated vblanks only page flip events come from the kernel */
+    if (ms->emulate_vblank)
+        return is64bit ? frame : ms_vblank_emul_flipped(crtc, ns / 1000);
+    return ms_kernel_msc_to_crtc_msc(crtc, frame, is64bit);
+}
+
 static void
 ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint64_t user_data)
 {
@@ -574,7 +759,7 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
     xorg_list_for_each_entry(q, &ms_drm_queue, list) {
         if (q->seq == seq) {
             crtc = q->crtc;
-            msc = ms_kernel_msc_to_crtc_msc(crtc, frame, is64bit);
+            msc = ms_event_msc(crtc, frame, ns, is64bit);
 
             /* Write the current MSC to this event to ensure its handler runs in
              * the loop below. This is done because we don't want to run the
@@ -681,10 +866,15 @@ void
 ms_vblank_close_screen(ScreenPtr screen)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
     modesettingPtr ms = modesettingPTR(scrn);
     modesettingEntPtr ms_ent = ms_ent_priv(scrn);
+    int c;
 
     ms_drm_abort_scrn(scrn);
+
+    for (c = 0; c < config->num_crtc; c++)
+        ms_vblank_crtc_fini(config->crtc[c]);
 
     if (ms_ent->fd_wakeup_registered == serverGeneration &&
         !--ms_ent->fd_wakeup_ref) {

@@ -25,6 +25,11 @@
 #endif
 
 #include <errno.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#ifdef __linux__
+#include <linux/sync_file.h>
+#endif
 
 #include "os/xserver_poll.h"
 
@@ -180,12 +185,14 @@ ms_pageflip_abort(void *data)
 
 static Bool
 do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
-                      uint32_t seq, uint32_t fb_id, int x, int y)
+                      uint32_t seq, uint32_t fb_id, int x, int y,
+                      int in_fence_fd)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
 
-    while (drmmode_crtc_flip(crtc, fb_id, x, y, flags, (void *)(long)seq)) {
+    while (drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
+                             (void *)(long)seq)) {
         /* We may have failed because the event queue was full.  Flush it
          * and retry.  If there was nothing to flush, then we failed for
          * some other reason and should just return an error.
@@ -243,7 +250,7 @@ queue_flip_on_crtc_with_fb(ScreenPtr screen, xf86CrtcPtr crtc,
     /* take a reference on flipdata for use in flip */
     flipdata->flip_count++;
 
-    if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, fb_x, fb_y))
+    if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, fb_x, fb_y, -1))
         return QUEUE_FLIP_DRM_FLUSH_FAILED;
 
     /* The page flip succeeded. */
@@ -795,6 +802,49 @@ ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
     ms_tearfree_dri_complete(&flips, msc, usec);
 }
 
+static Bool
+ms_fence_signal_time(int fence_fd, uint64_t *usec)
+{
+#ifdef __linux__
+    struct sync_fence_info fence_info = { 0 };
+    struct sync_file_info file_info = {
+        .num_fences = 1,
+        .sync_fence_info = (uintptr_t) &fence_info,
+    };
+
+    if (ioctl(fence_fd, SYNC_IOC_FILE_INFO, &file_info) ||
+        file_info.status != 1 || !fence_info.timestamp_ns)
+        return FALSE;
+
+    *usec = fence_info.timestamp_ns / 1000;
+    return TRUE;
+#else
+    return FALSE;
+#endif
+}
+
+static uint64_t
+ms_compose_elapsed(drmmode_compose_timing_rec *compose, uint64_t end)
+{
+    return end > compose->start ? end - compose->start : 0;
+}
+
+static void
+ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
+{
+    uint64_t signaled;
+
+    if (compose->fence_fd < 0)
+        return;
+
+    if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled))
+        compose->usec = max(compose->usec,
+                            ms_compose_elapsed(compose, signaled));
+
+    close(compose->fence_fd);
+    compose->fence_fd = -1;
+}
+
 static void
 ms_tearfree_flip_abort(void *data)
 {
@@ -807,6 +857,7 @@ ms_tearfree_flip_abort(void *data)
         trf->scanout.flip_fb_id = 0;
     }
     trf->flip_seq = 0;
+    ms_compose_timing_release(&trf->compose, FALSE);
     ms_tearfree_dri_abort_all(crtc);
 }
 
@@ -824,6 +875,7 @@ ms_tearfree_flip_handler(uint64_t msc, uint64_t usec, void *data)
     trf->scanout.fb_id = trf->scanout.flip_fb_id;
     trf->scanout.flip_fb_id = 0;
     trf->flip_seq = 0;
+    ms_compose_timing_release(&trf->compose, TRUE);
 
     if (old_fb_id)
         drmModeRmFB(drmmode_crtc->drmmode->fd, old_fb_id);
@@ -857,7 +909,7 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     if (async && ms->drmmode.can_async_flip)
         flags |= DRM_MODE_PAGE_FLIP_ASYNC;
 
-    if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, 0, 0)) {
+    if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, 0, 0, -1)) {
         drmModeRmFB(ms->fd, fb_id);
         return FALSE;
     }
@@ -894,7 +946,7 @@ Bool
 ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint64_t margin = drmmode_crtc->tearfree.compose_usec +
+    uint64_t margin = drmmode_crtc->tearfree.compose.usec +
         MS_TEARFREE_COMPOSE_SLACK_USEC;
     uint64_t now = GetTimeInMicros();
     uint64_t next;
@@ -906,18 +958,19 @@ ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
     return FALSE;
 }
 
-static void
+static int
 ms_tearfree_compose(xf86CrtcPtr crtc, drmmode_shadow_fb_ptr buf)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-    uint64_t start = GetTimeInMicros();
+    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
     uint64_t elapsed;
 
-    drmmode_compose_damage(crtc, buf->px, &buf->dmg, TRUE);
-
-    elapsed = GetTimeInMicros() - start;
-    trf->compose_usec = max(elapsed, trf->compose_usec - trf->compose_usec / 8);
+    compose->start = GetTimeInMicros();
+    compose->fence_fd = drmmode_compose_damage_fenced(crtc, buf->px,
+                                                      &buf->dmg);
+    elapsed = ms_compose_elapsed(compose, GetTimeInMicros());
+    compose->usec = max(elapsed, compose->usec - compose->usec / 8);
+    return compose->fence_fd;
 }
 
 Bool
@@ -926,6 +979,7 @@ ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
     uint32_t idx = trf->back_idx, seq;
+    int fence_fd;
 
     seq = ms_drm_queue_alloc(crtc, crtc, ms_tearfree_flip_handler,
                              ms_tearfree_flip_abort);
@@ -939,10 +993,12 @@ ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
     }
 
     /* Copy the damage to the back buffer and then flip it at the vblank */
-    ms_tearfree_compose(crtc, &trf->buf[idx]);
+    fence_fd = ms_tearfree_compose(crtc, &trf->buf[idx]);
     if (do_queue_flip_on_crtc(screen, crtc, DRM_MODE_PAGE_FLIP_EVENT,
-                              seq, trf->buf[idx].fb_id, 0, 0))
+                              seq, trf->buf[idx].fb_id, 0, 0, fence_fd)) {
+        ms_compose_timing_release(&trf->compose, FALSE);
         goto no_flip;
+    }
 
     trf->flip_seq = seq;
     trf->scanout.window = NULL;

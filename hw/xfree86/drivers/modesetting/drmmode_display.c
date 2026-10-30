@@ -1035,7 +1035,7 @@ drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode)
 
 int
 drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
-                  uint32_t flags, void *data)
+                  uint32_t flags, int in_fence_fd, void *data)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
@@ -1061,6 +1061,9 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             return 1;
 
         ret = plane_add_props(req, crtc, fb_id, x, y);
+        if (ret == 0 && in_fence_fd >= 0)
+            ret = plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_IN_FENCE_FD,
+                                 in_fence_fd);
         if (ret == 0 && with_hdr)
             ret = drmmode_crtc_add_hdr_props(req, crtc, &hdr->pending,
                                              drmmode_hdr_connectors_change(&hdr->current,
@@ -1086,7 +1089,8 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                        "Failed to change HDR mode with a flip on CRTC %d: %s\n",
                        drmmode_crtc->mode_crtc->crtc_id, strerror(-ret));
             drmmode_crtc_commit_hdr_state(crtc, &hdr->pending);
-            return drmmode_crtc_flip(crtc, fb_id, x, y, flags, data);
+            return drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
+                                     data);
         }
         return ret;
     }
@@ -1749,6 +1753,44 @@ drmmode_compose_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg,
 
     /* Wait until the GC operations finish */
     modesettingPTR(crtc->scrn)->glamor.finish(pScreen);
+#endif
+}
+
+static Bool
+drmmode_crtc_can_fence_flip(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return ms->atomic_modeset && ms->glamor.egl_create_fence_fd &&
+        drmmode_crtc->props_plane[DRMMODE_PLANE_IN_FENCE_FD].prop_id;
+}
+
+/* Returns a fence that signals when the composition is done, or -1 if it is
+ * done already.
+ */
+int
+drmmode_compose_damage_fenced(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg)
+{
+#ifdef HAVE_GBM
+    ScreenPtr pScreen = xf86ScrnToScreen(crtc->scrn);
+    int fence_fd;
+
+    if (!drmmode_crtc_can_fence_flip(crtc)) {
+        drmmode_compose_damage(crtc, dst, dmg, TRUE);
+        return -1;
+    }
+
+    ms_compositor_paint(crtc, dst, dmg);
+    RegionEmpty(dmg);
+
+    fence_fd = modesettingPTR(crtc->scrn)->glamor.egl_create_fence_fd(pScreen);
+    if (fence_fd < 0)
+        modesettingPTR(crtc->scrn)->glamor.finish(pScreen);
+    return fence_fd;
+#else
+    drmmode_compose_damage(crtc, dst, dmg, TRUE);
+    return -1;
 #endif
 }
 
@@ -2539,6 +2581,8 @@ drmmode_crtc_destroy(xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     modesettingPtr ms = modesettingPTR(crtc->scrn);
 
+    ms_vblank_crtc_fini(crtc);
+
     if (!ms->atomic_modeset)
         return;
 
@@ -2692,6 +2736,7 @@ drmmode_crtc_create_planes(xf86CrtcPtr crtc, int num)
         [DRMMODE_PLANE_CRTC_Y] = { .name = "CRTC_Y", },
         [DRMMODE_PLANE_CRTC_W] = { .name = "CRTC_W", },
         [DRMMODE_PLANE_CRTC_H] = { .name = "CRTC_H", },
+        [DRMMODE_PLANE_IN_FENCE_FD] = { .name = "IN_FENCE_FD", },
     };
     drmmode_prop_info_rec tmp_props[DRMMODE_PLANE__COUNT];
 
@@ -2870,6 +2915,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     drmmode_crtc->vblank_pipe = drmmode_crtc_vblank_pipe(num);
     xorg_list_init(&drmmode_crtc->mode_list);
     xorg_list_init(&drmmode_crtc->tearfree.dri_flip_list);
+    drmmode_crtc->tearfree.compose.fence_fd = -1;
     drmmode_crtc->next_msc = UINT64_MAX;
 
     props = drmModeObjectGetProperties(drmmode->fd, mode_res->crtcs[num],

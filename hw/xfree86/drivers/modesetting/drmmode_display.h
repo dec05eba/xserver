@@ -51,6 +51,7 @@ enum drmmode_plane_property {
     DRMMODE_PLANE_CRTC_Y,
     DRMMODE_PLANE_CRTC_W,
     DRMMODE_PLANE_CRTC_H,
+    DRMMODE_PLANE_IN_FENCE_FD,
     DRMMODE_PLANE__COUNT
 };
 
@@ -239,14 +240,27 @@ typedef struct {
 } drmmode_composition_rec;
 
 typedef struct {
+    uint64_t usec;
+    uint64_t start;
+    int fence_fd;
+} drmmode_compose_timing_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
     drmmode_composition_rec composition;
     drmmode_scanout_rec scanout;
     struct xorg_list dri_flip_list;
     uint32_t back_idx;
     uint32_t flip_seq;
-    uint64_t compose_usec;
+    drmmode_compose_timing_rec compose;
 } drmmode_tearfree_rec, *drmmode_tearfree_ptr;
+
+typedef struct {
+    uint64_t base_ust;
+    uint64_t base_msc;
+    uint64_t period;
+    OsTimerPtr timer;
+} drmmode_vblank_emul_rec;
 
 typedef struct {
     drmmode_ptr drmmode;
@@ -287,6 +301,7 @@ typedef struct {
     /** @} */
 
     uint64_t next_msc;
+    drmmode_vblank_emul_rec vblank_emul;
 
     int cursor_width, cursor_height;
 
@@ -421,9 +436,11 @@ void drmmode_get_default_bpp(ScrnInfoPtr pScrn, drmmode_ptr drmmmode,
 void drmmode_copy_fb(ScrnInfoPtr pScrn, drmmode_ptr drmmode);
 void drmmode_compose_damage(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr damage,
                             Bool empty);
+int drmmode_compose_damage_fenced(xf86CrtcPtr crtc, PixmapPtr dst,
+                                  RegionPtr damage);
 
 int drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
-                      uint32_t flags, void *data);
+                      uint32_t flags, int in_fence_fd, void *data);
 
 Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 

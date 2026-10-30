@@ -139,6 +139,7 @@ typedef struct _modesettingRec {
 
     Bool has_queue_sequence;
     Bool tried_queue_sequence;
+    Bool emulate_vblank;
 
     Bool kms_has_modifiers;
 
@@ -192,6 +193,7 @@ typedef struct _modesettingRec {
         Bool (*supports_pixmap_import_export)(ScreenPtr);
         XF86VideoAdaptorPtr (*xv_init)(ScreenPtr, int);
         const char *(*egl_get_driver_name)(ScreenPtr);
+        int (*egl_create_fence_fd)(ScreenPtr);
         Bool (*convert_color)(PixmapPtr, PixmapPtr, RegionPtr, int, int, Bool,
                               CARD16, const glamor_color_conversion *);
     } glamor;
@@ -239,6 +241,7 @@ void ms_dri2_close_screen(ScreenPtr screen);
 
 Bool ms_vblank_screen_init(ScreenPtr screen);
 void ms_vblank_close_screen(ScreenPtr screen);
+void ms_vblank_crtc_fini(xf86CrtcPtr crtc);
 
 Bool ms_present_screen_init(ScreenPtr screen);
 

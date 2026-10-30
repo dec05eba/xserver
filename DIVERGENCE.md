@@ -158,7 +158,7 @@ NVIDIA
 
 The modesetting driver also works with the proprietary NVIDIA driver, instead
 of NVIDIA's own Xorg driver, so compositing, HDR and the other
-features above can be used on NVIDIA GPUs. This is untested.
+features above can be used on NVIDIA GPUs.
 
 It needs kernel modesetting enabled in the NVIDIA kernel driver
 (`nvidia-drm.modeset=1`) and an NVIDIA driver with GBM support (495 or newer).

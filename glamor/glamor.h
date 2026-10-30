@@ -406,6 +406,7 @@ extern _X_EXPORT Bool
                                                Bool used_modifiers);
 
 extern _X_EXPORT const char *glamor_egl_get_driver_name(ScreenPtr screen);
+extern _X_EXPORT int glamor_egl_create_fence_fd(ScreenPtr screen);
 
 #endif
 
