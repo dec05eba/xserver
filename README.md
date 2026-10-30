@@ -141,7 +141,7 @@ For example:
 
 Changes made with xrandr last until the X server exits.
 
-For best result change your monitor/TVs "Dynamic Tone Mapping" option to "HGiG" (or "On" if it's not available).
+For best result change your monitor/TVs "Dynamic Tone Mapping" option to "HGiG" or "Off".
 
 Vulkan games and applications can output HDR through the X11 HDR Vulkan layer
 [VK_hdr_layer](https://github.com/dec05eba/VK_hdr_layer), and mpv through an [mpv build with X11 HDR support](https://github.com/dec05eba/mpv).
