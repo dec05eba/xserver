@@ -155,18 +155,17 @@ drmmode_plane_color_parse(int fd, uint64_t pipeline,
 }
 
 void
-drmmode_plane_color_init(xf86CrtcPtr crtc)
+drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
+                         drmmode_plane_color_ptr color)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_plane_color_ptr color = &drmmode_crtc->plane_color;
     int fd = drmmode_crtc->drmmode->fd;
     drmModePropertyPtr prop;
     uint32_t prop_id;
     int i;
 
-    prop_id = drmmode_colorop_prop(fd, drmmode_crtc->plane_id,
-                                   DRM_MODE_OBJECT_PLANE, "COLOR_PIPELINE",
-                                   NULL);
+    prop_id = drmmode_colorop_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE,
+                                   "COLOR_PIPELINE", NULL);
     prop = prop_id ? drmModeGetProperty(fd, prop_id) : NULL;
     for (i = 0; prop && i < prop->count_enums; i++) {
         if (prop->enums[i].value &&
@@ -196,18 +195,18 @@ drmmode_colorop_set(drmModeAtomicReq *req, uint32_t id, uint32_t prop,
 
 int
 drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                              uint32_t plane_id,
+                              const drmmode_plane_color_rec *color,
                               Bool sdr_to_pq, int sdr_white_level,
                               uint32_t *matrix_blob)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_plane_color_ptr color = &drmmode_crtc->plane_color;
     int fd = drmmode_crtc->drmmode->fd;
     struct drm_color_ctm_3x4 ctm;
     double matrix[9];
     int i, ret;
 
-    ret = drmmode_colorop_set(req, drmmode_crtc->plane_id,
-                              color->pipeline_prop,
+    ret = drmmode_colorop_set(req, plane_id, color->pipeline_prop,
                               sdr_to_pq ? color->pipeline : 0);
     if (ret || !sdr_to_pq)
         return ret;
@@ -242,12 +241,15 @@ drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
 }
 #else
 void
-drmmode_plane_color_init(xf86CrtcPtr crtc)
+drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
+                         drmmode_plane_color_ptr color)
 {
 }
 
 int
 drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                              uint32_t plane_id,
+                              const drmmode_plane_color_rec *color,
                               Bool sdr_to_pq, int sdr_white_level,
                               uint32_t *matrix_blob)
 {

@@ -74,10 +74,40 @@ new size.
 - A window can only be resized as fast as its application draws. If an
   application doesn't draw the new size within 200 milliseconds the window is
   shown anyway.
+- Resizing is currently slow with window managers that put each window inside
+  a frame window of their own (reparenting window managers, such as xfwm4).
 
 The X server also sends `_NET_WM_FRAME_DRAWN` and `_NET_WM_FRAME_TIMINGS` to
 applications that use them, such as GTK, so they draw at the refresh rate of
 the monitor instead of 60 frames per second.
+
+Performance
+-----------
+
+Fullscreen windows are scanned out directly: the monitor shows the
+application's own buffer, without compositing or copying it. This works when:
+
+- the window covers a whole monitor exactly and isn't transparent. Windows on
+  top of it, such as notifications and menus, are shown on an overlay plane
+  when the GPU has one for that monitor. Without one the monitor is composited
+  while they are visible,
+- the window isn't being resized,
+- the monitor isn't rotated or scaled and the cursor isn't a software cursor,
+- the application shows its frames through DRI3 and Present, which Vulkan and
+  OpenGL applications do,
+- the GPU can scan out the buffer format the application renders into.
+
+HDR windows are scanned out directly on HDR monitors too, and variable refresh
+rate works with directly scanned out windows.
+
+Monitors that are composited are composed just before each vblank, so a new
+frame reaches the screen at the next vblank and frame pacing stays even.
+
+On laptops with two GPUs, fullscreen applications started with NVIDIA's
+`prime-run` on a monitor connected to the NVIDIA GPU are scanned out straight
+from the NVIDIA GPU's memory. They avoid all copies, so they perform the same
+as on a computer with only that GPU. See [Multiple GPUs](#multiple-gpus) for
+the details.
 
 HDR
 ---

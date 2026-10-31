@@ -313,8 +313,9 @@ void ms_prime_flush_kicks(ScreenPtr screen, void *timeout);
 Bool ms_prime_update_output_mode(ScrnInfoPtr scrn);
 PixmapPtr ms_prime_import(xf86CrtcPtr crtc, PixmapPtr pixmap);
 void ms_prime_clear_direct(xf86CrtcPtr crtc);
-Bool ms_prime_overlay_cover(xf86CrtcPtr crtc, ScreenPtr screen, int width,
-                            int height, Bool pq);
+drmmode_prime_overlay_rec *ms_prime_overlay_cover(xf86CrtcPtr crtc,
+                                                  ScreenPtr screen, int width,
+                                                  int height);
 Bool ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window);
 
 void ms_offload_init(ScreenPtr screen);
@@ -323,6 +324,14 @@ PixmapPtr ms_offload_native_pixmap(PixmapPtr pixmap);
 #endif
 
 void ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd);
+
+PixmapPtr ms_overlay_back_buffer(xf86CrtcPtr crtc);
+void ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box);
+void ms_overlay_flip_done(xf86CrtcPtr crtc);
+void ms_overlay_flip_aborted(xf86CrtcPtr crtc);
+void ms_overlay_flip_failed(xf86CrtcPtr crtc);
+void ms_overlay_destroy(xf86CrtcPtr crtc);
+
 Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
 int ms_flush_drm_events(ScreenPtr screen);
 void ms_drain_drm_events(ScreenPtr screen);

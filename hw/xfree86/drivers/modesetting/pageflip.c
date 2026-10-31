@@ -937,6 +937,7 @@ ms_tearfree_flip_abort(void *data)
     }
     trf->flip_seq = 0;
     ms_compose_timing_release(&trf->compose, FALSE);
+    ms_overlay_flip_aborted(crtc);
     ms_tearfree_dri_abort_all(crtc);
 }
 
@@ -955,6 +956,7 @@ ms_tearfree_flip_handler(uint64_t msc, uint64_t usec, void *data)
     trf->scanout.flip_fb_id = 0;
     trf->flip_seq = 0;
     ms_compose_timing_release(&trf->compose, TRUE);
+    ms_overlay_flip_done(crtc);
 
     if (old_fb_id)
         drmModeRmFB(drmmode_crtc->drmmode->fd, old_fb_id);

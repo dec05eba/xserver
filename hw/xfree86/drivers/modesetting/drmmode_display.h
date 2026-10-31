@@ -323,9 +323,6 @@ typedef struct {
     PixmapPtr cover_sdr;
     PixmapPtr import;
     int dmabuf_fd;
-    drmmode_shadow_fb_rec buf[2];
-    uint32_t back_idx;
-    Bool pending;
 } drmmode_prime_overlay_rec;
 
 typedef struct {
@@ -339,10 +336,19 @@ typedef struct {
 } drmmode_prime_scanout_rec;
 
 typedef struct {
+    drmmode_shadow_fb_rec buf[2];
+    uint32_t back_idx;
+    Bool pending;
+    PixmapPtr cover_sdr;
+} drmmode_overlay_buffers_rec;
+
+typedef struct {
     uint32_t plane_id;
     uint32_t fb_id;
     uint32_t next_fb_id;
     BoxRec next_box;
+    drmmode_plane_color_rec color;
+    drmmode_overlay_buffers_rec buffers;
 } drmmode_overlay_plane_rec;
 
 typedef struct {
@@ -514,11 +520,15 @@ Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
 Bool drmmode_driver_is(int fd, const char *name);
 int drmmode_bo_import_alpha(drmmode_ptr drmmode, drmmode_bo *bo,
                             uint32_t *fb_id);
-void drmmode_plane_color_init(xf86CrtcPtr crtc);
+void drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
+                              drmmode_plane_color_ptr color);
 Bool drmmode_plane_color_supported(xf86CrtcPtr crtc);
 int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                                  uint32_t plane_id,
+                                  const drmmode_plane_color_rec *color,
                                   Bool sdr_to_pq, int sdr_white_level,
                                   uint32_t *matrix_blob);
+Bool drmmode_crtc_overlay_content(xf86CrtcPtr crtc, Bool *pq);
 PixmapPtr drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width,
                                    int height, int depth, drmmode_bo *bo,
                                    uint32_t *fb_id);

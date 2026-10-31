@@ -737,21 +737,182 @@ ms_compositor_cursor_in_box(ScrnInfoPtr scrn, BoxPtr bounds)
     return FALSE;
 }
 
-static WindowPtr
-ms_compositor_scanout_window(xf86CrtcPtr crtc, PixmapPtr *pixmap)
+static PicturePtr
+ms_compositor_argb_picture(ScreenPtr screen, PixmapPtr pixmap)
+{
+    PictFormatPtr format = PictureMatchFormat(screen, 32, PICT_a8r8g8b8);
+    int error;
+
+    if (!format)
+        return NULL;
+
+    return CreatePicture(0, &pixmap->drawable, format, 0, NULL, serverClient,
+                         &error);
+}
+
+static Bool
+ms_compositor_clear(ScreenPtr screen, PixmapPtr pixmap, RegionPtr region)
+{
+    PicturePtr picture = ms_compositor_argb_picture(screen, pixmap);
+    BoxPtr extents = RegionExtents(region);
+    xRenderColor transparent = { 0 };
+    xRectangle rect = {
+        .x = extents->x1,
+        .y = extents->y1,
+        .width = extents->x2 - extents->x1,
+        .height = extents->y2 - extents->y1,
+    };
+
+    if (!picture)
+        return FALSE;
+
+    SetPictureClipRegion(picture, 0, 0, region);
+    CompositeRects(PictOpSrc, picture, &transparent, 1, &rect);
+    FreePicture(picture, 0);
+    return TRUE;
+}
+
+static Bool
+ms_compositor_sdr_pixmap(PixmapPtr dst, PixmapPtr *sdr)
+{
+    ScreenPtr screen = dst->drawable.pScreen;
+
+    if (*sdr && ((*sdr)->drawable.width != dst->drawable.width ||
+                 (*sdr)->drawable.height != dst->drawable.height)) {
+        dixDestroyPixmap(*sdr, 0);
+        *sdr = NULL;
+    }
+
+    if (!*sdr)
+        *sdr = screen->CreatePixmap(screen, dst->drawable.width,
+                                    dst->drawable.height, 32, 0);
+    return *sdr != NULL;
+}
+
+static Bool
+ms_compositor_paint_cover(xf86CrtcPtr crtc, PixmapPtr dst, int x, int y,
+                          RegionPtr cover, WindowPtr window, Bool pq,
+                          PixmapPtr *sdr)
+{
+    ScreenPtr screen = dst->drawable.pScreen;
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+    PixmapPtr target = dst;
+    PicturePtr picture;
+    RegionRec local;
+    Bool painted = FALSE;
+
+    if (pq) {
+        if (!ms->glamor.convert_color || !ms_compositor_sdr_pixmap(dst, sdr))
+            return FALSE;
+        target = *sdr;
+    }
+
+    RegionNull(&local);
+    RegionCopy(&local, cover);
+    RegionTranslate(&local, -x, -y);
+
+    if (ms_compositor_clear(screen, target, &local) &&
+        (picture = ms_compositor_argb_picture(screen, target))) {
+        CompositeServerPaintCover(picture, x, y, cover, window, NULL);
+        FreePicture(picture, 0);
+        painted = TRUE;
+    }
+
+    if (painted && pq) {
+        glamor_color_conversion conversion;
+
+        ms_hdr_sdr_to_pq_conversion(drmmode_crtc_user_ctm(crtc),
+                                    drmmode_crtc_sdr_white_level(crtc),
+                                    &conversion);
+        painted = ms_compositor_clear(screen, dst, &local) &&
+            ms->glamor.convert_color(*sdr, dst, &local, 0, 0, TRUE, 0xffff,
+                                     &conversion);
+    }
+
+    RegionUninit(&local);
+    return painted;
+}
+
+static Bool
+ms_compositor_prime_cover(xf86CrtcPtr crtc, WindowPtr window, RegionPtr cover,
+                          Bool pq)
+{
+    ScreenPtr screen = window->drawable.pScreen;
+    BoxRec extents = *RegionExtents(cover);
+    drmmode_prime_overlay_rec *overlay =
+        ms_prime_overlay_cover(crtc, screen, extents.x2 - extents.x1,
+                               extents.y2 - extents.y1);
+
+    if (!overlay ||
+        !ms_compositor_paint_cover(crtc, overlay->cover, extents.x1,
+                                   extents.y1, cover, window, pq,
+                                   &overlay->cover_sdr))
+        return FALSE;
+
+    ms_fence_dmabuf(screen, overlay->dmabuf_fd);
+    return TRUE;
+}
+
+static Bool
+ms_compositor_overlay_cover(xf86CrtcPtr crtc, WindowPtr window,
+                            RegionPtr cover)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    BoxRec box = *RegionExtents(cover);
+    PixmapPtr back;
+    Bool pq;
+
+    if (!drmmode_crtc_overlay_content(crtc, &pq) ||
+        !(back = ms_overlay_back_buffer(crtc)) ||
+        !ms_compositor_paint_cover(crtc, back, crtc->bounds.x1,
+                                   crtc->bounds.y1, cover, window, pq,
+                                   &drmmode_crtc->overlay_plane.buffers.cover_sdr))
+        return FALSE;
+
+    modesettingPTR(crtc->scrn)->glamor.finish(xf86ScrnToScreen(crtc->scrn));
+    box.x1 -= crtc->bounds.x1;
+    box.y1 -= crtc->bounds.y1;
+    box.x2 -= crtc->bounds.x1;
+    box.y2 -= crtc->bounds.y1;
+    ms_overlay_queue(crtc, &box);
+    return TRUE;
+}
+
+static Bool
+ms_compositor_cover_allowed(ScreenPtr screen, BoxPtr box, WindowPtr window,
+                            RegionPtr cover)
+{
+    WindowPtr hdr_window;
+
+    if (!RegionNotEmpty(cover))
+        return TRUE;
+
+    hdr_window = CompositeServerHdrWindow(screen, box);
+    return !hdr_window || hdr_window == window;
+}
+
+static Bool
+ms_compositor_can_direct_flip(xf86CrtcPtr crtc)
 {
     ScrnInfoPtr scrn = crtc->scrn;
-    modesettingPtr ms = modesettingPTR(scrn);
+
+    return modesettingPTR(scrn)->drmmode.pageflip && !crtc->transform_in_use &&
+        !ms_compositor_cursor_in_box(scrn, &crtc->bounds);
+}
+
+static WindowPtr
+ms_compositor_scanout_window(xf86CrtcPtr crtc, PixmapPtr *pixmap,
+                             RegionPtr cover)
+{
+    ScrnInfoPtr scrn = crtc->scrn;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
     WindowPtr window;
 
-    if (!ms->drmmode.pageflip || crtc->transform_in_use ||
-        ms_compositor_cursor_in_box(scrn, &crtc->bounds))
-        return NULL;
-
-    window = CompositeServerScanoutWindow(scrn->pScreen, &crtc->bounds);
-    if (!window)
+    window = CompositeServerCoveredScanoutWindow(scrn->pScreen, &crtc->bounds,
+                                                 cover);
+    if (!window ||
+        (RegionNotEmpty(cover) && !drmmode_crtc->overlay_plane.plane_id))
         return NULL;
 
     *pixmap = present_window_flip_pixmap(window);
@@ -761,6 +922,10 @@ ms_compositor_scanout_window(xf86CrtcPtr crtc, PixmapPtr *pixmap)
 
     if (!drmmode_crtc_can_show_pq(crtc) &&
         CompositeServerHdrWindow(scrn->pScreen, &crtc->bounds))
+        return NULL;
+
+    if (!ms_compositor_cover_allowed(scrn->pScreen, &crtc->bounds, window,
+                                     cover))
         return NULL;
 
     return window;
@@ -842,35 +1007,55 @@ ms_compositor_update_output_mode(xf86CrtcPtr crtc, WindowPtr window)
     return updated;
 }
 
-Bool
-ms_compositor_direct_flip(xf86CrtcPtr crtc)
+static Bool
+ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
 {
     ScrnInfoPtr scrn = crtc->scrn;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
-    Bool async = scanout->async;
     PixmapPtr pixmap = NULL;
     WindowPtr window;
+    RegionRec cover;
+    Bool covered, flipped = FALSE;
 
-    scanout->async = FALSE;
-
-    window = ms_compositor_scanout_window(crtc, &pixmap);
-    if (window && ms_compositor_update_output_mode(crtc, window)) {
-        if (pixmap == scanout->pixmap && scanout->fb_id &&
+    RegionNull(&cover);
+    window = ms_compositor_scanout_window(crtc, &pixmap, &cover);
+    covered = RegionNotEmpty(&cover);
+    if (window && ms_compositor_update_output_mode(crtc, window) &&
+        (!covered || ms_compositor_overlay_cover(crtc, window, &cover))) {
+        if (pixmap == scanout->pixmap && scanout->fb_id && !covered &&
+            !drmmode_crtc->overlay_plane.fb_id &&
             !drmmode_crtc_has_pending_hdr(crtc)) {
             ms_tearfree_dri_abort_all(crtc);
-            return TRUE;
+            flipped = TRUE;
+        } else {
+            (*scrn->pScreen->SourceValidate) (&pixmap->drawable, 0, 0,
+                                              pixmap->drawable.width,
+                                              pixmap->drawable.height,
+                                              IncludeInferiors);
+            flipped = ms_do_direct_flip(scrn->pScreen, crtc, window, pixmap,
+                                        async);
+            if (!flipped && covered)
+                ms_overlay_flip_failed(crtc);
+            else if (!flipped)
+                scanout->failed_pixmap = pixmap;
         }
-
-        (*scrn->pScreen->SourceValidate) (&pixmap->drawable, 0, 0,
-                                          pixmap->drawable.width,
-                                          pixmap->drawable.height,
-                                          IncludeInferiors);
-        if (ms_do_direct_flip(scrn->pScreen, crtc, window, pixmap, async))
-            return TRUE;
-
-        scanout->failed_pixmap = pixmap;
     }
+    RegionUninit(&cover);
+    return flipped;
+}
+
+Bool
+ms_compositor_direct_flip(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
+    Bool async = scanout->async;
+
+    scanout->async = FALSE;
+    if (ms_compositor_can_direct_flip(crtc) &&
+        ms_compositor_flip_window(crtc, async))
+        return TRUE;
 
     ms_compositor_update_output_mode(crtc, NULL);
     return FALSE;
@@ -899,7 +1084,8 @@ ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
         return NULL;
 
     window = CompositeServerCoveredScanoutWindow(scrn->pScreen, box, cover);
-    if (!window)
+    if (!window ||
+        !ms_compositor_cover_allowed(scrn->pScreen, box, window, cover))
         return NULL;
 
     *pixmap = present_window_flip_pixmap(window);
@@ -908,90 +1094,6 @@ ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
         return NULL;
 
     return window;
-}
-
-static PicturePtr
-ms_compositor_argb_picture(ScreenPtr screen, PixmapPtr pixmap)
-{
-    PictFormatPtr format = PictureMatchFormat(screen, 32, PICT_a8r8g8b8);
-    int error;
-
-    if (!format)
-        return NULL;
-
-    return CreatePicture(0, &pixmap->drawable, format, 0, NULL, serverClient,
-                         &error);
-}
-
-static Bool
-ms_compositor_clear(ScreenPtr screen, PixmapPtr pixmap, RegionPtr region)
-{
-    PicturePtr picture = ms_compositor_argb_picture(screen, pixmap);
-    BoxPtr extents = RegionExtents(region);
-    xRenderColor transparent = { 0 };
-    xRectangle rect = {
-        .x = extents->x1,
-        .y = extents->y1,
-        .width = extents->x2 - extents->x1,
-        .height = extents->y2 - extents->y1,
-    };
-
-    if (!picture)
-        return FALSE;
-
-    SetPictureClipRegion(picture, 0, 0, region);
-    CompositeRects(PictOpSrc, picture, &transparent, 1, &rect);
-    FreePicture(picture, 0);
-    return TRUE;
-}
-
-static Bool
-ms_compositor_paint_cover(xf86CrtcPtr crtc, WindowPtr window,
-                          RegionPtr cover, Bool pq)
-{
-    ScreenPtr screen = window->drawable.pScreen;
-    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
-    drmmode_prime_overlay_rec *overlay =
-        &((drmmode_crtc_private_ptr) crtc->driver_private)->prime_scanout.overlay;
-    BoxRec extents = *RegionExtents(cover);
-    PixmapPtr target;
-    PicturePtr picture;
-    RegionRec local;
-    Bool painted = FALSE;
-
-    if ((pq && !ms->glamor.convert_color) ||
-        !ms_prime_overlay_cover(crtc, screen, extents.x2 - extents.x1,
-                                extents.y2 - extents.y1, pq))
-        return FALSE;
-
-    target = pq ? overlay->cover_sdr : overlay->cover;
-    RegionNull(&local);
-    RegionCopy(&local, cover);
-    RegionTranslate(&local, -extents.x1, -extents.y1);
-
-    if (ms_compositor_clear(screen, target, &local) &&
-        (picture = ms_compositor_argb_picture(screen, target))) {
-        CompositeServerPaintCover(picture, extents.x1, extents.y1, cover,
-                                  window, NULL);
-        FreePicture(picture, 0);
-        painted = TRUE;
-    }
-
-    if (painted && pq) {
-        glamor_color_conversion conversion;
-
-        ms_hdr_sdr_to_pq_conversion(drmmode_crtc_user_ctm(crtc),
-                                    drmmode_crtc_sdr_white_level(crtc),
-                                    &conversion);
-        painted = ms_compositor_clear(screen, overlay->cover, &local) &&
-            ms->glamor.convert_color(overlay->cover_sdr, overlay->cover,
-                                     &local, 0, 0, TRUE, 0xffff, &conversion);
-    }
-
-    if (painted)
-        ms_fence_dmabuf(screen, overlay->dmabuf_fd);
-    RegionUninit(&local);
-    return painted;
 }
 
 Bool
@@ -1059,7 +1161,7 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
     cover_box = *RegionExtents(&cover);
     if (covered &&
         (!scanout_source ||
-         !ms_compositor_paint_cover(crtc, window, &cover, hdr_window != NULL)))
+         !ms_compositor_prime_cover(crtc, window, &cover, hdr_window != NULL)))
         imported = NULL;
     RegionUninit(&cover);
 
