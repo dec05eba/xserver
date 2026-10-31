@@ -349,6 +349,7 @@ void ms_hdr_disable(ScrnInfoPtr scrn);
 Bool ms_hdr_parse_edid(const uint8_t *edid, size_t size,
                        struct hdr_output_metadata *metadata);
 double ms_hdr_pq_eotf(double value);
+void ms_hdr_desktop_matrix(const struct drm_color_ctm *user_ctm, double *matrix);
 void ms_hdr_desktop_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
                           int white_level, ms_hdr_color_rec *color);
 void ms_hdr_tonemap_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,

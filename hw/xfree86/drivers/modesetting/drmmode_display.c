@@ -1067,6 +1067,7 @@ typedef struct {
 typedef struct {
     drmmode_color_blobs color;
     uint32_t metadata;
+    uint32_t plane_matrix;
 } drmmode_hdr_blobs;
 
 static int
@@ -1089,6 +1090,15 @@ static Bool
 drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode)
 {
     return mode == DRMMODE_HDR_PASSTHROUGH || mode == DRMMODE_HDR_TONEMAP;
+}
+
+/* amdgpu blends the cursor through the colour pipeline of the plane below it,
+ * so the cursor stays SDR while that plane converts SDR to PQ.
+ */
+static Bool
+drmmode_hdr_cursor_expects_pq(const drmmode_hdr_state_rec *state)
+{
+    return drmmode_hdr_mode_expects_pq(state->mode) && !state->plane_sdr_to_pq;
 }
 
 static Bool
@@ -2245,7 +2255,7 @@ drmmode_load_cursor_argb_check(xf86CrtcPtr crtc, CARD32 *image)
     CursorPtr cursor = xf86CurrentCursor(crtc->scrn->pScreen);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     const drmmode_hdr_state_rec *hdr = &drmmode_crtc->hdr.current;
-    Bool pq = drmmode_hdr_mode_expects_pq(hdr->mode);
+    Bool pq = drmmode_hdr_cursor_expects_pq(hdr);
     uint8_t pq_table[256];
     int width, height, x, y, i;
     uint32_t *ptr;
@@ -3051,6 +3061,8 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
                              DRMMODE_CRTC__COUNT, props);
     drmModeFreeObjectProperties(props);
     drmmode_crtc_create_planes(crtc, num);
+    if (drmmode->plane_color_pipeline)
+        drmmode_plane_color_init(crtc);
 
     /* Hide any cursors which may be active from previous users */
     drmModeSetCursor(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id, 0, 0, 0);
@@ -4558,6 +4570,15 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
      */
     drmmode->identity_color_tables = drmmode_driver_is(drmmode->fd,
                                                        "nvidia-drm");
+#ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
+    /* amdgpu flickers whenever the CRTC colour tables change, so SDR content
+     * on HDR monitors is converted by the plane instead.
+     */
+    drmmode->plane_color_pipeline =
+        modesettingPTR(pScrn)->atomic_modeset &&
+        drmmode_driver_is(drmmode->fd, "amdgpu") &&
+        drmSetClientCap(drmmode->fd, DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE, 1) == 0;
+#endif
     mode_res = drmModeGetResources(drmmode->fd);
     if (!mode_res)
         return FALSE;
@@ -5559,6 +5580,11 @@ drmmode_crtc_add_hdr_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
             ret = -1;
     }
 
+    if (req && drmmode_plane_color_supported(crtc))
+        ret |= drmmode_plane_color_add_props(req, crtc, state->plane_sdr_to_pq,
+                                             state->sdr_white_level,
+                                             &blobs->plane_matrix);
+
     if (update_connectors && drmmode_hdr_mode_signals_hdr(state->mode) &&
         drmModeCreatePropertyBlob(drmmode->fd, metadata, sizeof(*metadata),
                                   &blobs->metadata) != 0)
@@ -5595,6 +5621,8 @@ drmmode_destroy_hdr_blobs(drmmode_ptr drmmode, const drmmode_hdr_blobs *blobs)
 
     if (blobs->metadata)
         drmModeDestroyPropertyBlob(drmmode->fd, blobs->metadata);
+    if (blobs->plane_matrix)
+        drmModeDestroyPropertyBlob(drmmode->fd, blobs->plane_matrix);
     drmmode_destroy_color_blobs(drmmode, &blobs->color);
     errno = err;
 }
@@ -5726,7 +5754,8 @@ static Bool
 drmmode_hdr_state_equal(const drmmode_hdr_state_rec *a,
                         const drmmode_hdr_state_rec *b)
 {
-    return a->mode == b->mode && a->sdr_white_level == b->sdr_white_level &&
+    return a->mode == b->mode && a->plane_sdr_to_pq == b->plane_sdr_to_pq &&
+        a->sdr_white_level == b->sdr_white_level &&
         memcmp(&a->metadata, &b->metadata, sizeof(a->metadata)) == 0;
 }
 
@@ -5747,8 +5776,8 @@ drmmode_crtc_set_current_hdr(xf86CrtcPtr crtc,
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_hdr_state_rec *current = &drmmode_crtc->hdr.current;
-    Bool pq = drmmode_hdr_mode_expects_pq(state->mode);
-    Bool cursor_changed = pq != drmmode_hdr_mode_expects_pq(current->mode) ||
+    Bool pq = drmmode_hdr_cursor_expects_pq(state);
+    Bool cursor_changed = pq != drmmode_hdr_cursor_expects_pq(current) ||
         (pq && state->sdr_white_level != current->sdr_white_level);
 
     *current = *state;
@@ -5824,9 +5853,11 @@ drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
         .sdr_white_level = drmmode_crtc_sdr_white_level(crtc),
     };
 
-    if (drmmode_crtc_hdr_enabled(crtc))
-        state.mode = pq ? DRMMODE_HDR_PASSTHROUGH : DRMMODE_HDR_DESKTOP;
-    else if (pq && drmmode_crtc_supports_color_conversion(crtc))
+    if (drmmode_crtc_hdr_enabled(crtc)) {
+        state.plane_sdr_to_pq = !pq && drmmode_plane_color_supported(crtc);
+        state.mode = pq || state.plane_sdr_to_pq ?
+            DRMMODE_HDR_PASSTHROUGH : DRMMODE_HDR_DESKTOP;
+    } else if (pq && drmmode_crtc_supports_color_conversion(crtc))
         state.mode = DRMMODE_HDR_TONEMAP;
 
     if (drmmode_hdr_mode_signals_hdr(state.mode))

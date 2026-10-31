@@ -1,4 +1,5 @@
 modesetting_srcs = [
+    'colorop.c',
     'compositor.c',
     'dri2.c',
     'driver.c',

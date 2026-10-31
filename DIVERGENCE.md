@@ -87,6 +87,10 @@ supported. The gamma ramp (`xrandr --gamma`, night light tools) isn't applied
 to HDR monitors that are composited in HDR10, and rotated or scaled HDR
 monitors tone map HDR windows instead of showing them as HDR.
 
+On AMD GPUs with Linux older than 6.19 the screen can flicker briefly on an
+HDR monitor when a fullscreen window that isn't HDR starts or stops being shown
+directly, for example when a video player enters fullscreen.
+
 HDR support works without the "Depth 30" config option set (in fact, you
 shouldn't set it), so programs function and look correctly.
 

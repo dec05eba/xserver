@@ -104,6 +104,7 @@ typedef struct {
     enum drmmode_hdr_mode mode;
     int sdr_white_level;
     struct hdr_output_metadata metadata;
+    Bool plane_sdr_to_pq;
 } drmmode_hdr_state_rec;
 
 typedef struct {
@@ -178,6 +179,7 @@ typedef struct {
     uint32_t vrr_prop_id;
     Bool use_ctm;
     Bool identity_color_tables;
+    Bool plane_color_pipeline;
 
     Bool hdr_default;
     int sdr_white_level_default;
@@ -248,6 +250,28 @@ typedef struct {
 } drmmode_compose_timing_rec;
 
 typedef struct {
+    uint32_t id;
+    uint32_t bypass_prop;
+} drmmode_colorop_rec, *drmmode_colorop_ptr;
+
+typedef struct {
+    int index;
+    uint32_t value_prop;
+    uint64_t curve;
+} drmmode_colorop_use_rec, *drmmode_colorop_use_ptr;
+
+typedef struct {
+    uint32_t pipeline_prop;
+    uint64_t pipeline;
+    int num_ops;
+    drmmode_colorop_rec ops[16];
+    drmmode_colorop_use_rec eotf;
+    drmmode_colorop_use_rec multiplier;
+    drmmode_colorop_use_rec matrix;
+    drmmode_colorop_use_rec inverse_eotf;
+} drmmode_plane_color_rec, *drmmode_plane_color_ptr;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
     drmmode_composition_rec composition;
     drmmode_scanout_rec scanout;
@@ -298,6 +322,7 @@ typedef struct {
     drmmode_prop_info_rec props[DRMMODE_CRTC__COUNT];
     drmmode_prop_info_rec props_plane[DRMMODE_PLANE__COUNT];
     uint32_t plane_id;
+    drmmode_plane_color_rec plane_color;
     drmmode_mode_ptr current_mode;
     uint32_t num_formats;
     drmmode_format_rec *formats;
@@ -441,6 +466,11 @@ Bool drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
                               drmmode_ptr drmmode);
 void drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode);
 Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
+void drmmode_plane_color_init(xf86CrtcPtr crtc);
+Bool drmmode_plane_color_supported(xf86CrtcPtr crtc);
+int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                                  Bool sdr_to_pq, int sdr_white_level,
+                                  uint32_t *matrix_blob);
 PixmapPtr drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width,
                                    int height, int depth, drmmode_bo *bo,
                                    uint32_t *fb_id);

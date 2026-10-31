@@ -266,7 +266,7 @@ ms_hdr_matrix_to_ctm(const double *matrix, struct drm_color_ctm *ctm)
         ctm->matrix[i] = ms_hdr_double_to_ctm(matrix[i]);
 }
 
-static void
+void
 ms_hdr_desktop_matrix(const struct drm_color_ctm *user_ctm, double *matrix)
 {
     double user[9];
