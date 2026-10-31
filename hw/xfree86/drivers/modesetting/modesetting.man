@@ -99,7 +99,23 @@ slowdown or irritating judder of animations if not all video outputs are running
 synchronized with each other and with the same refresh rate. There is no perfect
 solution apart from perfectly synchronized outputs, but this option may give
 preferable results if the displays in a multi-display setup mirror or clone
-each other.  The default is
+each other. Requires
+.B AllowTearing.
+The default is
+.B off.
+.TP
+.BI "Option \*qAllowTearing\*q \*q" boolean \*q
+Let applications that don't wait for vblank, such as games with vsync turned
+off, show their frames with async flips, which can tear. When disabled, their
+newest frame is flipped at the next vblank instead, so they are still not
+limited to the refresh rate but never tear. It must be enabled for
+.B AsyncFlipSecondaries
+to have an effect. Without
+.B Compositing,
+windows that aren't flipped are drawn straight to the screen and can tear
+either way.
+.br
+The default is
 .B off.
 .TP
 .BI "Option \*qZaphodHeads\*q \*q" string \*q

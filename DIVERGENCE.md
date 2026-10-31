@@ -101,6 +101,11 @@ rate works with directly scanned out windows.
 Monitors that are composited are composed just before each vblank, so a new
 frame reaches the screen at the next vblank and frame pacing stays even.
 
+Applications with vsync turned off never tear. Their newest frame is shown at
+each vblank and they still run uncapped. To show their frames immediately with
+async flips, which can tear, set the `AllowTearing` option to true in the
+Device section of xorg.conf.
+
 On laptops with two GPUs, fullscreen applications started with NVIDIA's
 `prime-run` on a monitor connected to the NVIDIA GPU are scanned out straight
 from the NVIDIA GPU's memory. They avoid all copies, so they perform the same

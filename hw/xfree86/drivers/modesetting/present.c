@@ -594,18 +594,33 @@ static present_screen_info_rec ms_present_screen_info = {
 #endif
 };
 
+static Bool
+ms_present_allow_tearing(ScrnInfoPtr scrn)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+    Bool allow_tearing = FALSE;
+    MessageType from;
+
+    from = xf86GetOptValBool(ms->drmmode.Options, OPTION_ALLOW_TEARING,
+                             &allow_tearing) ? X_CONFIG : X_DEFAULT;
+    xf86DrvMsg(scrn->scrnIndex, from, "AllowTearing: %sabled\n",
+               allow_tearing ? "en" : "dis");
+    return allow_tearing;
+}
+
 Bool
 ms_present_screen_init(ScreenPtr screen)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     modesettingPtr ms = modesettingPTR(scrn);
+    Bool allow_tearing = ms_present_allow_tearing(scrn);
     uint64_t value;
     int ret;
 
     ret = drmGetCap(ms->fd, ms->atomic_modeset ? DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP : DRM_CAP_ASYNC_PAGE_FLIP, &value);
     if (ret == 0 && value == 1) {
         ms_present_screen_info.capabilities |= PresentCapabilityAsync;
-        ms->drmmode.can_async_flip = TRUE;
+        ms->drmmode.can_async_flip = allow_tearing;
     }
 
     return present_screen_init(screen, &ms_present_screen_info);
