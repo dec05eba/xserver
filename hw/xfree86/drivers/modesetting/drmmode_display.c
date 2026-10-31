@@ -289,6 +289,19 @@ get_drawable_modifiers(DrawablePtr draw, uint32_t format,
     ScrnInfoPtr scrn = xf86ScreenToScrn(draw->pScreen);
     modesettingPtr ms = modesettingPTR(scrn);
 
+    /* Monitors on another GPU can only show the window's own buffers when
+     * that GPU can import them, which needs them to be linear.
+     */
+    if (scrn->vtSema &&
+        ms_compositor_prime_output_for_window((WindowPtr) draw)) {
+        *modifiers = malloc(sizeof(**modifiers));
+        if (!*modifiers)
+            return FALSE;
+        **modifiers = DRM_FORMAT_MOD_LINEAR;
+        *num_modifiers = 1;
+        return TRUE;
+    }
+
     if (!present_can_window_flip((WindowPtr) draw) ||
         !ms->drmmode.pageflip || ms->drmmode.dri2_flipping || !scrn->vtSema) {
         *num_modifiers = 0;

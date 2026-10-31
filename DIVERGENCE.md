@@ -50,11 +50,9 @@ Limitations:
 - Reading the root window works with GetImage (screenshots, `xwd`, ffmpeg
   x11grab), but not with CopyArea or Render.
 - Fullscreen windows on monitors connected to a secondary GPU (reverse PRIME)
-  are copied instead of scanned out directly, and only skip compositing when
-  the application renders on that GPU (for example with `prime-run`). The
-  exception is applications started with NVIDIA's `prime-run` on a monitor
-  connected to the NVIDIA GPU, when that GPU has an overlay plane for the
-  monitor.
+  are copied by that GPU instead of scanned out directly. The exception is
+  applications started with NVIDIA's `prime-run` on a monitor connected to
+  the NVIDIA GPU, when that GPU has an overlay plane for the monitor.
 - With a software cursor, fullscreen windows on the monitor with the cursor
   don't bypass compositing.
 
@@ -226,6 +224,10 @@ for example a game started with `prime-run` on that HDMI monitor, are handled
 by that GPU alone. The other GPU doesn't composite or copy their frames, so
 there is practically no performance penalty compared to a monitor that doesn't
 use PRIME.
+
+Applications that render on the other GPU draw into linear buffers while they
+are fullscreen on such a monitor, so the GPU the monitor is connected to can
+copy them to the screen without the window being composited.
 
 Applications started with NVIDIA's `prime-run` are shown straight from the
 NVIDIA GPU's memory when they are fullscreen on a monitor connected to that

@@ -563,6 +563,16 @@ ms_present_window_unflip(ScreenPtr screen, WindowPtr toplevel,
 }
 #endif
 
+#ifdef HAVE_GBM
+static Bool
+ms_present_flip_suboptimal(WindowPtr window, PixmapPtr pixmap)
+{
+    xf86CrtcPtr crtc = ms_compositor_prime_output_for_window(window);
+
+    return crtc && !ms_prime_import(crtc, pixmap);
+}
+#endif
+
 static present_screen_info_rec ms_present_screen_info = {
     .version = PRESENT_SCREEN_INFO_VERSION,
 
@@ -580,6 +590,7 @@ static present_screen_info_rec ms_present_screen_info = {
     .unflip = ms_present_unflip,
     .window_flip = ms_present_window_flip,
     .window_unflip = ms_present_window_unflip,
+    .flip_suboptimal = ms_present_flip_suboptimal,
 #endif
 };
 

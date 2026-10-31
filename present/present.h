@@ -131,6 +131,9 @@ typedef Bool (*present_window_flip_ptr) (RRCrtcPtr crtc,
                                          PixmapPtr pixmap,
                                          Bool sync_flip);
 
+typedef Bool (*present_flip_suboptimal_ptr) (WindowPtr window,
+                                             PixmapPtr pixmap);
+
 typedef void (*present_window_unflip_ptr) (ScreenPtr screen,
                                            WindowPtr window,
                                            uint64_t event_id);
@@ -158,7 +161,7 @@ typedef struct present_screen_info {
     present_check_flip2_ptr             check_flip2;
     present_window_flip_ptr             window_flip;
     present_window_unflip_ptr           window_unflip;
-
+    present_flip_suboptimal_ptr         flip_suboptimal;
 } present_screen_info_rec, *present_screen_info_ptr;
 
 /*

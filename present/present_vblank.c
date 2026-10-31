@@ -27,8 +27,16 @@
 Bool
 present_vblank_suboptimal(present_vblank_ptr vblank)
 {
+    present_screen_priv_ptr screen_priv = present_screen_priv(vblank->screen);
+
     if (!vblank->has_suboptimal || !vblank->pixmap || !vblank->window)
         return FALSE;
+
+    if (screen_priv && screen_priv->info &&
+        screen_priv->info->version >= 2 &&
+        screen_priv->info->flip_suboptimal &&
+        screen_priv->info->flip_suboptimal(vblank->window, vblank->pixmap))
+        return TRUE;
 
 #ifdef DRI3
     if (dri3_offload_pixmap_suboptimal(vblank->window, vblank->pixmap))

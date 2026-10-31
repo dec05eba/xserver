@@ -316,6 +316,7 @@ void ms_prime_clear_direct(xf86CrtcPtr crtc);
 drmmode_prime_overlay_rec *ms_prime_overlay_cover(xf86CrtcPtr crtc,
                                                   ScreenPtr screen, int width,
                                                   int height);
+xf86CrtcPtr ms_compositor_prime_output_for_window(WindowPtr window);
 Bool ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window);
 
 void ms_offload_init(ScreenPtr screen);

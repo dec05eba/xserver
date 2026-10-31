@@ -1100,35 +1100,43 @@ ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
     return window;
 }
 
-Bool
-ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window)
+xf86CrtcPtr
+ms_compositor_prime_output_for_window(WindowPtr window)
 {
     PixmapDirtyUpdatePtr dirty;
-
-    if (window->drawable.depth != 24 && window->drawable.depth != 30)
-        return FALSE;
 
     xorg_list_for_each_entry(dirty, &window->drawable.pScreen->pixmap_dirty_list,
                              ent) {
         xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
-        BoxRec box;
-
         RegionRec cover;
-        Bool scanout;
+        BoxRec box;
+        Bool covers;
 
-        if (!crtc || xf86ScrnToScreen(crtc->scrn) != secondary ||
-            !((drmmode_crtc_private_ptr) crtc->driver_private)->overlay_plane.plane_id)
+        if (!crtc)
             continue;
 
         ms_compositor_dirty_box(dirty, &box);
         RegionNull(&cover);
-        scanout = ms_compositor_prime_output_usable(dirty, crtc, &box) &&
+        covers = ms_compositor_prime_output_usable(dirty, crtc, &box) &&
             CompositeServerCanScanoutWindow(window, &box, &cover);
         RegionUninit(&cover);
-        if (scanout)
-            return TRUE;
+        if (covers)
+            return crtc;
     }
-    return FALSE;
+    return NULL;
+}
+
+Bool
+ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window)
+{
+    xf86CrtcPtr crtc;
+
+    if (window->drawable.depth != 24 && window->drawable.depth != 30)
+        return FALSE;
+
+    crtc = ms_compositor_prime_output_for_window(window);
+    return crtc && xf86ScrnToScreen(crtc->scrn) == secondary &&
+        ((drmmode_crtc_private_ptr) crtc->driver_private)->overlay_plane.plane_id;
 }
 
 Bool
