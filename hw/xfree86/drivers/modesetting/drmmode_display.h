@@ -247,6 +247,9 @@ typedef struct {
     uint64_t usec;
     uint64_t start;
     int fence_fd;
+    uint64_t commit_usec;
+    uint64_t target_msc;
+    int late_flips;
 } drmmode_compose_timing_rec;
 
 typedef struct {
@@ -301,6 +304,7 @@ typedef struct {
     uint32_t back_idx;
     drmmode_composition_rec composition;
     drmmode_prime_direct_rec direct;
+    Bool kick;
 } drmmode_prime_scanout_rec;
 
 typedef struct {
@@ -464,6 +468,8 @@ Bool drmmode_SharedPixmapPresentOnVBlank(PixmapPtr frontTarget, xf86CrtcPtr crtc
                                          drmmode_ptr drmmode);
 Bool drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
                               drmmode_ptr drmmode);
+Bool drmmode_SharedPixmapPresentNow(PixmapPtr ppix, xf86CrtcPtr crtc,
+                                    drmmode_ptr drmmode);
 void drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode);
 Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
 void drmmode_plane_color_init(xf86CrtcPtr crtc);

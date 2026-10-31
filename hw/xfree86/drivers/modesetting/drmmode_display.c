@@ -1519,8 +1519,13 @@ drmmode_SharedPixmapVBlankEventHandler(uint64_t frame, uint64_t usec,
         drmmode_crtc->prime_pixmap = args->frontTarget;
         drmmode_crtc->prime_pixmap_back = args->backTarget;
 #ifdef HAVE_GBM
-        if (args->drmmode->reverse_prime_offload_mode)
+        if (args->drmmode->reverse_prime_offload_mode) {
             ms_prime_flip_done(args->crtc, frame, usec);
+            msGetPixmapPriv(args->drmmode, args->backTarget)->wait_for_damage = TRUE;
+            ms_prime_kick(args->crtc);
+            free(args);
+            return;
+        }
 #endif
 
         /* Safe to present on backTarget, no longer displayed */
@@ -1545,6 +1550,19 @@ drmmode_SharedPixmapVBlankEventAbort(void *data)
 #endif
 
     free(args);
+}
+
+Bool
+drmmode_SharedPixmapPresentNow(PixmapPtr ppix, xf86CrtcPtr crtc,
+                               drmmode_ptr drmmode)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (ppix == drmmode_crtc->prime_pixmap ||
+        ppix != drmmode_crtc->prime_pixmap_back)
+        return FALSE;
+
+    return drmmode_SharedPixmapPresent(ppix, crtc, drmmode);
 }
 
 Bool

@@ -915,6 +915,10 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
     ms_dirty_update(pScreen, timeout);
     ms_hdr_update(pScreen);
     ms_tearfree_do_flips(pScreen, timeout);
+#ifdef HAVE_GBM
+    if (!pScreen->isGPU)
+        ms_prime_flush_kicks(pScreen, timeout);
+#endif
 }
 
 static void
@@ -2126,7 +2130,6 @@ msSharedPixmapNotifyDamage(PixmapPtr ppix)
 
     if (!ppriv->wait_for_damage)
         return ret;
-    ppriv->wait_for_damage = FALSE;
 
     for (c = 0; c < xf86_config->num_crtc; c++) {
         xf86CrtcPtr crtc = xf86_config->crtc[c];
@@ -2137,7 +2140,18 @@ msSharedPixmapNotifyDamage(PixmapPtr ppix)
         if (!(drmmode_crtc->prime_pixmap && drmmode_crtc->prime_pixmap_back))
             continue;
 
+#ifdef HAVE_GBM
+        if (ms->drmmode.reverse_prime_offload_mode) {
+            if (ppix == drmmode_crtc->prime_pixmap_back) {
+                ms_prime_kick(crtc);
+                ret = TRUE;
+            }
+            continue;
+        }
+#endif
+
         // Received damage on primary screen pixmap, schedule present on vblank
+        ppriv->wait_for_damage = FALSE;
         ret |= drmmode_SharedPixmapPresentOnVBlank(ppix, crtc, &ms->drmmode);
     }
 

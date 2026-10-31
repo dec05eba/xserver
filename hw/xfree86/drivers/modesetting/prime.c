@@ -126,6 +126,34 @@ ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
                                          NULL, with_next_flip);
 }
 
+static void
+ms_prime_flip_target(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    uint64_t ust, msc;
+
+    compose->target_msc = ms_get_crtc_ust_msc(crtc, &ust, &msc) == Success ?
+        msc + 1 : 0;
+}
+
+static void
+ms_prime_flip_timing(xf86CrtcPtr crtc, uint64_t msc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    double refresh = xf86ModeVRefresh(&crtc->mode);
+
+    if (!compose->target_msc || msc <= compose->target_msc) {
+        compose->late_flips = 0;
+        return;
+    }
+
+    if (++compose->late_flips >= 2 && refresh > 0.0)
+        compose->commit_usec = min(compose->commit_usec + 1000,
+                                   (uint64_t) (500000.0 / refresh));
+}
+
 Bool
 ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 {
@@ -164,6 +192,7 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
         return FALSE;
 
     drmmode_crtc->tearfree.flip_seq = seq;
+    ms_prime_flip_target(crtc);
     return TRUE;
 }
 
@@ -172,6 +201,7 @@ ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
+    ms_prime_flip_timing(crtc, msc);
     ms_prime_scanout(crtc)->back_idx ^= 1;
     drmmode_crtc->tearfree.flip_seq = 0;
     ms_tearfree_dri_flipped(crtc, msc, usec);
@@ -234,17 +264,55 @@ ms_prime_idle(xf86CrtcPtr crtc)
 void
 ms_prime_kick(xf86CrtcPtr crtc)
 {
+    if (ms_prime_idle(crtc))
+        ms_prime_scanout(crtc)->kick = TRUE;
+}
+
+static void
+ms_prime_present(xf86CrtcPtr crtc)
+{
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    msPixmapPrivPtr ppriv;
+    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    msPixmapPrivPtr ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
+                                            drmmode_crtc->prime_pixmap_back);
+    uint64_t start = GetTimeInMicros(), elapsed;
 
-    if (!ms_prime_idle(crtc))
-        return;
+    ppriv->wait_for_damage = FALSE;
+    if (!drmmode_SharedPixmapPresentNow(drmmode_crtc->prime_pixmap_back, crtc,
+                                        drmmode_crtc->drmmode))
+        ppriv->wait_for_damage = TRUE;
 
-    ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
-                            drmmode_crtc->prime_pixmap_back);
-    ppriv->wait_for_damage =
-        !drmmode_SharedPixmapPresentOnVBlank(drmmode_crtc->prime_pixmap_back,
-                                             crtc, drmmode_crtc->drmmode);
+    elapsed = GetTimeInMicros() - start;
+    compose->usec = max(elapsed, compose->usec - compose->usec / 8);
+}
+
+void
+ms_prime_flush_kicks(ScreenPtr screen, void *timeout)
+{
+    PixmapDirtyUpdatePtr dirty;
+
+    xorg_list_for_each_entry(dirty, &screen->pixmap_dirty_list, ent) {
+        xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
+        drmmode_prime_scanout_rec *prime_scanout;
+
+        if (!crtc)
+            continue;
+
+        prime_scanout = ms_prime_scanout(crtc);
+        if (!prime_scanout->kick)
+            continue;
+
+        if (!ms_prime_idle(crtc)) {
+            prime_scanout->kick = FALSE;
+            continue;
+        }
+
+        if (!ms_tearfree_compose_due(crtc, timeout))
+            continue;
+
+        prime_scanout->kick = FALSE;
+        ms_prime_present(crtc);
+    }
 }
 
 static Bool

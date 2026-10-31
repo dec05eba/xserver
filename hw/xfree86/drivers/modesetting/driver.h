@@ -307,6 +307,7 @@ void ms_prime_flip_aborted(xf86CrtcPtr crtc);
 xf86CrtcPtr ms_prime_crtc(PixmapPtr ppix);
 Bool ms_prime_crtc_flipping(xf86CrtcPtr crtc);
 void ms_prime_kick(xf86CrtcPtr crtc);
+void ms_prime_flush_kicks(ScreenPtr screen, void *timeout);
 Bool ms_prime_update_output_mode(ScrnInfoPtr scrn);
 PixmapPtr ms_prime_import(xf86CrtcPtr crtc, PixmapPtr pixmap);
 void ms_prime_clear_direct(xf86CrtcPtr crtc);
