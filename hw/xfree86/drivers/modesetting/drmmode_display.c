@@ -69,6 +69,16 @@ static PixmapPtr drmmode_create_pixmap_header(ScreenPtr pScreen, int width, int 
                                               int depth, int bitsPerPixel, int devKind,
                                               void *pPixData);
 
+static Bool
+drmmode_driver_is(int fd, const char *name)
+{
+    drmVersionPtr version = drmGetVersion(fd);
+    Bool match = version && strcmp(version->name, name) == 0;
+
+    drmFreeVersion(version);
+    return match;
+}
+
 static const struct drm_color_ctm ctm_identity = { {
     1ULL << 32, 0, 0,
     0, 1ULL << 32, 0,
@@ -4543,6 +4553,11 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
 
     drmmode->scrn = pScrn;
     drmmode->cpp = cpp;
+    /* nvidia-drm doesn't apply clearing the CRTC colour properties when that
+     * comes with a page flip, so identity tables are used instead.
+     */
+    drmmode->identity_color_tables = drmmode_driver_is(drmmode->fd,
+                                                       "nvidia-drm");
     mode_res = drmModeGetResources(drmmode->fd);
     if (!mode_res)
         return FALSE;
@@ -5436,25 +5451,80 @@ drmmode_crtc_create_lut_color_blobs(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode
     return blobs->degamma_lut && blobs->gamma_lut && blobs->ctm;
 }
 
+static uint32_t
+drmmode_create_identity_lut_blob(drmmode_ptr drmmode, int size)
+{
+    struct drm_color_lut *lut;
+    uint32_t blob_id;
+    int i;
+
+    if (size < 2)
+        return 0;
+
+    lut = calloc(size, sizeof(*lut));
+    if (!lut)
+        return 0;
+
+    for (i = 0; i < size; i++)
+        lut[i].red = lut[i].green = lut[i].blue = i * 0xffff / (size - 1);
+
+    blob_id = drmmode_create_blob(drmmode, lut, size * sizeof(*lut));
+    free(lut);
+    return blob_id;
+}
+
+static Bool
+drmmode_crtc_fill_identity_color_blobs(xf86CrtcPtr crtc,
+                                       drmmode_color_blobs *blobs)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_ptr drmmode = drmmode_crtc->drmmode;
+    drmmode_prop_info_ptr props = drmmode_crtc->props;
+
+    if (!blobs->degamma_lut && props[DRMMODE_CRTC_DEGAMMA_LUT].prop_id)
+        blobs->degamma_lut =
+            drmmode_create_identity_lut_blob(drmmode,
+                                             props[DRMMODE_CRTC_DEGAMMA_LUT_SIZE].value);
+    if (!blobs->ctm && props[DRMMODE_CRTC_CTM].prop_id)
+        blobs->ctm = drmmode_create_blob(drmmode, &ctm_identity,
+                                         sizeof(ctm_identity));
+    if (!blobs->gamma_lut && props[DRMMODE_CRTC_GAMMA_LUT].prop_id)
+        blobs->gamma_lut =
+            drmmode_create_identity_lut_blob(drmmode,
+                                             props[DRMMODE_CRTC_GAMMA_LUT_SIZE].value);
+
+    return (blobs->degamma_lut || !props[DRMMODE_CRTC_DEGAMMA_LUT].prop_id) &&
+        (blobs->ctm || !props[DRMMODE_CRTC_CTM].prop_id) &&
+        (blobs->gamma_lut || !props[DRMMODE_CRTC_GAMMA_LUT].prop_id);
+}
+
 static Bool
 drmmode_crtc_create_color_blobs(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
                                 const struct hdr_output_metadata *metadata,
                                 int sdr_white_level, drmmode_color_blobs *blobs)
 {
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    Bool ret = FALSE;
+
     *blobs = (drmmode_color_blobs) { 0 };
 
     switch (mode) {
     case DRMMODE_HDR_OFF:
-        return drmmode_crtc_create_sdr_color_blobs(crtc, blobs);
+        ret = drmmode_crtc_create_sdr_color_blobs(crtc, blobs);
+        break;
     case DRMMODE_HDR_DESKTOP:
     case DRMMODE_HDR_TONEMAP:
-        return drmmode_crtc_create_lut_color_blobs(crtc, mode, metadata,
-                                                   sdr_white_level, blobs);
+        ret = drmmode_crtc_create_lut_color_blobs(crtc, mode, metadata,
+                                                  sdr_white_level, blobs);
+        break;
     case DRMMODE_HDR_PASSTHROUGH:
-        return TRUE;
+        ret = TRUE;
+        break;
     }
 
-    return FALSE;
+    if (ret && drmmode_crtc->drmmode->identity_color_tables)
+        ret = drmmode_crtc_fill_identity_color_blobs(crtc, blobs);
+    return ret;
 }
 
 static void

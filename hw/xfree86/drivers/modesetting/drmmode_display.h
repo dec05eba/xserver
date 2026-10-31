@@ -177,6 +177,7 @@ typedef struct {
 
     uint32_t vrr_prop_id;
     Bool use_ctm;
+    Bool identity_color_tables;
 
     Bool hdr_default;
     int sdr_white_level_default;
