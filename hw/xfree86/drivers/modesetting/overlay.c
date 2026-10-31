@@ -23,10 +23,15 @@
 
 #include "dix-config.h"
 
+#include <string.h>
 #include <xf86.h>
 #include <xf86Crtc.h>
 
 #include "driver.h"
+
+/* amdgpu rejects planes that show less than 24x12 pixels */
+#define MS_OVERLAY_MIN_WIDTH 24
+#define MS_OVERLAY_MIN_HEIGHT 12
 
 static drmmode_overlay_plane_rec *
 ms_overlay_plane(xf86CrtcPtr crtc)
@@ -98,6 +103,26 @@ ms_overlay_create_buffers(xf86CrtcPtr crtc)
     return TRUE;
 }
 
+static void
+ms_overlay_grow(INT16 *start, INT16 *end, int min_size, int bound_start,
+                int bound_end)
+{
+    int size = min(max(*end - *start, min_size), bound_end - bound_start);
+
+    *start = max(min(*start, bound_end - size), bound_start);
+    *end = *start + size;
+}
+
+void
+ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box)
+{
+    *box = *RegionExtents(cover);
+    ms_overlay_grow(&box->x1, &box->x2, MS_OVERLAY_MIN_WIDTH, bounds->x1,
+                    bounds->x2);
+    ms_overlay_grow(&box->y1, &box->y2, MS_OVERLAY_MIN_HEIGHT, bounds->y1,
+                    bounds->y2);
+}
+
 PixmapPtr
 ms_overlay_back_buffer(xf86CrtcPtr crtc)
 {
@@ -140,19 +165,20 @@ void
 ms_overlay_flip_failed(xf86CrtcPtr crtc)
 {
     drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
-    Bool committed = !overlay->next_fb_id;
-
-    if (!overlay->buffers.pending)
-        return;
 
     overlay->buffers.pending = FALSE;
     overlay->next_fb_id = 0;
-    if (!committed || overlay->fb_id)
-        return;
+}
+
+void
+ms_overlay_rejected(xf86CrtcPtr crtc, int error)
+{
+    drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
 
     xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
-               "Overlay plane %u was rejected, not using it\n",
-               overlay->plane_id);
+               "Overlay plane %u was rejected, not using it: %s\n",
+               overlay->plane_id, strerror(-error));
+    ms_overlay_destroy(crtc);
     overlay->plane_id = 0;
 }
 

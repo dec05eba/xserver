@@ -577,10 +577,13 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
         ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
                                  DRMMODE_PLANE_PIXEL_BLEND_MODE,
                                  blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].value);
+    /* nvidia-drm ignores SRC_X and SRC_Y on overlay planes, so the content
+     * starts at the origin of the buffer.
+     */
     ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_SRC_X, box->x1 << 16);
+                             DRMMODE_PLANE_SRC_X, 0);
     ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_SRC_Y, box->y1 << 16);
+                             DRMMODE_PLANE_SRC_Y, 0);
     ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
                              DRMMODE_PLANE_SRC_W, (box->x2 - box->x1) << 16);
     ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
@@ -1257,6 +1260,8 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             return drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
                                      data);
         }
+        if (ret && ret != -EBUSY && overlay->next_fb_id && !overlay->fb_id)
+            ms_overlay_rejected(crtc, ret);
         overlay->next_fb_id = 0;
         return ret;
     }

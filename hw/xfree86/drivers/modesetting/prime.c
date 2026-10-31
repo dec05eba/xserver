@@ -79,7 +79,7 @@ ms_prime_free_cover(drmmode_prime_overlay_rec *overlay)
     overlay->cover_sdr = NULL;
 }
 
-static Bool
+static void
 ms_prime_overlay_prepare(xf86CrtcPtr crtc)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
@@ -90,21 +90,17 @@ ms_prime_overlay_prepare(xf86CrtcPtr crtc)
     PixmapPtr back;
     GCPtr gc;
 
-    if (!import || !(back = ms_overlay_back_buffer(crtc)))
-        return FALSE;
-
-    gc = GetScratchGC(back->drawable.depth, screen);
-    if (!gc)
-        return FALSE;
+    if (!import || !(back = ms_overlay_back_buffer(crtc)) ||
+        !(gc = GetScratchGC(back->drawable.depth, screen)))
+        return;
 
     ValidateGC(&back->drawable, gc);
     gc->ops->CopyArea(&import->drawable, &back->drawable, gc, 0, 0,
-                      box->x2 - box->x1, box->y2 - box->y1, box->x1, box->y1);
+                      box->x2 - box->x1, box->y2 - box->y1, 0, 0);
     FreeScratchGC(gc);
     ms->glamor.finish(screen);
 
     ms_overlay_queue(crtc, box);
-    return TRUE;
 }
 
 void
@@ -251,17 +247,21 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     int fence_fd = -1;
     int ret;
 
+    if (direct->covered)
+        ms_prime_overlay_prepare(crtc);
+
     if (direct->scanout_source &&
-        ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout") &&
-        (!direct->covered || ms_prime_overlay_prepare(crtc))) {
+        ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout")) {
         fb.pixmap = src;
         src->refcnt++;
         fb_id = fb.fb_id;
     } else {
         ms_prime_release_fb(crtc, &fb);
         fb_id = ms_prime_copy_to_back(crtc, src, &fence_fd);
-        if (!fb_id)
+        if (!fb_id) {
+            ms_overlay_flip_failed(crtc);
             return FALSE;
+        }
     }
 
     ms_prime_set_scanout_content(crtc, TRUE);

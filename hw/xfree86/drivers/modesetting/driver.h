@@ -325,11 +325,13 @@ PixmapPtr ms_offload_native_pixmap(PixmapPtr pixmap);
 
 void ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd);
 
+void ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box);
 PixmapPtr ms_overlay_back_buffer(xf86CrtcPtr crtc);
 void ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box);
 void ms_overlay_flip_done(xf86CrtcPtr crtc);
 void ms_overlay_flip_aborted(xf86CrtcPtr crtc);
 void ms_overlay_flip_failed(xf86CrtcPtr crtc);
+void ms_overlay_rejected(xf86CrtcPtr crtc, int error);
 void ms_overlay_destroy(xf86CrtcPtr crtc);
 
 Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
