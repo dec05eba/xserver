@@ -249,13 +249,25 @@ typedef struct {
     int sdr_white_level;
 } drmmode_composition_rec;
 
+typedef enum {
+    DRMMODE_FLIP_SCANOUT,
+    DRMMODE_FLIP_COPY,
+    DRMMODE_FLIP_COMPOSED,
+    DRMMODE_FLIP__COUNT
+} drmmode_flip_kind;
+
+typedef struct {
+    uint64_t usec[DRMMODE_FLIP__COUNT];
+    drmmode_flip_kind kind;
+    uint64_t target_msc;
+    uint8_t late_history;
+} drmmode_commit_lead_rec;
+
 typedef struct {
     uint64_t usec;
     uint64_t start;
     int fence_fd;
-    uint64_t commit_usec;
-    uint64_t target_msc;
-    int late_flips;
+    drmmode_commit_lead_rec lead;
 } drmmode_compose_timing_rec;
 
 typedef struct {

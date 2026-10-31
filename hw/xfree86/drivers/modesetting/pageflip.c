@@ -1027,8 +1027,8 @@ Bool
 ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint64_t margin = drmmode_crtc->tearfree.compose.usec +
-        drmmode_crtc->tearfree.compose.commit_usec +
+    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    uint64_t margin = compose->usec + compose->lead.usec[compose->lead.kind] +
         MS_TEARFREE_COMPOSE_SLACK_USEC;
     uint64_t now = GetTimeInMicros();
     uint64_t next;

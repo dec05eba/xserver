@@ -206,14 +206,23 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, int *fence_fd)
     return back->fb_id;
 }
 
+static drmmode_flip_kind
+ms_prime_flip_kind(const drmmode_prime_direct_rec *direct)
+{
+    if (!direct->source)
+        return DRMMODE_FLIP_COMPOSED;
+    return direct->scanout_source ? DRMMODE_FLIP_SCANOUT : DRMMODE_FLIP_COPY;
+}
+
 static void
-ms_prime_flip_target(xf86CrtcPtr crtc)
+ms_prime_flip_target(xf86CrtcPtr crtc, drmmode_flip_kind kind)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    drmmode_commit_lead_rec *lead = &drmmode_crtc->tearfree.compose.lead;
     uint64_t ust, msc;
 
-    compose->target_msc = ms_get_crtc_ust_msc(crtc, &ust, &msc) == Success ?
+    lead->kind = kind;
+    lead->target_msc = ms_get_crtc_ust_msc(crtc, &ust, &msc) == Success ?
         msc + 1 : 0;
 }
 
@@ -221,17 +230,19 @@ static void
 ms_prime_flip_timing(xf86CrtcPtr crtc, uint64_t msc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    drmmode_commit_lead_rec *lead = &drmmode_crtc->tearfree.compose.lead;
     double refresh = xf86ModeVRefresh(&crtc->mode);
 
-    if (!compose->target_msc || msc <= compose->target_msc) {
-        compose->late_flips = 0;
+    if (!lead->target_msc)
         return;
-    }
 
-    if (++compose->late_flips >= 2 && refresh > 0.0)
-        compose->commit_usec = min(compose->commit_usec + 1000,
-                                   (uint64_t) (500000.0 / refresh));
+    lead->late_history = (lead->late_history << 1) | (msc > lead->target_msc);
+    if (__builtin_popcount(lead->late_history) < 2 || refresh <= 0.0)
+        return;
+
+    lead->late_history = 0;
+    lead->usec[lead->kind] = min(lead->usec[lead->kind] + 1000,
+                                 (uint64_t) (1000000.0 / refresh));
 }
 
 Bool
@@ -277,7 +288,7 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 
     prime_scanout->direct_fbs.pending = fb;
     drmmode_crtc->tearfree.flip_seq = seq;
-    ms_prime_flip_target(crtc);
+    ms_prime_flip_target(crtc, ms_prime_flip_kind(direct));
     return TRUE;
 }
 
