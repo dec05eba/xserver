@@ -1841,8 +1841,8 @@ ms_dmabuf_add_writer(int dmabuf_fd, int fence_fd)
 #endif
 }
 
-static void
-ms_fence_shared_pixmap(ScreenPtr screen, msPixmapPrivPtr ppriv)
+void
+ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd)
 {
 #ifdef HAVE_GBM
     modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
@@ -1853,7 +1853,7 @@ ms_fence_shared_pixmap(ScreenPtr screen, msPixmapPrivPtr ppriv)
 
     if (ms->glamor.egl_create_fence_fd)
         fence_fd = ms->glamor.egl_create_fence_fd(screen);
-    if (!ms_dmabuf_add_writer(ppriv->dmabuf_fd, fence_fd))
+    if (!ms_dmabuf_add_writer(dmabuf_fd, fence_fd))
         ms->glamor.finish(screen);
     if (fence_fd >= 0)
         close(fence_fd);
@@ -1887,7 +1887,7 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
 
     painted = ms_dirty_paint(ppriv->dirty);
     if (painted)
-        ms_fence_shared_pixmap(pScreen, ppriv);
+        ms_fence_dmabuf(pScreen, ppriv->dmabuf_fd);
     DamageEmpty(ppriv->dirty->damage);
     return painted;
 }

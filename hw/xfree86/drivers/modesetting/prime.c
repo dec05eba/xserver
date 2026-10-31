@@ -63,6 +63,126 @@ ms_prime_release_fb(xf86CrtcPtr crtc, drmmode_prime_fb_rec *fb)
     *fb = (drmmode_prime_fb_rec) { 0 };
 }
 
+static void
+ms_prime_free_cover(drmmode_prime_overlay_rec *overlay)
+{
+    if (overlay->import)
+        dixDestroyPixmap(overlay->import, 0);
+    if (overlay->cover) {
+        dixDestroyPixmap(overlay->cover, 0);
+        close(overlay->dmabuf_fd);
+    }
+    if (overlay->cover_sdr)
+        dixDestroyPixmap(overlay->cover_sdr, 0);
+    overlay->import = NULL;
+    overlay->cover = NULL;
+    overlay->cover_sdr = NULL;
+}
+
+static void
+ms_prime_destroy_overlay(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_overlay_rec *overlay = &drmmode_crtc->prime_scanout.overlay;
+    int i;
+
+    ms_prime_free_cover(overlay);
+    for (i = 0; i < ARRAY_SIZE(overlay->buf); i++) {
+        if (overlay->buf[i].px)
+            drmmode_shadow_fb_destroy(crtc, overlay->buf[i].px, (void *)(long)1,
+                                      &overlay->buf[i].bo,
+                                      &overlay->buf[i].fb_id);
+        overlay->buf[i].px = NULL;
+    }
+    overlay->back_idx = 0;
+    overlay->pending = FALSE;
+    drmmode_crtc->overlay_plane.fb_id = 0;
+    drmmode_crtc->overlay_plane.next_fb_id = 0;
+}
+
+static Bool
+ms_prime_overlay_buffers(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_overlay_rec *overlay = &prime_scanout->overlay;
+    PixmapPtr scanout = prime_scanout->buf[0].px;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(overlay->buf); i++) {
+        drmmode_shadow_fb_ptr buf = &overlay->buf[i];
+        uint32_t fb_id;
+
+        if (buf->px)
+            continue;
+
+        buf->px = drmmode_shadow_fb_create(crtc, NULL, scanout->drawable.width,
+                                           scanout->drawable.height, 32,
+                                           &buf->bo, &buf->fb_id);
+        if (!buf->px)
+            return FALSE;
+
+        if (drmmode_bo_import_alpha(&ms->drmmode, &buf->bo, &fb_id)) {
+            drmmode_shadow_fb_destroy(crtc, buf->px, (void *)(long)1,
+                                      &buf->bo, &buf->fb_id);
+            buf->px = NULL;
+            return FALSE;
+        }
+        drmModeRmFB(ms->fd, buf->fb_id);
+        buf->fb_id = fb_id;
+    }
+    return TRUE;
+}
+
+static Bool
+ms_prime_overlay_prepare(xf86CrtcPtr crtc)
+{
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = &drmmode_crtc->prime_scanout;
+    drmmode_prime_overlay_rec *overlay = &prime_scanout->overlay;
+    BoxPtr box = &prime_scanout->direct.cover_box;
+    drmmode_shadow_fb_ptr back;
+    GCPtr gc;
+
+    if (!overlay->import || !ms_prime_overlay_buffers(crtc))
+        return FALSE;
+
+    back = &overlay->buf[overlay->back_idx];
+    gc = GetScratchGC(back->px->drawable.depth, screen);
+    if (!gc)
+        return FALSE;
+
+    ValidateGC(&back->px->drawable, gc);
+    gc->ops->CopyArea(&overlay->import->drawable, &back->px->drawable, gc,
+                      0, 0, box->x2 - box->x1, box->y2 - box->y1,
+                      box->x1, box->y1);
+    FreeScratchGC(gc);
+    ms->glamor.finish(screen);
+
+    drmmode_crtc->overlay_plane.next_fb_id = back->fb_id;
+    drmmode_crtc->overlay_plane.next_box = *box;
+    overlay->pending = TRUE;
+    return TRUE;
+}
+
+static void
+ms_prime_overlay_rejected(xf86CrtcPtr crtc, int ret)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_overlay_plane_rec *overlay_plane = &drmmode_crtc->overlay_plane;
+
+    drmmode_crtc->prime_scanout.overlay.pending = FALSE;
+    if (ret == -EBUSY || overlay_plane->fb_id)
+        return;
+
+    xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
+               "Overlay plane %u was rejected, not using it: %s\n",
+               overlay_plane->plane_id, strerror(-ret));
+    overlay_plane->plane_id = 0;
+}
+
 void
 ms_prime_clear_direct(xf86CrtcPtr crtc)
 {
@@ -98,6 +218,7 @@ ms_prime_destroy_scanout(xf86CrtcPtr crtc)
     ms_prime_clear_direct(crtc);
     ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.pending);
     ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.front);
+    ms_prime_destroy_overlay(crtc);
 }
 
 Bool
@@ -201,12 +322,14 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     drmmode_prime_direct_rec *direct = &prime_scanout->direct;
     PixmapPtr src = direct->source ? direct->source : ppix;
     drmmode_prime_fb_rec fb = { 0 };
+    Bool with_overlay;
     uint32_t fb_id;
     int fence_fd = -1;
     int ret;
 
     if (direct->scanout_source &&
-        ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout")) {
+        ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout") &&
+        (!direct->covered || ms_prime_overlay_prepare(crtc))) {
         fb.pixmap = src;
         src->refcnt++;
         fb_id = fb.fb_id;
@@ -217,12 +340,15 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
             return FALSE;
     }
 
+    with_overlay = drmmode_crtc->overlay_plane.next_fb_id != 0;
     ms_prime_set_scanout_content(crtc, TRUE);
     ret = drmmode_crtc_flip(crtc, fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
                             fence_fd, (void *)(intptr_t) seq);
     if (fence_fd >= 0)
         close(fence_fd);
     if (ret) {
+        if (with_overlay)
+            ms_prime_overlay_rejected(crtc, ret);
         ms_prime_release_fb(crtc, &fb);
         return FALSE;
     }
@@ -243,6 +369,10 @@ ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
     ms_prime_flip_timing(crtc, msc);
     if (!fbs->pending.fb_id)
         prime_scanout->back_idx ^= 1;
+    if (prime_scanout->overlay.pending) {
+        prime_scanout->overlay.back_idx ^= 1;
+        prime_scanout->overlay.pending = FALSE;
+    }
     ms_prime_release_fb(crtc, &fbs->front);
     fbs->front = fbs->pending;
     fbs->pending = (drmmode_prime_fb_rec) { 0 };
@@ -257,6 +387,7 @@ ms_prime_flip_aborted(xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
     ms_prime_release_fb(crtc, &ms_prime_scanout(crtc)->direct_fbs.pending);
+    ms_prime_scanout(crtc)->overlay.pending = FALSE;
     drmmode_crtc->tearfree.flip_seq = 0;
     ms_tearfree_dri_abort_all(crtc);
 }
@@ -387,12 +518,31 @@ ms_prime_update_output_mode(ScrnInfoPtr scrn)
 }
 
 static PixmapPtr
+ms_prime_pixmap_from_fd(ScreenPtr screen, PixmapPtr pixmap, int fd,
+                        CARD16 stride)
+{
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+    PixmapPtr imported;
+
+    imported = screen->CreatePixmap(screen, 0, 0, pixmap->drawable.depth,
+                                    CREATE_PIXMAP_USAGE_SHARED);
+    if (imported &&
+        !ms->glamor.back_pixmap_from_fd(imported, fd, pixmap->drawable.width,
+                                        pixmap->drawable.height, stride,
+                                        pixmap->drawable.depth,
+                                        pixmap->drawable.bitsPerPixel)) {
+        dixDestroyPixmap(imported, 0);
+        imported = NULL;
+    }
+    return imported;
+}
+
+static PixmapPtr
 ms_prime_import_pixmap(xf86CrtcPtr crtc, PixmapPtr pixmap)
 {
     ScreenPtr src_screen = pixmap->drawable.pScreen;
     ScrnInfoPtr src_scrn = xf86ScreenToScrn(src_screen);
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
     PixmapPtr imported = ms_offload_native_pixmap(pixmap);
     struct gbm_bo *bo;
     int fd;
@@ -415,18 +565,8 @@ ms_prime_import_pixmap(xf86CrtcPtr crtc, PixmapPtr pixmap)
     if (gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_LINEAR &&
         gbm_bo_get_plane_count(bo) == 1 && gbm_bo_get_offset(bo, 0) == 0 &&
         (fd = gbm_bo_get_fd(bo)) >= 0) {
-        imported = screen->CreatePixmap(screen, 0, 0, pixmap->drawable.depth,
-                                        CREATE_PIXMAP_USAGE_SHARED);
-        if (imported &&
-            !ms->glamor.back_pixmap_from_fd(imported, fd,
-                                            pixmap->drawable.width,
-                                            pixmap->drawable.height,
-                                            gbm_bo_get_stride(bo),
-                                            pixmap->drawable.depth,
-                                            pixmap->drawable.bitsPerPixel)) {
-            dixDestroyPixmap(imported, 0);
-            imported = NULL;
-        }
+        imported = ms_prime_pixmap_from_fd(screen, pixmap, fd,
+                                           gbm_bo_get_stride(bo));
         close(fd);
     }
 
@@ -459,5 +599,58 @@ ms_prime_import(xf86CrtcPtr crtc, PixmapPtr pixmap)
             i * sizeof(direct->imports[0]));
     direct->imports[0] = import;
     return import.imported;
+}
+
+static Bool
+ms_prime_create_cover(xf86CrtcPtr crtc, ScreenPtr screen, int width,
+                      int height)
+{
+    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
+    drmmode_prime_overlay_rec *overlay = &ms_prime_scanout(crtc)->overlay;
+    PixmapPtr cover;
+    CARD16 stride;
+    CARD32 size;
+    int fd;
+
+    cover = screen->CreatePixmap(screen, width, height, 32,
+                                 CREATE_PIXMAP_USAGE_SHARED);
+    if (!cover)
+        return FALSE;
+
+    fd = ms->glamor.shareable_fd_from_pixmap(screen, cover, &stride, &size);
+    if (fd >= 0)
+        overlay->import = ms_prime_pixmap_from_fd(xf86ScrnToScreen(crtc->scrn),
+                                                  cover, fd, stride);
+
+    if (!overlay->import) {
+        if (fd >= 0)
+            close(fd);
+        dixDestroyPixmap(cover, 0);
+        return FALSE;
+    }
+
+    overlay->cover = cover;
+    overlay->dmabuf_fd = fd;
+    return TRUE;
+}
+
+Bool
+ms_prime_overlay_cover(xf86CrtcPtr crtc, ScreenPtr screen, int width,
+                       int height, Bool pq)
+{
+    drmmode_prime_overlay_rec *overlay = &ms_prime_scanout(crtc)->overlay;
+
+    if (overlay->cover &&
+        (overlay->cover->drawable.width != width ||
+         overlay->cover->drawable.height != height))
+        ms_prime_free_cover(overlay);
+
+    if (!overlay->cover &&
+        !ms_prime_create_cover(crtc, screen, width, height))
+        return FALSE;
+
+    if (pq && !overlay->cover_sdr)
+        overlay->cover_sdr = screen->CreatePixmap(screen, width, height, 32, 0);
+    return !pq || overlay->cover_sdr;
 }
 #endif

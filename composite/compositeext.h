@@ -74,8 +74,18 @@ extern _X_EXPORT void CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst,
 extern _X_EXPORT WindowPtr CompositeServerScanoutWindow(ScreenPtr pScreen,
                                                         BoxPtr pBox);
 
+extern _X_EXPORT WindowPtr CompositeServerCoveredScanoutWindow(ScreenPtr pScreen,
+                                                               BoxPtr pBox,
+                                                               RegionPtr pCover);
+
 extern _X_EXPORT Bool CompositeServerCanScanoutWindow(WindowPtr pWin,
-                                                      BoxPtr pBox);
+                                                      BoxPtr pBox,
+                                                      RegionPtr pCover);
+
+extern _X_EXPORT void CompositeServerPaintCover(PicturePtr pDst, int x, int y,
+                                                RegionPtr pRegion,
+                                                WindowPtr pWin,
+                                                void *closure);
 
 extern _X_EXPORT void CompositeServerSetHdrWindow(WindowPtr pWin, Bool hdr);
 

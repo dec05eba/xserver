@@ -519,8 +519,9 @@ drmmode_ConvertToKMode(ScrnInfoPtr scrn,
 
 
 static int
-plane_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
-               enum drmmode_plane_property prop, uint64_t val)
+plane_id_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
+                  uint32_t plane_id, enum drmmode_plane_property prop,
+                  uint64_t val)
 {
     drmmode_prop_info_ptr info = &drmmode_crtc->props_plane[prop];
     int ret;
@@ -528,9 +529,60 @@ plane_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
     if (!info)
         return -1;
 
-    ret = drmModeAtomicAddProperty(req, drmmode_crtc->plane_id,
-                                   info->prop_id, val);
+    ret = drmModeAtomicAddProperty(req, plane_id, info->prop_id, val);
     return (ret <= 0) ? -1 : 0;
+}
+
+static int
+plane_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
+               enum drmmode_plane_property prop, uint64_t val)
+{
+    return plane_id_add_prop(req, drmmode_crtc, drmmode_crtc->plane_id, prop,
+                             val);
+}
+
+static int
+overlay_plane_add_props(drmModeAtomicReq *req,
+                        drmmode_crtc_private_ptr drmmode_crtc)
+{
+    drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
+    drmmode_prop_info_ptr blend =
+        &drmmode_crtc->props_plane[DRMMODE_PLANE_PIXEL_BLEND_MODE];
+    uint32_t plane_id = overlay->plane_id;
+    uint32_t fb_id = overlay->next_fb_id;
+    BoxPtr box = &overlay->next_box;
+    int ret = 0;
+
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_FB_ID, fb_id);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_CRTC_ID,
+                             fb_id ? drmmode_crtc->mode_crtc->crtc_id : 0);
+    if (!fb_id)
+        return ret;
+
+    if (blend->prop_id &&
+        blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].valid)
+        ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                                 DRMMODE_PLANE_PIXEL_BLEND_MODE,
+                                 blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].value);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_SRC_X, box->x1 << 16);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_SRC_Y, box->y1 << 16);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_SRC_W, (box->x2 - box->x1) << 16);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_SRC_H, (box->y2 - box->y1) << 16);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_CRTC_X, box->x1);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_CRTC_Y, box->y1);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_CRTC_W, box->x2 - box->x1);
+    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
+                             DRMMODE_PLANE_CRTC_H, box->y2 - box->y1);
+    return ret;
 }
 
 static int
@@ -965,6 +1017,10 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
 
         ret |= crtc_add_dpms_props(req, crtc, DPMSModeOn, &active);
         ret |= plane_add_props(req, crtc, active ? fb_id : 0, x, y);
+        if (drmmode_crtc->overlay_plane.fb_id) {
+            drmmode_crtc->overlay_plane.next_fb_id = 0;
+            ret |= overlay_plane_add_props(req, drmmode_crtc);
+        }
 
         /* Orphaned CRTCs need to be disabled right now in atomic mode */
         for (i = 0; i < xf86_config->num_crtc; i++) {
@@ -1008,6 +1064,7 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
                 drmmode_fb_get_layout(ms->fd, active ? fb_id : 0);
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
+            drmmode_crtc->overlay_plane.fb_id = 0;
             for (i = 0; i < xf86_config->num_output; i++) {
                 xf86OutputPtr output = xf86_config->output[i];
                 drmmode_output_private_ptr drmmode_output = output->driver_private;
@@ -1125,15 +1182,18 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_fb_layout_rec layout = drmmode_fb_get_layout(ms->fd, fb_id);
+    drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
     Bool format_changed = layout.format != drmmode_crtc->scanout_layout.format;
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
+    Bool with_overlay = overlay->plane_id &&
+        (overlay->fb_id || overlay->next_fb_id);
     int ret;
 
     /* The kernel rejects async flips that change anything other than the frame buffer, including its format,
      * modifier or pitch */
     if (!drmmode_fb_layout_equal(&layout, &drmmode_crtc->scanout_layout) ||
         (ms->atomic_modeset && src_changed) ||
-        drmmode_crtc->hdr.has_pending)
+        drmmode_crtc->hdr.has_pending || with_overlay)
         flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
     if (ms->atomic_modeset) {
@@ -1154,6 +1214,8 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                                              drmmode_hdr_connectors_change(&hdr->current,
                                                                            &hdr->pending),
                                              &hdr_blobs);
+        if (ret == 0 && with_overlay)
+            ret = overlay_plane_add_props(req, drmmode_crtc);
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
         if (ret == 0)
             ret = drmModeAtomicCommit(ms->fd, req, flags, data);
@@ -1164,6 +1226,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             drmmode_crtc->scanout_layout = layout;
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
+            overlay->fb_id = overlay->next_fb_id;
             if (with_hdr) {
                 hdr->has_pending = FALSE;
                 drmmode_crtc_set_current_hdr(crtc, &hdr->pending);
@@ -1178,6 +1241,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             return drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
                                      data);
         }
+        overlay->next_fb_id = 0;
         return ret;
     }
 
@@ -1283,8 +1347,8 @@ drmmode_bo_map(drmmode_ptr drmmode, drmmode_bo *bo)
     return bo->dumb->ptr;
 }
 
-int
-drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
+static int
+drmmode_bo_add_fb(drmmode_ptr drmmode, drmmode_bo *bo, Bool opaque,
                   uint32_t *fb_id)
 {
 #ifdef GBM_BO_WITH_MODIFIERS
@@ -1308,7 +1372,8 @@ drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
             memset(modifiers, 0, sizeof(modifiers));
 
             format = gbm_bo_get_format(bo->gbm);
-            format = get_opaque_format(format);
+            if (opaque)
+                format = get_opaque_format(format);
             for (i = 0; i < num_fds; i++) {
                 handles[i] = gbm_bo_get_handle_for_plane(bo->gbm, i).u32;
                 strides[i] = gbm_bo_get_stride_for_plane(bo->gbm, i);
@@ -1328,9 +1393,10 @@ drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
         uint32_t handles[4] = { drmmode_bo_get_handle(bo) };
         uint32_t strides[4] = { drmmode_bo_get_pitch(bo) };
         uint32_t offsets[4] = { 0 };
+        uint32_t format = gbm_bo_get_format(bo->gbm);
 
         return drmModeAddFB2(drmmode->fd, bo->width, bo->height,
-                             get_opaque_format(gbm_bo_get_format(bo->gbm)),
+                             opaque ? get_opaque_format(format) : format,
                              handles, strides, offsets, fb_id, 0);
     }
 #endif
@@ -1338,6 +1404,20 @@ drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
                         drmmode->scrn->depth, drmmode->kbpp,
                         drmmode_bo_get_pitch(bo),
                         drmmode_bo_get_handle(bo), fb_id);
+}
+
+int
+drmmode_bo_import(drmmode_ptr drmmode, drmmode_bo *bo,
+                  uint32_t *fb_id)
+{
+    return drmmode_bo_add_fb(drmmode, bo, TRUE, fb_id);
+}
+
+int
+drmmode_bo_import_alpha(drmmode_ptr drmmode, drmmode_bo *bo,
+                        uint32_t *fb_id)
+{
+    return drmmode_bo_add_fb(drmmode, bo, FALSE, fb_id);
 }
 
 static Bool
@@ -2778,7 +2858,8 @@ is_plane_assigned(ScrnInfoPtr scrn, int plane_id)
     for (c = 0; c < xf86_config->num_crtc; c++) {
         xf86CrtcPtr iter = xf86_config->crtc[c];
         drmmode_crtc_private_ptr drmmode_crtc = iter->driver_private;
-        if (drmmode_crtc->plane_id == plane_id)
+        if (drmmode_crtc->plane_id == plane_id ||
+            drmmode_crtc->overlay_plane.plane_id == plane_id)
             return TRUE;
     }
 
@@ -2868,6 +2949,11 @@ drmmode_crtc_create_planes(xf86CrtcPtr crtc, int num)
             .name = "Cursor",
         },
     };
+    static drmmode_prop_enum_info_rec plane_blend_enums[] = {
+        [DRMMODE_PLANE_BLEND_PREMULTIPLIED] = {
+            .name = "Pre-multiplied",
+        },
+    };
     static const drmmode_prop_info_rec plane_props[] = {
         [DRMMODE_PLANE_TYPE] = {
             .name = "type",
@@ -2886,6 +2972,11 @@ drmmode_crtc_create_planes(xf86CrtcPtr crtc, int num)
         [DRMMODE_PLANE_CRTC_W] = { .name = "CRTC_W", },
         [DRMMODE_PLANE_CRTC_H] = { .name = "CRTC_H", },
         [DRMMODE_PLANE_IN_FENCE_FD] = { .name = "IN_FENCE_FD", },
+        [DRMMODE_PLANE_PIXEL_BLEND_MODE] = {
+            .name = "pixel blend mode",
+            .enum_values = plane_blend_enums,
+            .num_enum_values = DRMMODE_PLANE_BLEND__COUNT,
+        },
     };
     drmmode_prop_info_rec tmp_props[DRMMODE_PLANE__COUNT];
 
@@ -2987,6 +3078,61 @@ drmmode_crtc_create_planes(xf86CrtcPtr crtc, int num)
     drmModeFreePlaneResources(kplane_res);
 }
 
+static Bool
+drmmode_plane_has_format(const drmModePlane *kplane, uint32_t format)
+{
+    uint32_t i;
+
+    for (i = 0; i < kplane->count_formats; i++) {
+        if (kplane->formats[i] == format)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static void
+drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_ptr drmmode = drmmode_crtc->drmmode;
+    drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
+    drmModePlaneRes *kplane_res;
+    uint32_t i;
+
+    if (!drmmode_crtc->plane_id)
+        return;
+
+    kplane_res = drmModeGetPlaneResources(drmmode->fd);
+    for (i = 0; kplane_res && i < kplane_res->count_planes &&
+         !overlay->plane_id; i++) {
+        drmModePlane *kplane = drmModeGetPlane(drmmode->fd,
+                                               kplane_res->planes[i]);
+        drmModeObjectProperties *props;
+
+        if (kplane && (kplane->possible_crtcs & (1 << num)) &&
+            !is_plane_assigned(drmmode->scrn, kplane->plane_id) &&
+            drmmode_plane_has_format(kplane, DRM_FORMAT_ARGB8888) &&
+            (props = drmModeObjectGetProperties(drmmode->fd, kplane->plane_id,
+                                                DRM_MODE_OBJECT_PLANE))) {
+            if (drmmode_prop_get_value(&drmmode_crtc->props_plane[DRMMODE_PLANE_TYPE],
+                                       props, DRMMODE_PLANE_TYPE__COUNT) ==
+                DRMMODE_PLANE_TYPE_OVERLAY) {
+                overlay->plane_id = kplane->plane_id;
+                drmmode_prop_info_update(drmmode, drmmode_crtc->props_plane,
+                                         DRMMODE_PLANE__COUNT, props);
+            }
+            drmModeFreeObjectProperties(props);
+        }
+        drmModeFreePlane(kplane);
+    }
+    drmModeFreePlaneResources(kplane_res);
+
+    if (overlay->plane_id)
+        xf86DrvMsg(drmmode->scrn->scrnIndex, X_INFO,
+                   "Using overlay plane %u for CRTC %u\n", overlay->plane_id,
+                   drmmode_crtc->mode_crtc->crtc_id);
+}
+
 static uint32_t
 drmmode_crtc_get_prop_id(uint32_t drm_fd,
                          drmModeObjectPropertiesPtr props,
@@ -3079,6 +3225,8 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
                              DRMMODE_CRTC__COUNT, props);
     drmModeFreeObjectProperties(props);
     drmmode_crtc_create_planes(crtc, num);
+    if (pScrn->is_gpu && modesettingPTR(pScrn)->atomic_modeset)
+        drmmode_crtc_find_overlay_plane(crtc, num);
     if (drmmode->plane_color_pipeline)
         drmmode_plane_color_init(crtc);
 

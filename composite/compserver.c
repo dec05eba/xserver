@@ -619,19 +619,19 @@ compServerInitLayers(CompServerPtr server, CompServerLayersPtr pLayers,
 }
 
 static Bool
-compServerBuildLayers(CompServerPtr server, WindowPtr pFirst,
+compServerBuildLayers(CompServerPtr server, WindowPtr pFirst, WindowPtr pStop,
                       RegionPtr pRegion, CompServerLayersPtr pLayers)
 {
     WindowPtr pWin;
     int count = 0;
 
-    for (pWin = pFirst; pWin; pWin = pWin->nextSib)
+    for (pWin = pFirst; pWin != pStop; pWin = pWin->nextSib)
         count += compServerWindowLayerCount(pWin);
 
     if (!compServerInitLayers(server, pLayers, count))
         return FALSE;
 
-    for (pWin = pFirst; pWin; pWin = pWin->nextSib) {
+    for (pWin = pFirst; pWin != pStop; pWin = pWin->nextSib) {
         if (compServerPaintsWindow(pWin))
             compServerAddWindowLayers(server, pLayers, pWin, pRegion);
     }
@@ -678,6 +678,7 @@ compServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
     if (!pRoot || RegionNil(pRegion) ||
         !compServerBuildLayers(server,
                                pAbove ? pAbove->nextSib : pRoot->firstChild,
+                               NULL,
                                pRegion, &layers))
         return;
 
@@ -699,6 +700,26 @@ CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
                      RegionPtr pRegion, void *closure)
 {
     compServerPaint(pScreen, pDst, x, y, pRegion, NULL, closure);
+}
+
+void
+CompositeServerPaintCover(PicturePtr pDst, int x, int y, RegionPtr pRegion,
+                          WindowPtr pWin, void *closure)
+{
+    ScreenPtr pScreen = pWin->drawable.pScreen;
+    CompServerPtr server = compServerGet(pScreen);
+    CompServerLayersRec layers;
+    int i;
+
+    if (!compServerBuildLayers(server, pScreen->root->firstChild,
+                               compServerToplevel(pWin), pRegion, &layers))
+        return;
+
+    for (i = layers.count - 1; i >= 0; i--)
+        compServerPaintLayer(server, &layers.layers[i], pDst, x, y, closure);
+
+    SetPictureClipRegion(pDst, 0, 0, NULL);
+    compServerFreeLayers(&layers);
 }
 
 static void
@@ -789,7 +810,7 @@ CompositeServerHdrWindow(ScreenPtr pScreen, BoxPtr pBox)
         return NULL;
 
     RegionInit(&region, pBox, 1);
-    if (compServerBuildLayers(server, pScreen->root->firstChild, &region,
+    if (compServerBuildLayers(server, pScreen->root->firstChild, NULL, &region,
                               &layers)) {
         for (i = 0; i < layers.count && !pHdr; i++) {
             if (layers.layers[i].src.hdr)
@@ -871,8 +892,23 @@ compServerSublayersMatchScanout(CompServerPtr server, WindowPtr pToplevel,
     return TRUE;
 }
 
+static void
+compServerAddCover(WindowPtr pWin, BoxPtr pBox, RegionPtr pCover)
+{
+    RegionRec region, box;
+
+    RegionNull(&region);
+    compServerDisplayedRegion(pWin, &region);
+    RegionInit(&box, pBox, 1);
+    RegionIntersect(&region, &region, &box);
+    RegionUnion(pCover, pCover, &region);
+    RegionUninit(&box);
+    RegionUninit(&region);
+}
+
 static WindowPtr
-compServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, WindowPtr pResizing)
+compServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, WindowPtr pResizing,
+                        RegionPtr pCover)
 {
     CompServerPtr server = compServerGet(pScreen);
     WindowPtr pWin, pScanout;
@@ -888,6 +924,11 @@ compServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, WindowPtr pResizing)
         if (overlap == rgnOUT &&
             (!held || !compServerHeldFrameOverlaps(pWin, pBox)))
             continue;
+
+        if (overlap != rgnIN && pCover) {
+            compServerAddCover(pWin, pBox, pCover);
+            continue;
+        }
 
         if (overlap != rgnIN || held ||
             compServerWindowOpacity(server, pWin) != COMP_SERVER_OPAQUE)
@@ -906,15 +947,22 @@ compServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, WindowPtr pResizing)
 WindowPtr
 CompositeServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox)
 {
-    return compServerScanoutWindow(pScreen, pBox, NULL);
+    return compServerScanoutWindow(pScreen, pBox, NULL, NULL);
+}
+
+WindowPtr
+CompositeServerCoveredScanoutWindow(ScreenPtr pScreen, BoxPtr pBox,
+                                    RegionPtr pCover)
+{
+    return compServerScanoutWindow(pScreen, pBox, NULL, pCover);
 }
 
 Bool
-CompositeServerCanScanoutWindow(WindowPtr pWin, BoxPtr pBox)
+CompositeServerCanScanoutWindow(WindowPtr pWin, BoxPtr pBox, RegionPtr pCover)
 {
     return pWin->parent &&
         compServerScanoutWindow(pWin->drawable.pScreen, pBox,
-                                compServerToplevel(pWin)) == pWin;
+                                compServerToplevel(pWin), pCover) == pWin;
 }
 
 static PixmapPtr

@@ -52,6 +52,7 @@ enum drmmode_plane_property {
     DRMMODE_PLANE_CRTC_W,
     DRMMODE_PLANE_CRTC_H,
     DRMMODE_PLANE_IN_FENCE_FD,
+    DRMMODE_PLANE_PIXEL_BLEND_MODE,
     DRMMODE_PLANE__COUNT
 };
 
@@ -60,6 +61,11 @@ enum drmmode_plane_type {
     DRMMODE_PLANE_TYPE_CURSOR,
     DRMMODE_PLANE_TYPE_OVERLAY,
     DRMMODE_PLANE_TYPE__COUNT
+};
+
+enum drmmode_plane_blend {
+    DRMMODE_PLANE_BLEND_PREMULTIPLIED = 0,
+    DRMMODE_PLANE_BLEND__COUNT
 };
 
 enum drmmode_connector_property {
@@ -294,6 +300,8 @@ typedef struct {
     PixmapPtr pixmap;
     PixmapPtr source;
     Bool scanout_source;
+    Bool covered;
+    BoxRec cover_box;
     Bool pq;
     Bool has_metadata;
     struct hdr_output_metadata metadata;
@@ -311,13 +319,31 @@ typedef struct {
 } drmmode_prime_direct_fbs_rec;
 
 typedef struct {
+    PixmapPtr cover;
+    PixmapPtr cover_sdr;
+    PixmapPtr import;
+    int dmabuf_fd;
+    drmmode_shadow_fb_rec buf[2];
+    uint32_t back_idx;
+    Bool pending;
+} drmmode_prime_overlay_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
     uint32_t back_idx;
     drmmode_composition_rec composition;
     drmmode_prime_direct_rec direct;
     drmmode_prime_direct_fbs_rec direct_fbs;
+    drmmode_prime_overlay_rec overlay;
     Bool kick;
 } drmmode_prime_scanout_rec;
+
+typedef struct {
+    uint32_t plane_id;
+    uint32_t fb_id;
+    uint32_t next_fb_id;
+    BoxRec next_box;
+} drmmode_overlay_plane_rec;
 
 typedef struct {
     uint64_t base_ust;
@@ -338,6 +364,7 @@ typedef struct {
     drmmode_prop_info_rec props[DRMMODE_CRTC__COUNT];
     drmmode_prop_info_rec props_plane[DRMMODE_PLANE__COUNT];
     uint32_t plane_id;
+    drmmode_overlay_plane_rec overlay_plane;
     drmmode_plane_color_rec plane_color;
     drmmode_mode_ptr current_mode;
     uint32_t num_formats;
@@ -485,6 +512,8 @@ Bool drmmode_SharedPixmapPresentNow(PixmapPtr ppix, xf86CrtcPtr crtc,
 void drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode);
 Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
 Bool drmmode_driver_is(int fd, const char *name);
+int drmmode_bo_import_alpha(drmmode_ptr drmmode, drmmode_bo *bo,
+                            uint32_t *fb_id);
 void drmmode_plane_color_init(xf86CrtcPtr crtc);
 Bool drmmode_plane_color_supported(xf86CrtcPtr crtc);
 int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
