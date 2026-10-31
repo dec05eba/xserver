@@ -174,6 +174,14 @@ glamor_egl_create_textured_screen(ScreenPtr screen, int handle, int stride)
 }
 
 static void
+glamor_egl_destroy_image(struct glamor_egl_screen_private *glamor_egl,
+                         EGLImageKHR image)
+{
+    glamor_egl_external_forget_image(glamor_egl->external.context, image);
+    eglDestroyImageKHR(glamor_egl->display, image);
+}
+
+static void
 glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
                             Bool used_modifiers)
 {
@@ -187,7 +195,7 @@ glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
         ScrnInfoPtr                             scrn = xf86ScreenToScrn(screen);
         struct glamor_egl_screen_private        *glamor_egl = glamor_egl_get_screen_private(scrn);
 
-        eglDestroyImageKHR(glamor_egl->display, old);
+        glamor_egl_destroy_image(glamor_egl, old);
     }
     pixmap_priv->image = image;
     pixmap_priv->used_modifiers = used_modifiers;
@@ -1210,7 +1218,7 @@ glamor_egl_destroy_pixmap(PixmapPtr pixmap)
             glamor_get_pixmap_private(pixmap);
 
         if (pixmap_priv->image)
-            eglDestroyImageKHR(glamor_egl->display, pixmap_priv->image);
+            glamor_egl_destroy_image(glamor_egl, pixmap_priv->image);
     }
 
     screen->DestroyPixmap = glamor_egl->saved_destroy_pixmap;
@@ -1257,7 +1265,7 @@ glamor_egl_close_screen(ScreenPtr screen)
     screen_pixmap = screen->GetScreenPixmap(screen);
     pixmap_priv = glamor_get_pixmap_private(screen_pixmap);
 
-    eglDestroyImageKHR(glamor_egl->display, pixmap_priv->image);
+    glamor_egl_destroy_image(glamor_egl, pixmap_priv->image);
     pixmap_priv->image = NULL;
 
     screen->CloseScreen = glamor_egl->saved_close_screen;

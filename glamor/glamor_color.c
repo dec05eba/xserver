@@ -167,7 +167,15 @@ glamor_convert_color(PixmapPtr src, PixmapPtr dst, RegionPtr region,
         !GLAMOR_PIXMAP_PRIV_HAS_FBO(dst_priv))
         return FALSE;
 
-    glamor_external_update(src);
+    {
+        BoxRec src_box = *RegionExtents(region);
+
+        src_box.x1 += dx;
+        src_box.x2 += dx;
+        src_box.y1 += dy;
+        src_box.y2 += dy;
+        glamor_external_update(src, &src_box);
+    }
     glamor_make_current(glamor_priv);
 
     if (color->prog.failed)

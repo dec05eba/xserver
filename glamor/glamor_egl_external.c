@@ -30,6 +30,12 @@
 #include "glamor_priv.h"
 #include "glamor_egl_external.h"
 
+struct glamor_egl_external_target {
+    EGLImageKHR image;
+    GLuint tex;
+    GLuint fb;
+};
+
 struct glamor_egl_external_context {
     ScreenPtr screen;
     EGLDisplay display;
@@ -38,6 +44,8 @@ struct glamor_egl_external_context {
     Bool has_wait_sync;
     Bool has_native_fence;
     unsigned long generation;
+    struct glamor_egl_external_target targets[4];
+    unsigned int next_target;
 };
 
 struct glamor_egl_external_pixmap {
@@ -50,13 +58,15 @@ struct glamor_egl_external_pixmap {
     int height;
     int dmabuf_fd;
     unsigned long generation;
+    RegionRec updated;
 };
 
 static const char glamor_egl_external_vs[] =
     "attribute vec2 position;\n"
+    "attribute vec2 source;\n"
     "varying vec2 texcoord;\n"
     "void main() {\n"
-    "    texcoord = position;\n"
+    "    texcoord = source;\n"
     "    gl_Position = vec4(position * 2.0 - 1.0, 0.0, 1.0);\n"
     "}\n";
 
@@ -200,6 +210,7 @@ glamor_egl_external_program(void)
     glDeleteShader(vs);
     glDeleteShader(fs);
     glBindAttribLocation(program, 0, "position");
+    glBindAttribLocation(program, 1, "source");
     glLinkProgram(program);
 
     glGetProgramiv(program, GL_LINK_STATUS, &linked);
@@ -210,36 +221,212 @@ glamor_egl_external_program(void)
     return program;
 }
 
-static void
-glamor_egl_external_update(glamor_external *external)
+static Bool
+glamor_egl_external_stale(struct glamor_egl_external_pixmap *pixmap,
+                          const BoxRec *box, BoxPtr stale)
 {
-    static const GLfloat positions[] = { 0, 0, 1, 0, 0, 1, 1, 1 };
-    struct glamor_egl_external_pixmap *pixmap =
-        (struct glamor_egl_external_pixmap *) external;
+    struct glamor_egl_external_context *context = pixmap->context;
+    BoxRec whole = { 0, 0, pixmap->width, pixmap->height };
+    BoxRec asked = box ? *box : whole;
+    RegionRec wanted, clip;
+    Bool any;
+
+    if (pixmap->generation != context->generation) {
+        pixmap->generation = context->generation;
+        RegionEmpty(&pixmap->updated);
+    }
+
+    RegionInit(&wanted, &asked, 1);
+    RegionInit(&clip, &whole, 1);
+    RegionIntersect(&wanted, &wanted, &clip);
+    RegionSubtract(&wanted, &wanted, &pixmap->updated);
+    any = RegionNotEmpty(&wanted);
+    if (any) {
+        *stale = *RegionExtents(&wanted);
+        RegionUnion(&pixmap->updated, &pixmap->updated, &wanted);
+    }
+    RegionUninit(&clip);
+    RegionUninit(&wanted);
+    return any;
+}
+
+static void
+glamor_egl_external_quad(GLfloat *quad, const BoxRec *box, int width,
+                         int height)
+{
+    quad[0] = quad[4] = (GLfloat) box->x1 / width;
+    quad[2] = quad[6] = (GLfloat) box->x2 / width;
+    quad[1] = quad[3] = (GLfloat) box->y1 / height;
+    quad[5] = quad[7] = (GLfloat) box->y2 / height;
+}
+
+static void
+glamor_egl_external_draw(struct glamor_egl_external_pixmap *pixmap, GLuint fb,
+                         int width, int height, const BoxRec *dst_box,
+                         const BoxRec *src_box)
+{
+    GLfloat positions[8], sources[8];
+
+    glamor_egl_external_quad(positions, dst_box, width, height);
+    glamor_egl_external_quad(sources, src_box, pixmap->width, pixmap->height);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glViewport(0, 0, width, height);
+    glUseProgram(pixmap->context->program);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, pixmap->src_tex);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, sources);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+static EGLSyncKHR
+glamor_egl_external_begin(struct glamor_egl_external_pixmap *pixmap)
+{
     struct glamor_egl_external_context *context = pixmap->context;
     EGLSyncKHR sync;
-
-    if (pixmap->generation == context->generation)
-        return;
-    pixmap->generation = context->generation;
 
     glamor_make_current(glamor_get_screen_private(context->screen));
     sync = glamor_egl_external_fence(context);
     glamor_egl_external_enter(context);
-    glamor_egl_external_wait(context, sync);
-    glamor_egl_external_wait_writers(pixmap);
+    return sync;
+}
 
-    glBindFramebuffer(GL_FRAMEBUFFER, pixmap->fb);
-    glViewport(0, 0, pixmap->width, pixmap->height);
-    glUseProgram(context->program);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, pixmap->src_tex);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+static void
+glamor_egl_external_end(struct glamor_egl_external_pixmap *pixmap, Bool drawn)
+{
+    struct glamor_egl_external_context *context = pixmap->context;
+    EGLSyncKHR sync = EGL_NO_SYNC_KHR;
 
-    glamor_egl_external_add_reader(pixmap);
-    sync = glamor_egl_external_fence(context);
+    if (drawn) {
+        glamor_egl_external_add_reader(pixmap);
+        sync = glamor_egl_external_fence(context);
+    }
     glamor_egl_external_leave(context);
     glamor_egl_external_wait(context, sync);
+}
+
+static void
+glamor_egl_external_update(glamor_external *external, const BoxRec *box)
+{
+    struct glamor_egl_external_pixmap *pixmap =
+        (struct glamor_egl_external_pixmap *) external;
+    BoxRec stale;
+    EGLSyncKHR sync;
+
+    if (!glamor_egl_external_stale(pixmap, box, &stale))
+        return;
+
+    sync = glamor_egl_external_begin(pixmap);
+    glamor_egl_external_wait(pixmap->context, sync);
+    glamor_egl_external_wait_writers(pixmap);
+    glamor_egl_external_draw(pixmap, pixmap->fb, pixmap->width,
+                             pixmap->height, &stale, &stale);
+    glamor_egl_external_end(pixmap, TRUE);
+}
+
+static void
+glamor_egl_external_target_release(struct glamor_egl_external_target *target)
+{
+    if (!target->image)
+        return;
+
+    glDeleteFramebuffers(1, &target->fb);
+    glDeleteTextures(1, &target->tex);
+    target->image = NULL;
+}
+
+static struct glamor_egl_external_target *
+glamor_egl_external_target(struct glamor_egl_external_context *context,
+                           EGLImageKHR image)
+{
+    struct glamor_egl_external_target *target;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(context->targets); i++) {
+        if (context->targets[i].image == image)
+            return &context->targets[i];
+    }
+
+    target = &context->targets[context->next_target];
+    context->next_target = (context->next_target + 1) %
+        ARRAY_SIZE(context->targets);
+    glamor_egl_external_target_release(target);
+
+    while (glGetError() != GL_NO_ERROR)
+        ;
+    target->tex = glamor_egl_external_texture(GL_TEXTURE_2D, image);
+    glGenFramebuffers(1, &target->fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, target->fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           target->tex, 0);
+    target->image = image;
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
+        glGetError() == GL_NO_ERROR)
+        return target;
+
+    glamor_egl_external_target_release(target);
+    return NULL;
+}
+
+void
+glamor_egl_external_forget_image(struct glamor_egl_external_context *context,
+                                 EGLImageKHR image)
+{
+    int i;
+
+    if (!context)
+        return;
+
+    for (i = 0; i < ARRAY_SIZE(context->targets); i++) {
+        if (context->targets[i].image == image) {
+            glamor_egl_external_enter(context);
+            glamor_egl_external_target_release(&context->targets[i]);
+            glamor_egl_external_leave(context);
+        }
+    }
+}
+
+static Bool
+glamor_egl_external_copy(glamor_external *external, PixmapPtr dst, BoxPtr box,
+                         int nbox, int dst_dx, int dst_dy, int src_dx,
+                         int src_dy)
+{
+    struct glamor_egl_external_pixmap *pixmap =
+        (struct glamor_egl_external_pixmap *) external;
+    glamor_pixmap_private *dst_priv = glamor_get_pixmap_private(dst);
+    struct glamor_egl_external_target *target;
+    EGLSyncKHR sync;
+
+    if (!dst_priv || !dst_priv->image)
+        return FALSE;
+
+    sync = glamor_egl_external_begin(pixmap);
+    target = glamor_egl_external_target(pixmap->context, dst_priv->image);
+    glamor_egl_external_wait(pixmap->context, sync);
+    if (!target) {
+        glamor_egl_external_end(pixmap, FALSE);
+        return FALSE;
+    }
+
+    glamor_egl_external_wait_writers(pixmap);
+    for (; nbox--; box++) {
+        BoxRec dst_box = {
+            .x1 = box->x1 + dst_dx,
+            .y1 = box->y1 + dst_dy,
+            .x2 = box->x2 + dst_dx,
+            .y2 = box->y2 + dst_dy,
+        };
+        BoxRec src_box = {
+            .x1 = box->x1 + src_dx,
+            .y1 = box->y1 + src_dy,
+            .x2 = box->x2 + src_dx,
+            .y2 = box->y2 + src_dy,
+        };
+
+        glamor_egl_external_draw(pixmap, target->fb, dst->drawable.width,
+                                 dst->drawable.height, &dst_box, &src_box);
+    }
+    glamor_egl_external_end(pixmap, TRUE);
+    return TRUE;
 }
 
 static void
@@ -255,6 +442,7 @@ glamor_egl_external_destroy(glamor_external *external)
     glamor_egl_external_leave(pixmap->context);
     if (pixmap->dmabuf_fd >= 0)
         close(pixmap->dmabuf_fd);
+    RegionUninit(&pixmap->updated);
     free(pixmap);
 }
 
@@ -275,11 +463,13 @@ glamor_egl_external_attach(struct glamor_egl_external_context *context,
     }
 
     external->base.update = glamor_egl_external_update;
+    external->base.copy = glamor_egl_external_copy;
     external->base.destroy = glamor_egl_external_destroy;
     external->context = context;
     external->dmabuf_fd = dmabuf_fd;
     external->width = pixmap->drawable.width;
     external->height = pixmap->drawable.height;
+    RegionNull(&external->updated);
 
     glamor_egl_external_enter(context);
     while (glGetError() != GL_NO_ERROR)
@@ -353,6 +543,7 @@ glamor_egl_external_context_create(ScreenPtr screen, EGLDisplay egl_display)
     if (epoxy_has_gl_extension("GL_OES_EGL_image_external")) {
         context->program = glamor_egl_external_program();
         glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
     }
     glamor_egl_external_leave(context);
 

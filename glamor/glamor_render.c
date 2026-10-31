@@ -1486,6 +1486,71 @@ glamor_convert_gradient_picture(ScreenPtr screen,
     return dst;
 }
 
+static void
+glamor_composite_source_offset(PicturePtr picture, PixmapPtr pixmap,
+                               int x_pict, int y_pict, PicturePtr dest,
+                               int x_dest, int y_dest, int *dx, int *dy)
+{
+    glamor_get_drawable_deltas(picture->pDrawable, pixmap, dx, dy);
+    *dx += x_pict + picture->pDrawable->x - x_dest - dest->pDrawable->x;
+    *dy += y_pict + picture->pDrawable->y - y_dest - dest->pDrawable->y;
+}
+
+static void
+glamor_composite_update_external(PicturePtr picture, PixmapPtr pixmap,
+                                 RegionPtr region, int x_pict, int y_pict,
+                                 PicturePtr dest, int x_dest, int y_dest)
+{
+    BoxRec box;
+    int dx, dy;
+
+    if (!pixmap || !glamor_pixmap_is_external(pixmap))
+        return;
+
+    if (picture->transform || picture->repeat) {
+        glamor_external_update(pixmap, NULL);
+        return;
+    }
+
+    glamor_composite_source_offset(picture, pixmap, x_pict, y_pict, dest,
+                                   x_dest, y_dest, &dx, &dy);
+    box = *RegionExtents(region);
+    box.x1 += dx;
+    box.x2 += dx;
+    box.y1 += dy;
+    box.y2 += dy;
+    glamor_external_update(pixmap, &box);
+}
+
+static Bool
+glamor_composite_external_copy(CARD8 op, PicturePtr source, PicturePtr mask,
+                               PicturePtr dest, PixmapPtr source_pixmap,
+                               PixmapPtr dest_pixmap, RegionPtr region,
+                               int x_source, int y_source, int x_dest,
+                               int y_dest)
+{
+    BoxPtr extent = RegionExtents(region);
+    int dst_dx, dst_dy, src_dx, src_dy;
+
+    if (op != PictOpSrc || mask || !source_pixmap ||
+        !glamor_pixmap_is_external(source_pixmap) || source->alphaMap ||
+        dest->alphaMap || source->transform ||
+        !PICT_FORMAT_COLOR(source->format) ||
+        !PICT_FORMAT_COLOR(dest->format) ||
+        (PICT_FORMAT_A(dest->format) && !PICT_FORMAT_A(source->format)) ||
+        x_source < 0 || y_source < 0 ||
+        x_source + extent->x2 - extent->x1 > source->pDrawable->width ||
+        y_source + extent->y2 - extent->y1 > source->pDrawable->height)
+        return FALSE;
+
+    glamor_get_drawable_deltas(dest->pDrawable, dest_pixmap, &dst_dx, &dst_dy);
+    glamor_composite_source_offset(source, source_pixmap, x_source, y_source,
+                                   dest, x_dest, y_dest, &src_dx, &src_dy);
+    return glamor_external_copy(source_pixmap, dest_pixmap, RegionRects(region),
+                                RegionNumRects(region), dst_dx, dst_dy, src_dx,
+                                src_dy);
+}
+
 Bool
 glamor_composite_clipped_region(CARD8 op,
                                 PicturePtr source,
@@ -1536,6 +1601,13 @@ glamor_composite_clipped_region(CARD8 op,
     DEBUGF("clipped (%d %d) (%d %d) (%d %d) width %d height %d \n",
            x_source, y_source, x_mask, y_mask, x_dest, y_dest, width, height);
 
+    if (glamor_composite_external_copy(op, source, mask, dest, source_pixmap,
+                                       dest_pixmap, region, x_source, y_source,
+                                       x_dest, y_dest)) {
+        ok = TRUE;
+        goto out;
+    }
+
     /* Is the composite operation equivalent to a copy? */
     if (source &&
         !mask && !source->alphaMap && !dest->alphaMap
@@ -1568,6 +1640,14 @@ glamor_composite_clipped_region(CARD8 op,
         ok = TRUE;
         goto out;
     }
+
+    if (source)
+        glamor_composite_update_external(source, source_pixmap, region,
+                                         x_source, y_source, dest, x_dest,
+                                         y_dest);
+    if (mask)
+        glamor_composite_update_external(mask, mask_pixmap, region, x_mask,
+                                         y_mask, dest, x_dest, y_dest);
 
     /* XXX is it possible source mask have non-zero drawable.x/y? */
     if (source
@@ -1729,9 +1809,6 @@ glamor_composite(CARD8 op,
             goto fail;
     }
 
-    glamor_external_update(source_pixmap);
-    glamor_external_update(mask_pixmap);
-
     DEBUGF
         ("source pixmap %p (%d %d) mask(%d %d) dest(%d %d) width %d height %d \n",
          source_pixmap, x_source, y_source, x_mask, y_mask, x_dest, y_dest,
@@ -1806,7 +1883,9 @@ glamor_composite(CARD8 op,
     if (force_clip || glamor_pixmap_is_large(dest_pixmap)
         || (source_pixmap
             && glamor_pixmap_is_large(source_pixmap))
-        || (mask_pixmap && glamor_pixmap_is_large(mask_pixmap)))
+        || (mask_pixmap && glamor_pixmap_is_large(mask_pixmap))) {
+        glamor_external_update(source_pixmap, NULL);
+        glamor_external_update(mask_pixmap, NULL);
         ok = glamor_composite_largepixmap_region(op,
                                                  source, mask, dest,
                                                  source_pixmap,
@@ -1816,6 +1895,7 @@ glamor_composite(CARD8 op,
                                                  x_source, y_source,
                                                  x_mask, y_mask,
                                                  x_dest, y_dest, width, height);
+    }
     else
         ok = glamor_composite_clipped_region(op, source,
                                              mask, dest,

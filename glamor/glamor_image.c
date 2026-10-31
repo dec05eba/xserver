@@ -119,12 +119,21 @@ glamor_get_image_gl(DrawablePtr drawable, int x, int y, int w, int h,
     if (format != ZPixmap)
         goto bail;
 
-    glamor_external_update(pixmap);
     glamor_get_drawable_deltas(drawable, pixmap, &off_x, &off_y);
     box.x1 = x;
     box.x2 = x + w;
     box.y1 = y;
     box.y2 = y + h;
+    {
+        BoxRec src_box = {
+            .x1 = box.x1 + drawable->x + off_x,
+            .y1 = box.y1 + drawable->y + off_y,
+            .x2 = box.x2 + drawable->x + off_x,
+            .y2 = box.y2 + drawable->y + off_y,
+        };
+
+        glamor_external_update(pixmap, &src_box);
+    }
     glamor_download_boxes(drawable, &box, 1,
                           drawable->x + off_x, drawable->y + off_y,
                           -x, -y,

@@ -87,7 +87,7 @@ glamor_prep_drawable_box(DrawablePtr drawable, glamor_access_t access, BoxPtr bo
             pixmap->devPrivate.ptr = NULL;
         }
     } else {
-        glamor_external_update(pixmap);
+        glamor_external_update(pixmap, box);
         RegionInit(&priv->prepare_region, box, 1);
 
         if (glamor_priv->has_rw_pbo) {

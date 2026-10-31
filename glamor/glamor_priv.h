@@ -383,7 +383,9 @@ enum glamor_fbo_state {
 typedef struct glamor_external glamor_external;
 
 struct glamor_external {
-    void (*update)(glamor_external *external);
+    void (*update)(glamor_external *external, const BoxRec *box);
+    Bool (*copy)(glamor_external *external, PixmapPtr dst, BoxPtr box,
+                 int nbox, int dst_dx, int dst_dy, int src_dx, int src_dy);
     void (*destroy)(glamor_external *external);
 };
 
@@ -639,7 +641,9 @@ glamor_pixmap_fbo *glamor_create_fbo(glamor_screen_private *glamor_priv,
 void glamor_destroy_fbo(glamor_screen_private *glamor_priv,
                         glamor_pixmap_fbo *fbo);
 void glamor_pixmap_destroy_fbo(PixmapPtr pixmap);
-void glamor_external_update(PixmapPtr pixmap);
+void glamor_external_update(PixmapPtr pixmap, const BoxRec *box);
+Bool glamor_external_copy(PixmapPtr src, PixmapPtr dst, BoxPtr box, int nbox,
+                          int dst_dx, int dst_dy, int src_dx, int src_dy);
 Bool glamor_pixmap_fbo_fixup(ScreenPtr screen, PixmapPtr pixmap);
 void glamor_pixmap_clear_fbo(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo,
                              const struct glamor_format *pixmap_format);

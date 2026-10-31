@@ -37,4 +37,8 @@ glamor_egl_external_attach(struct glamor_egl_external_context *context,
                            PixmapPtr pixmap, EGLImageKHR src_image,
                            EGLImageKHR dst_image, int dmabuf_fd);
 
+void
+glamor_egl_external_forget_image(struct glamor_egl_external_context *context,
+                                 EGLImageKHR image);
+
 #endif /* GLAMOR_EGL_EXTERNAL_H */

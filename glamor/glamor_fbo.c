@@ -55,7 +55,7 @@ glamor_pixmap_is_external(PixmapPtr pixmap)
 }
 
 void
-glamor_external_update(PixmapPtr pixmap)
+glamor_external_update(PixmapPtr pixmap, const BoxRec *box)
 {
     glamor_external *external;
 
@@ -63,7 +63,22 @@ glamor_external_update(PixmapPtr pixmap)
         return;
 
     external = glamor_get_pixmap_private(pixmap)->fbo->external;
-    external->update(external);
+    external->update(external, box);
+}
+
+Bool
+glamor_external_copy(PixmapPtr src, PixmapPtr dst, BoxPtr box, int nbox,
+                     int dst_dx, int dst_dy, int src_dx, int src_dy)
+{
+    glamor_external *external;
+
+    if (!glamor_pixmap_is_external(src) || glamor_pixmap_is_external(dst) ||
+        src == dst)
+        return FALSE;
+
+    external = glamor_get_pixmap_private(src)->fbo->external;
+    return external->copy(external, dst, box, nbox, dst_dx, dst_dy, src_dx,
+                          src_dy);
 }
 
 static int

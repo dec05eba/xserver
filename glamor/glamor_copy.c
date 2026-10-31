@@ -735,10 +735,35 @@ glamor_copy(DrawablePtr src,
             Pixel bitplane,
             void *closure)
 {
+    PixmapPtr src_pixmap = glamor_get_drawable_pixmap(src);
+    PixmapPtr dst_pixmap = glamor_get_drawable_pixmap(dst);
+    BoxRec src_box;
+    int src_off_x, src_off_y, dst_off_x, dst_off_y, i;
+
     if (nbox == 0)
 	return;
 
-    glamor_external_update(glamor_get_drawable_pixmap(src));
+    glamor_get_drawable_deltas(src, src_pixmap, &src_off_x, &src_off_y);
+    glamor_get_drawable_deltas(dst, dst_pixmap, &dst_off_x, &dst_off_y);
+    if ((!gc || (gc->alu == GXcopy &&
+                 glamor_pm_is_solid(gc->depth, gc->planemask))) &&
+        !bitplane &&
+        glamor_external_copy(src_pixmap, dst_pixmap, box, nbox, dst_off_x,
+                             dst_off_y, dx + src_off_x, dy + src_off_y))
+        return;
+
+    src_box = box[0];
+    for (i = 1; i < nbox; i++) {
+        src_box.x1 = min(src_box.x1, box[i].x1);
+        src_box.y1 = min(src_box.y1, box[i].y1);
+        src_box.x2 = max(src_box.x2, box[i].x2);
+        src_box.y2 = max(src_box.y2, box[i].y2);
+    }
+    src_box.x1 += dx + src_off_x;
+    src_box.x2 += dx + src_off_x;
+    src_box.y1 += dy + src_off_y;
+    src_box.y2 += dy + src_off_y;
+    glamor_external_update(src_pixmap, &src_box);
 
     if (glamor_copy_gl(src, dst, gc, box, nbox, dx, dy, reverse, upsidedown, bitplane, closure))
         return;
