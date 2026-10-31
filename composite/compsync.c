@@ -299,30 +299,50 @@ compServerQueueApply(void)
                                               serverClient, NULL);
 }
 
+static void
+compServerBeginFrameWait(CompServerWindowPtr sw)
+{
+    CompServerFrameWaitRec *wait = &sw->wait;
+
+    if (!wait->active && !sw->presentCount && !wait->sync.waiting)
+        return;
+
+    compServerHoldFrame(sw);
+    wait->active = TRUE;
+    compServerArmFrameTimeout(sw);
+}
+
 void
 compServerReconfigureFrame(WindowPtr pWin, PixmapPtr pOld, int x, int y,
                            int w, int h)
 {
     CompServerWindowPtr sw = GetCompServerWindow(pWin);
-    CompServerFrameWaitRec *wait;
 
     if (!sw)
         return;
 
     if (w == pOld->drawable.width && h == pOld->drawable.height) {
-        if (sw->held.pPixmap)
+        if (sw->held.layers)
             compServerMoveHeldFrame(sw, x - pOld->screen_x,
                                     y - pOld->screen_y);
         return;
     }
 
-    wait = &sw->wait;
-    if (!wait->active && !sw->presentCount && !wait->sync.waiting)
+    compServerBeginFrameWait(sw);
+}
+
+void
+compServerReconfigureClient(WindowPtr pWin, PixmapPtr pOld, int w, int h)
+{
+    CompServerWindowPtr sw;
+
+    if (!CompositeServerActive(pWin->drawable.pScreen) ||
+        (w == pOld->drawable.width && h == pOld->drawable.height))
         return;
 
-    compServerHoldFrame(sw, pOld);
-    wait->active = TRUE;
-    compServerArmFrameTimeout(sw);
+    sw = GetCompServerWindow(compServerToplevel(pWin));
+    if (sw && pWin == compServerClientWindow(sw->pWin))
+        compServerBeginFrameWait(sw);
 }
 
 void

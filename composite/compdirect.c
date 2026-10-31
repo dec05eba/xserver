@@ -271,6 +271,14 @@ compServerForgetDeferred(WindowPtr pWin)
     }
 }
 
+Bool
+compServerIsHdrWindow(CompServerPtr server, WindowPtr pWin)
+{
+    CompServerDirectWindowPtr dw = compServerFindDirectWindow(server, pWin);
+
+    return dw && dw->hdr;
+}
+
 void
 compServerDestroyDirectWindow(CompServerPtr server, WindowPtr pWin)
 {

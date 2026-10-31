@@ -126,9 +126,44 @@ typedef struct _CompImplicitRedirectException {
     XID winVisual;
 } CompImplicitRedirectException;
 
-typedef struct _CompServerHeldFrame {
+typedef struct _CompServerSource {
+    WindowPtr pWin;
     PixmapPtr pPixmap;
     int x, y;
+    Bool hdr;
+} CompServerSourceRec, *CompServerSourcePtr;
+
+typedef struct _CompServerLayer {
+    CompServerSourceRec src;
+    RegionRec region;
+    RegionRec exposed;
+    CARD16 opacity;
+} CompServerLayerRec, *CompServerLayerPtr;
+
+typedef struct _CompServerSublayer {
+    WindowPtr pWin;
+    WindowPtr pToplevel;
+    int level;
+    Bool hdr;
+} CompServerSublayerRec, *CompServerSublayerPtr;
+
+typedef struct _CompServerLayers {
+    CompServerLayerPtr layers;
+    int count;
+    CompServerSublayerPtr sublayers;
+    int numSublayers;
+    RegionRec covered;
+    RegionRec above;
+} CompServerLayersRec, *CompServerLayersPtr;
+
+typedef struct _CompServerHeldLayer {
+    CompServerSourceRec src;
+    RegionRec region;
+} CompServerHeldLayerRec, *CompServerHeldLayerPtr;
+
+typedef struct _CompServerHeldFrame {
+    CompServerHeldLayerPtr layers;
+    int count;
     RegionRec region;
 } CompServerHeldFrameRec;
 
@@ -421,14 +456,18 @@ WindowPtr
  compServerToplevel(WindowPtr pWin);
 
 Bool
- compServerHasSublayers(CompServerPtr server, WindowPtr pToplevel);
+ compServerBuildWindowLayers(CompServerPtr server, WindowPtr pWin,
+                             CompServerLayersPtr pLayers);
+
+void
+ compServerFreeLayers(CompServerLayersPtr pLayers);
 
 /*
  * comphold.c
  */
 
 void
- compServerHoldFrame(CompServerWindowPtr sw, PixmapPtr pOld);
+ compServerHoldFrame(CompServerWindowPtr sw);
 
 void
  compServerMoveHeldFrame(CompServerWindowPtr sw, int dx, int dy);
@@ -451,8 +490,9 @@ Bool
 void
  compServerDisplayedRegion(WindowPtr pWin, RegionPtr pRegion);
 
-PixmapPtr
- compServerDisplayedPixmap(WindowPtr pWin, int *x, int *y);
+
+void
+ compServerReleaseHeldWindow(CompServerPtr server, WindowPtr pWin);
 
 /*
  * compsync.c
@@ -467,6 +507,9 @@ void
 void
  compServerReconfigureFrame(WindowPtr pWin, PixmapPtr pOld, int x, int y,
                             int w, int h);
+
+void
+ compServerReconfigureClient(WindowPtr pWin, PixmapPtr pOld, int w, int h);
 
 void
  compServerInitFrameWait(CompServerWindowPtr sw);
@@ -539,6 +582,9 @@ void
 
 void
  compServerForgetDeferred(WindowPtr pWin);
+
+Bool
+ compServerIsHdrWindow(CompServerPtr server, WindowPtr pWin);
 
 void
  compServerDestroyDirectWindow(CompServerPtr server, WindowPtr pWin);

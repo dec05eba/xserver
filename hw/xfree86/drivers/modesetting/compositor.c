@@ -125,10 +125,10 @@ ms_compositor_subtract_cursors(ScrnInfoPtr scrn, RegionPtr region)
 
 static void
 ms_compositor_copy_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
-                      WindowPtr window, RegionPtr exposed)
+                      WindowPtr window, PixmapPtr src, int src_x, int src_y,
+                      RegionPtr exposed)
 {
     ScreenPtr screen = scrn->pScreen;
-    PixmapPtr src = screen->GetWindowPixmap(window);
     PicturePtr src_picture, dst_picture;
     RegionRec copy;
     int error;
@@ -147,9 +147,8 @@ ms_compositor_copy_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
     if (src_picture && dst_picture) {
         SetPictureClipRegion(dst_picture, -pq->x, -pq->y, &copy);
         CompositePicture(PictOpSrc, src_picture, NULL, dst_picture,
-                         0, 0, 0, 0, src->screen_x - pq->x,
-                         src->screen_y - pq->y, src->drawable.width,
-                         src->drawable.height);
+                         0, 0, 0, 0, src_x - pq->x, src_y - pq->y,
+                         src->drawable.width, src->drawable.height);
         RegionUnion(&pq->copied, &pq->copied, &copy);
     }
 
@@ -162,6 +161,7 @@ ms_compositor_copy_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
 
 static Bool
 ms_compositor_paint_hdr_window(PicturePtr dst, int x, int y, WindowPtr window,
+                               PixmapPtr src, int src_x, int src_y,
                                RegionPtr region, RegionPtr exposed,
                                CARD16 opacity, void *closure)
 {
@@ -169,7 +169,6 @@ ms_compositor_paint_hdr_window(PicturePtr dst, int x, int y, WindowPtr window,
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     modesettingPtr ms = modesettingPTR(scrn);
     ms_compositor_paint_rec *paint = closure;
-    PixmapPtr src = screen->GetWindowPixmap(window);
     PictFormatPtr format = PictureWindowFormat(window);
     glamor_color_conversion conversion;
     RegionRec dst_region;
@@ -186,13 +185,13 @@ ms_compositor_paint_hdr_window(PicturePtr dst, int x, int y, WindowPtr window,
     RegionNull(&dst_region);
     RegionCopy(&dst_region, region);
     if (paint && paint->pq) {
-        ms_compositor_copy_pq(scrn, paint->pq, window, exposed);
+        ms_compositor_copy_pq(scrn, paint->pq, window, src, src_x, src_y,
+                              exposed);
         RegionSubtract(&dst_region, &dst_region, &paint->pq->copied);
     }
     RegionTranslate(&dst_region, -x, -y);
     painted = ms->glamor.convert_color(src, (PixmapPtr) dst->pDrawable,
-                                       &dst_region, x - src->screen_x,
-                                       y - src->screen_y,
+                                       &dst_region, x - src_x, y - src_y,
                                        format && format->type == PictTypeDirect &&
                                        format->direct.alphaMask,
                                        opacity, &conversion);

@@ -48,6 +48,8 @@ extern _X_EXPORT RESTYPE CompositeClientWindowType;
 
 typedef Bool (*CompositeServerPaintHdrProcPtr) (PicturePtr pDst, int x, int y,
                                                 WindowPtr pWin,
+                                                PixmapPtr pSrc,
+                                                int src_x, int src_y,
                                                 RegionPtr pRegion,
                                                 RegionPtr pExposed,
                                                 CARD16 opacity,

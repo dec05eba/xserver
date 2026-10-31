@@ -36,30 +36,6 @@
 
 #define COMP_SERVER_OPAQUE 0xffff
 
-typedef struct _CompServerLayer {
-    WindowPtr pWin;
-    RegionRec region;
-    RegionRec exposed;
-    CARD16 opacity;
-    Bool hdr;
-} CompServerLayerRec, *CompServerLayerPtr;
-
-typedef struct _CompServerSublayer {
-    WindowPtr pWin;
-    WindowPtr pToplevel;
-    int level;
-    Bool hdr;
-} CompServerSublayerRec, *CompServerSublayerPtr;
-
-typedef struct _CompServerLayers {
-    CompServerLayerPtr layers;
-    int count;
-    CompServerSublayerPtr sublayers;
-    int numSublayers;
-    RegionRec covered;
-    RegionRec above;
-} CompServerLayersRec, *CompServerLayersPtr;
-
 DevPrivateKeyRec CompServerWindowPrivateKeyRec;
 
 Atom
@@ -149,18 +125,6 @@ compServerToplevel(WindowPtr pWin)
     while (pWin->parent->parent)
         pWin = pWin->parent;
     return pWin;
-}
-
-Bool
-compServerHasSublayers(CompServerPtr server, WindowPtr pToplevel)
-{
-    CompServerDirectWindowPtr dw;
-
-    xorg_list_for_each_entry(dw, &server->directWindows, entry) {
-        if (dw->pWin->viewable && compServerToplevel(dw->pWin) == pToplevel)
-            return TRUE;
-    }
-    return FALSE;
 }
 
 static Bool
@@ -316,6 +280,7 @@ compServerDestroyWindow(WindowPtr pWin)
 
     if (sw)
         compServerUntrackWindow(server, sw);
+    compServerReleaseHeldWindow(server, pWin);
     compServerDestroyDirectWindow(server, pWin);
 }
 
@@ -432,19 +397,19 @@ static void
 compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
                      PicturePtr pDst, int x, int y, void *closure)
 {
-    WindowPtr pWin = pLayer->pWin;
+    CompServerSourcePtr src = &pLayer->src;
+    WindowPtr pWin = src->pWin;
+    PixmapPtr pPixmap = src->pPixmap;
     CARD8 op = compServerWindowHasAlpha(pWin) ? PictOpOver : PictOpSrc;
     PicturePtr pSrc, pMask = NULL;
-    PixmapPtr pPixmap;
-    int src_x, src_y;
     int error;
 
-    if (pLayer->hdr && server->PaintHdr &&
-        (*server->PaintHdr) (pDst, x, y, pWin, &pLayer->region,
-                             &pLayer->exposed, pLayer->opacity, closure))
+    if (src->hdr && server->PaintHdr &&
+        (*server->PaintHdr) (pDst, x, y, pWin, pPixmap, src->x, src->y,
+                             &pLayer->region, &pLayer->exposed,
+                             pLayer->opacity, closure))
         return;
 
-    pPixmap = compServerDisplayedPixmap(pWin, &src_x, &src_y);
     pSrc = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pWin),
                          0, NULL, serverClient, &error);
     if (!pSrc)
@@ -459,7 +424,7 @@ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
 
     SetPictureClipRegion(pDst, -x, -y, &pLayer->region);
     CompositePicture(op, pSrc, pMask, pDst, 0, 0, 0, 0,
-                     src_x - x, src_y - y,
+                     src->x - x, src->y - y,
                      pPixmap->drawable.width, pPixmap->drawable.height);
 
     if (pMask)
@@ -485,13 +450,12 @@ compServerSublayerRegion(WindowPtr pWin, RegionPtr pRegion)
 }
 
 static void
-compServerAddLayer(CompServerLayersPtr pLayers, WindowPtr pWin,
-                   RegionPtr pArea, RegionPtr pRegion, CARD16 opacity,
-                   Bool hdr)
+compServerAddLayer(CompServerLayersPtr pLayers, const CompServerSourceRec *src,
+                   RegionPtr pArea, RegionPtr pRegion, CARD16 opacity)
 {
     CompServerLayerPtr pLayer = &pLayers->layers[pLayers->count];
     Bool opaque = opacity == COMP_SERVER_OPAQUE &&
-        !compServerWindowHasAlpha(pWin);
+        !compServerWindowHasAlpha(src->pWin);
 
     RegionNull(&pLayer->region);
     RegionIntersect(&pLayer->region, pArea, pRegion);
@@ -501,11 +465,10 @@ compServerAddLayer(CompServerLayersPtr pLayers, WindowPtr pWin,
         return;
     }
 
-    pLayer->pWin = pWin;
+    pLayer->src = *src;
     pLayer->opacity = opacity;
-    pLayer->hdr = hdr;
     RegionNull(&pLayer->exposed);
-    if (hdr && opaque)
+    if (src->hdr && opaque)
         RegionSubtract(&pLayer->exposed, &pLayer->region, &pLayers->above);
 
     if (opaque)
@@ -515,36 +478,77 @@ compServerAddLayer(CompServerLayersPtr pLayers, WindowPtr pWin,
 }
 
 static void
-compServerAddWindowLayers(CompServerPtr server, CompServerLayersPtr pLayers,
-                          WindowPtr pWin, RegionPtr pRegion)
+compServerWindowSource(WindowPtr pWin, Bool hdr, CompServerSourcePtr src)
 {
-    CARD16 opacity = compServerWindowOpacity(server, pWin);
-    RegionRec area, sublayerArea, holes;
+    PixmapPtr pPixmap = (*pWin->drawable.pScreen->GetWindowPixmap) (pWin);
+
+    *src = (CompServerSourceRec) {
+        .pWin = pWin,
+        .pPixmap = pPixmap,
+        .x = pPixmap->screen_x,
+        .y = pPixmap->screen_y,
+        .hdr = hdr,
+    };
+}
+
+static void
+compServerAddSublayers(CompServerLayersPtr pLayers, WindowPtr pWin,
+                       RegionPtr pRegion, CARD16 opacity, RegionPtr pHoles)
+{
+    CompServerSourceRec src;
+    RegionRec sublayerArea;
     int i;
 
     RegionNull(&sublayerArea);
-    RegionNull(&holes);
-
-    for (i = 0; !compServerWindowHeld(pWin) && i < pLayers->numSublayers; i++) {
+    for (i = 0; i < pLayers->numSublayers; i++) {
         CompServerSublayerPtr pSublayer = &pLayers->sublayers[i];
 
         if (pSublayer->pToplevel != pWin)
             continue;
 
         compServerSublayerRegion(pSublayer->pWin, &sublayerArea);
-        RegionSubtract(&sublayerArea, &sublayerArea, &holes);
-        RegionUnion(&holes, &holes, &sublayerArea);
-        compServerAddLayer(pLayers, pSublayer->pWin, &sublayerArea, pRegion,
-                           opacity, pSublayer->hdr);
+        RegionSubtract(&sublayerArea, &sublayerArea, pHoles);
+        RegionUnion(pHoles, pHoles, &sublayerArea);
+        compServerWindowSource(pSublayer->pWin, pSublayer->hdr, &src);
+        compServerAddLayer(pLayers, &src, &sublayerArea, pRegion, opacity);
+    }
+    RegionUninit(&sublayerArea);
+}
+
+static void
+compServerAddWindowLayers(CompServerPtr server, CompServerLayersPtr pLayers,
+                          WindowPtr pWin, RegionPtr pRegion)
+{
+    CompServerWindowPtr sw = GetCompServerWindow(pWin);
+    CARD16 opacity = compServerWindowOpacity(server, pWin);
+    CompServerSourceRec src;
+    RegionRec area, holes;
+    int i;
+
+    if (sw && sw->held.layers) {
+        for (i = 0; i < sw->held.count; i++)
+            compServerAddLayer(pLayers, &sw->held.layers[i].src,
+                               &sw->held.layers[i].region, pRegion, opacity);
+        return;
     }
 
+    RegionNull(&holes);
+    compServerAddSublayers(pLayers, pWin, pRegion, opacity, &holes);
+
     RegionNull(&area);
-    compServerDisplayedRegion(pWin, &area);
-    RegionSubtract(&area, &area, &holes);
-    compServerAddLayer(pLayers, pWin, &area, pRegion, opacity, FALSE);
+    RegionSubtract(&area, &pWin->borderSize, &holes);
+    compServerWindowSource(pWin, FALSE, &src);
+    compServerAddLayer(pLayers, &src, &area, pRegion, opacity);
     RegionUninit(&area);
     RegionUninit(&holes);
-    RegionUninit(&sublayerArea);
+}
+
+static int
+compServerWindowLayerCount(WindowPtr pWin)
+{
+    CompServerWindowPtr sw = GetCompServerWindow(pWin);
+
+    return sw && sw->held.layers ? sw->held.count : 1;
 }
 
 static int
@@ -590,19 +594,13 @@ compServerCollectSublayers(CompServerPtr server, CompServerLayersPtr pLayers)
 }
 
 static Bool
-compServerBuildLayers(CompServerPtr server, WindowPtr pFirst,
-                      RegionPtr pRegion, CompServerLayersPtr pLayers)
+compServerInitLayers(CompServerPtr server, CompServerLayersPtr pLayers,
+                     int count)
 {
-    WindowPtr pWin;
-    int count = 0;
-
     if (!compServerCollectSublayers(server, pLayers))
         return FALSE;
 
-    for (pWin = pFirst; pWin; pWin = pWin->nextSib)
-        count++;
     count += pLayers->numSublayers;
-
     pLayers->layers = calloc(count, sizeof(*pLayers->layers));
     if (count && !pLayers->layers) {
         free(pLayers->sublayers);
@@ -612,6 +610,21 @@ compServerBuildLayers(CompServerPtr server, WindowPtr pFirst,
     pLayers->count = 0;
     RegionNull(&pLayers->covered);
     RegionNull(&pLayers->above);
+    return TRUE;
+}
+
+static Bool
+compServerBuildLayers(CompServerPtr server, WindowPtr pFirst,
+                      RegionPtr pRegion, CompServerLayersPtr pLayers)
+{
+    WindowPtr pWin;
+    int count = 0;
+
+    for (pWin = pFirst; pWin; pWin = pWin->nextSib)
+        count += compServerWindowLayerCount(pWin);
+
+    if (!compServerInitLayers(server, pLayers, count))
+        return FALSE;
 
     for (pWin = pFirst; pWin; pWin = pWin->nextSib) {
         if (compServerPaintsWindow(pWin))
@@ -620,7 +633,19 @@ compServerBuildLayers(CompServerPtr server, WindowPtr pFirst,
     return TRUE;
 }
 
-static void
+Bool
+compServerBuildWindowLayers(CompServerPtr server, WindowPtr pWin,
+                            CompServerLayersPtr pLayers)
+{
+    if (!compServerInitLayers(server, pLayers,
+                              compServerWindowLayerCount(pWin)))
+        return FALSE;
+
+    compServerAddWindowLayers(server, pLayers, pWin, &pWin->borderSize);
+    return TRUE;
+}
+
+void
 compServerFreeLayers(CompServerLayersPtr pLayers)
 {
     int i;
@@ -762,8 +787,8 @@ CompositeServerHdrWindow(ScreenPtr pScreen, BoxPtr pBox)
     if (compServerBuildLayers(server, pScreen->root->firstChild, &region,
                               &layers)) {
         for (i = 0; i < layers.count && !pHdr; i++) {
-            if (layers.layers[i].hdr)
-                pHdr = layers.layers[i].pWin;
+            if (layers.layers[i].src.hdr)
+                pHdr = layers.layers[i].src.pWin;
         }
         compServerFreeLayers(&layers);
     }

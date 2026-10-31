@@ -706,6 +706,8 @@ compReallocPixmap(WindowPtr pWin, int draw_x, int draw_y,
     pix_h = h + (bw << 1);
     if (CompositeIsServerRoot(pWin->parent))
         compServerReconfigureFrame(pWin, pOld, pix_x, pix_y, pix_w, pix_h);
+    else
+        compServerReconfigureClient(pWin, pOld, pix_w, pix_h);
     if (pix_w != pOld->drawable.width || pix_h != pOld->drawable.height) {
         pNew = compNewPixmap(pWin, pix_x, pix_y, pix_w, pix_h);
         if (!pNew)

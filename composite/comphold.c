@@ -67,81 +67,163 @@ compServerDamageHeldFrame(CompServerWindowPtr sw)
                         &sw->held.region);
 }
 
-static void
-compServerSetHeldPixmap(CompServerWindowPtr sw, PixmapPtr pPixmap,
-                        int x, int y, RegionPtr pRegion)
+static Bool
+compServerInitHeldFrame(CompServerHeldFrameRec *held, int count)
 {
-    if (pPixmap != sw->held.pPixmap) {
-        compServerFreeHeldFrame(sw);
-        sw->held.pPixmap = pPixmap;
-        RegionNull(&sw->held.region);
-    }
-    sw->held.x = x;
-    sw->held.y = y;
-    RegionCopy(&sw->held.region, pRegion);
+    held->layers = calloc(count, sizeof(*held->layers));
+    if (!held->layers)
+        return FALSE;
+
+    held->count = 0;
+    RegionNull(&held->region);
+    return TRUE;
 }
 
-static Bool
-compServerCanHoldFrame(CompServerWindowPtr sw)
+static void
+compServerFiniHeldFrame(ScreenPtr pScreen, CompServerHeldFrameRec *held)
 {
-    WindowPtr pWin = sw->pWin;
+    int i;
 
-    return pWin->viewable &&
-        !compServerHasSublayers(compServerGet(pWin->drawable.pScreen), pWin);
+    if (!held->layers)
+        return;
+
+    for (i = 0; i < held->count; i++) {
+        (*pScreen->DestroyPixmap) (held->layers[i].src.pPixmap);
+        RegionUninit(&held->layers[i].region);
+    }
+    free(held->layers);
+    held->layers = NULL;
+    held->count = 0;
+    RegionUninit(&held->region);
+}
+
+static void
+compServerAddHeldLayer(CompServerHeldFrameRec *held,
+                       const CompServerSourceRec *src, RegionPtr pRegion)
+{
+    CompServerHeldLayerPtr layer = &held->layers[held->count++];
+
+    layer->src = *src;
+    RegionNull(&layer->region);
+    RegionCopy(&layer->region, pRegion);
+    RegionUnion(&held->region, &held->region, pRegion);
+}
+
+static PixmapPtr
+compServerHeldLayerCopy(CompServerLayersPtr pLayers,
+                        CompServerHeldFrameRec *held, int index)
+{
+    PixmapPtr pSrc = pLayers->layers[index].src.pPixmap;
+    int i;
+
+    for (i = 0; i < index; i++) {
+        if (pLayers->layers[i].src.pPixmap == pSrc) {
+            held->layers[i].src.pPixmap->refcnt++;
+            return held->layers[i].src.pPixmap;
+        }
+    }
+    return compServerCopyPixmap(pSrc);
 }
 
 void
-compServerHoldFrame(CompServerWindowPtr sw, PixmapPtr pOld)
+compServerHoldFrame(CompServerWindowPtr sw)
 {
-    PixmapPtr pPixmap;
+    WindowPtr pWin = sw->pWin;
+    ScreenPtr pScreen = pWin->drawable.pScreen;
+    CompServerLayersRec layers;
+    CompServerHeldFrameRec held;
+    int i;
 
-    if (sw->held.pPixmap || !compServerCanHoldFrame(sw))
+    if (sw->held.layers || !pWin->viewable ||
+        !compServerBuildWindowLayers(compServerGet(pScreen), pWin, &layers))
         return;
 
-    pPixmap = compServerCopyPixmap(pOld);
-    if (pPixmap)
-        compServerSetHeldPixmap(sw, pPixmap, pOld->screen_x, pOld->screen_y,
-                                &sw->pWin->borderSize);
+    if (layers.count && compServerInitHeldFrame(&held, layers.count)) {
+        for (i = 0; i < layers.count; i++) {
+            CompServerSourceRec src = layers.layers[i].src;
+
+            src.pPixmap = compServerHeldLayerCopy(&layers, &held, i);
+            if (!src.pPixmap)
+                break;
+            compServerAddHeldLayer(&held, &src, &layers.layers[i].region);
+        }
+
+        if (i == layers.count)
+            sw->held = held;
+        else
+            compServerFiniHeldFrame(pScreen, &held);
+    }
+    compServerFreeLayers(&layers);
 }
 
 void
 compServerMoveHeldFrame(CompServerWindowPtr sw, int dx, int dy)
 {
-    sw->held.x += dx;
-    sw->held.y += dy;
-    RegionTranslate(&sw->held.region, dx, dy);
+    CompServerHeldFrameRec *held = &sw->held;
+    int i;
+
+    for (i = 0; i < held->count; i++) {
+        held->layers[i].src.x += dx;
+        held->layers[i].src.y += dy;
+        RegionTranslate(&held->layers[i].region, dx, dy);
+    }
+    RegionTranslate(&held->region, dx, dy);
+}
+
+static PixmapPtr
+compServerHeldFrameCopy(CompServerHeldFrameRec *held, PixmapPtr pFrame)
+{
+    PixmapPtr pPixmap = held->count == 1 ? held->layers[0].src.pPixmap : NULL;
+
+    if (pPixmap && pPixmap->refcnt == 1 &&
+        pPixmap->drawable.width == pFrame->drawable.width &&
+        pPixmap->drawable.height == pFrame->drawable.height &&
+        compServerCopyFrame(pFrame, pPixmap)) {
+        pPixmap->refcnt++;
+        return pPixmap;
+    }
+    return compServerCopyPixmap(pFrame);
 }
 
 void
 compServerUpdateHeldFrame(CompServerWindowPtr sw, PixmapPtr pFrame)
 {
     WindowPtr pWin = sw->pWin;
-    PixmapPtr pPixmap = sw->held.pPixmap;
+    ScreenPtr pScreen = pWin->drawable.pScreen;
+    CompServerSourceRec src = {
+        .pWin = pWin,
+        .x = pWin->drawable.x,
+        .y = pWin->drawable.y,
+        .hdr = compServerIsHdrWindow(compServerGet(pScreen), pWin),
+    };
+    CompServerHeldFrameRec held;
     BoxRec box;
     RegionRec region;
 
-    if (!pPixmap || wBoundingShape(pWin))
+    if (!sw->held.layers || wBoundingShape(pWin))
         return;
 
-    if (pPixmap->drawable.width != pFrame->drawable.width ||
-        pPixmap->drawable.height != pFrame->drawable.height)
-        pPixmap = compServerCopyPixmap(pFrame);
-    else if (!compServerCopyFrame(pFrame, pPixmap))
-        pPixmap = NULL;
-
-    if (!pPixmap)
+    src.pPixmap = compServerHeldFrameCopy(&sw->held, pFrame);
+    if (!src.pPixmap)
         return;
 
-    box.x1 = pWin->drawable.x;
-    box.y1 = pWin->drawable.y;
-    box.x2 = box.x1 + pPixmap->drawable.width;
-    box.y2 = box.y1 + pPixmap->drawable.height;
+    if (!compServerInitHeldFrame(&held, 1)) {
+        (*pScreen->DestroyPixmap) (src.pPixmap);
+        return;
+    }
+
+    box.x1 = src.x;
+    box.y1 = src.y;
+    box.x2 = box.x1 + src.pPixmap->drawable.width;
+    box.y2 = box.y1 + src.pPixmap->drawable.height;
     RegionInit(&region, &box, 1);
+    compServerAddHeldLayer(&held, &src, &region);
+    RegionUninit(&region);
 
     compServerDamageHeldFrame(sw);
-    compServerSetHeldPixmap(sw, pPixmap, box.x1, box.y1, &region);
+    compServerFiniHeldFrame(pScreen, &sw->held);
+    sw->held = held;
     compServerDamageHeldFrame(sw);
-    RegionUninit(&region);
 }
 
 void
@@ -149,7 +231,7 @@ compServerReleaseHeldFrame(CompServerWindowPtr sw)
 {
     ScreenPtr pScreen = sw->pWin->drawable.pScreen;
 
-    if (!sw->held.pPixmap)
+    if (!sw->held.layers)
         return;
 
     compServerDamageHeldFrame(sw);
@@ -160,12 +242,29 @@ compServerReleaseHeldFrame(CompServerWindowPtr sw)
 void
 compServerFreeHeldFrame(CompServerWindowPtr sw)
 {
-    ScreenPtr pScreen = sw->pWin->drawable.pScreen;
+    compServerFiniHeldFrame(sw->pWin->drawable.pScreen, &sw->held);
+}
 
-    if (sw->held.pPixmap) {
-        (*pScreen->DestroyPixmap) (sw->held.pPixmap);
-        sw->held.pPixmap = NULL;
-        RegionUninit(&sw->held.region);
+static Bool
+compServerHeldFrameShows(CompServerWindowPtr sw, WindowPtr pWin)
+{
+    int i;
+
+    for (i = 0; i < sw->held.count; i++) {
+        if (sw->held.layers[i].src.pWin == pWin)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+void
+compServerReleaseHeldWindow(CompServerPtr server, WindowPtr pWin)
+{
+    CompServerWindowPtr sw;
+
+    xorg_list_for_each_entry(sw, &server->windows, entry) {
+        if (compServerHeldFrameShows(sw, pWin))
+            compServerReleaseHeldFrame(sw);
     }
 }
 
@@ -174,7 +273,7 @@ compServerWindowHeld(WindowPtr pWin)
 {
     CompServerWindowPtr sw = GetCompServerWindow(pWin);
 
-    return sw && sw->held.pPixmap;
+    return sw && sw->held.layers;
 }
 
 Bool
@@ -182,7 +281,7 @@ compServerHeldFrameOverlaps(WindowPtr pWin, BoxPtr pBox)
 {
     CompServerWindowPtr sw = GetCompServerWindow(pWin);
 
-    return sw && sw->held.pPixmap &&
+    return sw && sw->held.layers &&
         RegionContainsRect(&sw->held.region, pBox) != rgnOUT;
 }
 
@@ -191,24 +290,6 @@ compServerDisplayedRegion(WindowPtr pWin, RegionPtr pRegion)
 {
     CompServerWindowPtr sw = GetCompServerWindow(pWin);
 
-    RegionCopy(pRegion, sw && sw->held.pPixmap ? &sw->held.region :
+    RegionCopy(pRegion, sw && sw->held.layers ? &sw->held.region :
                &pWin->borderSize);
-}
-
-PixmapPtr
-compServerDisplayedPixmap(WindowPtr pWin, int *x, int *y)
-{
-    CompServerWindowPtr sw = GetCompServerWindow(pWin);
-    PixmapPtr pPixmap;
-
-    if (sw && sw->held.pPixmap) {
-        *x = sw->held.x;
-        *y = sw->held.y;
-        return sw->held.pPixmap;
-    }
-
-    pPixmap = (*pWin->drawable.pScreen->GetWindowPixmap) (pWin);
-    *x = pPixmap->screen_x;
-    *y = pPixmap->screen_y;
-    return pPixmap;
 }
