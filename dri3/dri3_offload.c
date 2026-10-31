@@ -29,9 +29,18 @@ typedef struct dri3_offload_pixmap {
     Bool stale;
 } dri3_offload_pixmap_rec, *dri3_offload_pixmap_ptr;
 
+typedef struct dri3_offload_steering {
+    Bool reported;
+    Bool wanted_native;
+    Bool refused;
+    Bool refused_native;
+} dri3_offload_steering_rec;
+
 typedef struct dri3_offload_client {
     Bool checked;
     Bool offloaded;
+    Bool uses_modifiers;
+    dri3_offload_steering_rec steering;
 } dri3_offload_client_rec, *dri3_offload_client_ptr;
 
 static DevPrivateKeyRec dri3_offload_pixmap_key;
@@ -187,6 +196,34 @@ dri3_offload_screen(ClientPtr client, ScreenPtr screen)
     return offload_client->offloaded ? render_screen : NULL;
 }
 
+void
+dri3_offload_client_uses_modifiers(ClientPtr client)
+{
+    dri3_offload_client_ptr offload_client =
+        dixLookupPrivate(&client->devPrivates, &dri3_offload_client_key);
+
+    offload_client->uses_modifiers = TRUE;
+}
+
+/* NVIDIA's OpenGL asks for modifiers but always allocates linear buffers, so
+ * a client that answers a suboptimal report with the same kind of buffers
+ * isn't asked again, or it would reallocate them every frame.
+ */
+void
+dri3_offload_client_created_pixmap(ClientPtr client, Bool native)
+{
+    dri3_offload_client_ptr offload_client =
+        dixLookupPrivate(&client->devPrivates, &dri3_offload_client_key);
+    dri3_offload_steering_rec *steering = &offload_client->steering;
+
+    if (!steering->reported)
+        return;
+
+    steering->reported = FALSE;
+    steering->refused = native != steering->wanted_native;
+    steering->refused_native = steering->wanted_native;
+}
+
 Bool
 dri3_offload_can_scanout_window(ScreenPtr render_screen, WindowPtr window)
 {
@@ -243,6 +280,9 @@ dri3_offload_pixmap_suboptimal(WindowPtr window, PixmapPtr pixmap)
 {
     ClientPtr client;
     ScreenPtr render_screen;
+    dri3_offload_client_ptr offload_client;
+    dri3_offload_steering_rec *steering;
+    Bool wanted_native;
 
     if (!dixPrivateKeyRegistered(&dri3_offload_client_key) ||
         !pixmap->drawable.id ||
@@ -250,9 +290,21 @@ dri3_offload_pixmap_suboptimal(WindowPtr window, PixmapPtr pixmap)
         return FALSE;
 
     render_screen = dri3_offload_screen(client, window->drawable.pScreen);
-    return render_screen &&
-        (dri3_offload_pixmap(pixmap) != NULL) !=
-        dri3_offload_can_scanout_window(render_screen, window);
+    if (!render_screen)
+        return FALSE;
+
+    offload_client = dixLookupPrivate(&client->devPrivates,
+                                      &dri3_offload_client_key);
+    steering = &offload_client->steering;
+    wanted_native = dri3_offload_can_scanout_window(render_screen, window);
+    if (!offload_client->uses_modifiers ||
+        (dri3_offload_pixmap(pixmap) != NULL) == wanted_native ||
+        (steering->refused && steering->refused_native == wanted_native))
+        return FALSE;
+
+    steering->reported = TRUE;
+    steering->wanted_native = wanted_native;
+    return TRUE;
 }
 
 void

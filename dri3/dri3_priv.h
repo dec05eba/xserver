@@ -126,6 +126,12 @@ dri3_offload_screen(ClientPtr client, ScreenPtr screen);
 Bool
 dri3_offload_can_scanout_window(ScreenPtr render_screen, WindowPtr window);
 
+void
+dri3_offload_client_uses_modifiers(ClientPtr client);
+
+void
+dri3_offload_client_created_pixmap(ClientPtr client, Bool native);
+
 int
 dri3_offload_pixmap_from_fds(PixmapPtr *ppixmap, ScreenPtr screen,
                              ScreenPtr render_screen,

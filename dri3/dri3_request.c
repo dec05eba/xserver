@@ -148,12 +148,17 @@ dri3_client_pixmap_from_fds(ClientPtr client, PixmapPtr *ppixmap,
 {
     ScreenPtr render_screen = dri3_offload_screen(client, screen);
 
-    if (render_screen &&
-        !dri3_screen_supports_modifier(screen, depth, bpp, modifier))
-        return dri3_offload_pixmap_from_fds(ppixmap, screen, render_screen,
-                                            num_fds, fds, width, height,
-                                            strides, offsets, depth, bpp,
-                                            modifier);
+    if (render_screen) {
+        Bool native = !dri3_screen_supports_modifier(screen, depth, bpp,
+                                                     modifier);
+
+        dri3_offload_client_created_pixmap(client, native);
+        if (native)
+            return dri3_offload_pixmap_from_fds(ppixmap, screen,
+                                                render_screen, num_fds, fds,
+                                                width, height, strides,
+                                                offsets, depth, bpp, modifier);
+    }
 
     return dri3_pixmap_from_fds(ppixmap, screen, num_fds, fds, width, height,
                                 strides, offsets, depth, bpp, modifier);
@@ -412,6 +417,7 @@ proc_dri3_get_supported_modifiers(ClientPtr client)
     drawable = &window->drawable;
 
     if ((render_screen = dri3_offload_screen(client, pScreen))) {
+        dri3_offload_client_uses_modifiers(client);
         pScreen = render_screen;
         drawable = NULL;
     }
