@@ -260,6 +260,8 @@ typedef struct {
     uint64_t usec[DRMMODE_FLIP__COUNT];
     drmmode_flip_kind kind;
     uint64_t target_msc;
+    uint64_t target_ust;
+    uint64_t commit_ust;
     uint8_t late_history;
 } drmmode_commit_lead_rec;
 
@@ -484,6 +486,7 @@ typedef struct _msPixmapPriv {
     /** Source fields for flipping shared pixmaps */
     Bool defer_dirty_update; /* if we want to manually update */
     PixmapDirtyUpdatePtr dirty; /* cached dirty ent to avoid searching list */
+    RegionRec painted; /* painted since the sink last copied the pixmap */
     DrawablePtr secondary_src; /* if we exported shared pixmap, dirty tracking src */
     Bool notify_on_damage; /* if sink has requested damage notification */
     int dmabuf_fd;

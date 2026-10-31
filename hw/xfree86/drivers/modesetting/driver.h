@@ -341,6 +341,12 @@ void ms_drain_drm_events(ScreenPtr screen);
 Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
+#ifdef HAVE_GBM
+uint64_t ms_compose_timing_release(drmmode_compose_timing_rec *compose,
+                                   Bool flipped);
+void ms_compose_timing_measured(drmmode_compose_timing_rec *compose,
+                                uint64_t usec);
+#endif
 
 void ms_compositor_screen_init(ScrnInfoPtr scrn);
 Bool ms_compositor_create_screen_resources(ScreenPtr screen);

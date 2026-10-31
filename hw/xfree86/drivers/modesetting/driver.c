@@ -1815,6 +1815,8 @@ msStartFlippingPixmapTracking(RRCrtcPtr crtc, DrawablePtr src,
 
     ppriv1->dirty = ms_dirty_get_ent(pScreen, secondary_dst1);
     ppriv2->dirty = ms_dirty_get_ent(pScreen, secondary_dst2);
+    RegionNull(&ppriv1->painted);
+    RegionNull(&ppriv2->painted);
 
     ppriv1->defer_dirty_update = TRUE;
     ppriv2->defer_dirty_update = TRUE;
@@ -1860,6 +1862,29 @@ ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd)
 #endif
 }
 
+static void
+ms_shared_pixmap_painted(msPixmapPrivPtr ppriv, RegionPtr damage)
+{
+    PixmapDirtyUpdatePtr dirty = ppriv->dirty;
+    PixmapPtr dst = dirty->secondary_dst;
+    BoxRec whole = { 0, 0, dst->drawable.width, dst->drawable.height };
+    RegionRec region, clip;
+
+    if (dirty->rotation != RR_Rotate_0) {
+        RegionReset(&ppriv->painted, &whole);
+        return;
+    }
+
+    RegionNull(&region);
+    RegionCopy(&region, damage);
+    RegionTranslate(&region, dirty->dst_x - dirty->x, dirty->dst_y - dirty->y);
+    RegionInit(&clip, &whole, 1);
+    RegionIntersect(&region, &region, &clip);
+    RegionUnion(&ppriv->painted, &ppriv->painted, &region);
+    RegionUninit(&clip);
+    RegionUninit(&region);
+}
+
 static Bool
 msPresentSharedPixmap(PixmapPtr secondary_dst)
 {
@@ -1886,8 +1911,10 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
         return FALSE;
 
     painted = ms_dirty_paint(ppriv->dirty);
-    if (painted)
+    if (painted) {
+        ms_shared_pixmap_painted(ppriv, region);
         ms_fence_dmabuf(pScreen, ppriv->dmabuf_fd);
+    }
     DamageEmpty(ppriv->dirty->damage);
     return painted;
 }
@@ -1932,6 +1959,8 @@ msStopFlippingPixmapTracking(DrawablePtr src,
 
         ppriv1->dirty = NULL;
         ppriv2->dirty = NULL;
+        RegionUninit(&ppriv1->painted);
+        RegionUninit(&ppriv2->painted);
 
         ppriv1->defer_dirty_update = FALSE;
         ppriv2->defer_dirty_update = FALSE;

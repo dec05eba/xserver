@@ -908,13 +908,13 @@ ms_compose_elapsed(drmmode_compose_timing_rec *compose, uint64_t end)
     return end > compose->start ? end - compose->start : 0;
 }
 
-static void
+uint64_t
 ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 {
-    uint64_t signaled;
+    uint64_t signaled = 0;
 
     if (compose->fence_fd < 0)
-        return;
+        return 0;
 
     if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled))
         compose->usec = max(compose->usec,
@@ -922,6 +922,7 @@ ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 
     close(compose->fence_fd);
     compose->fence_fd = -1;
+    return signaled;
 }
 
 static void
@@ -1040,18 +1041,26 @@ ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
     return FALSE;
 }
 
+#define MS_COMPOSE_ESTIMATE_DECAY 16
+
+void
+ms_compose_timing_measured(drmmode_compose_timing_rec *compose, uint64_t usec)
+{
+    compose->usec = max(usec, compose->usec -
+                        compose->usec / MS_COMPOSE_ESTIMATE_DECAY);
+}
+
 static int
 ms_tearfree_compose(xf86CrtcPtr crtc, drmmode_shadow_fb_ptr buf)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
-    uint64_t elapsed;
 
     compose->start = GetTimeInMicros();
     compose->fence_fd = drmmode_compose_damage_fenced(crtc, buf->px,
                                                       &buf->dmg);
-    elapsed = ms_compose_elapsed(compose, GetTimeInMicros());
-    compose->usec = max(elapsed, compose->usec - compose->usec / 8);
+    ms_compose_timing_measured(compose,
+                               ms_compose_elapsed(compose, GetTimeInMicros()));
     return compose->fence_fd;
 }
 

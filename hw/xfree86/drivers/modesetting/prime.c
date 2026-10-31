@@ -127,6 +127,7 @@ ms_prime_destroy_scanout(xf86CrtcPtr crtc)
                                       &prime_scanout->buf[i].bo,
                                       &prime_scanout->buf[i].fb_id);
             prime_scanout->buf[i].px = NULL;
+            RegionUninit(&prime_scanout->buf[i].dmg);
         }
     }
     prime_scanout->back_idx = 0;
@@ -146,6 +147,7 @@ Bool
 ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    BoxRec whole = { 0, 0, ppix->drawable.width, ppix->drawable.height };
     int i;
 
     for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++) {
@@ -160,6 +162,7 @@ ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
             return FALSE;
         }
         drmmode_clear_pixmap(prime_scanout->buf[i].px);
+        RegionInit(&prime_scanout->buf[i].dmg, &whole, 1);
     }
     return TRUE;
 }
@@ -180,13 +183,68 @@ ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
                                          NULL, with_next_flip);
 }
 
+static msPixmapPrivPtr
+ms_prime_source_priv(PixmapPtr ppix)
+{
+    PixmapPtr primary = ppix ? ppix->primary_pixmap : NULL;
+    ScrnInfoPtr scrn;
+
+    if (!primary)
+        return NULL;
+
+    scrn = xf86ScreenToScrn(primary->drawable.pScreen);
+    if (!ms_scrn_is_modesetting(scrn))
+        return NULL;
+    return msGetPixmapPriv(&modesettingPTR(scrn)->drmmode, primary);
+}
+
+/* Only the back shared pixmap is painted, and everything drawn so far is in
+ * it, so the damage of the other one is never needed.
+ */
+static void
+ms_prime_discard_front_damage(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    msPixmapPrivPtr ppriv = ms_prime_source_priv(drmmode_crtc->prime_pixmap);
+
+    if (ppriv && ppriv->dirty)
+        DamageEmpty(ppriv->dirty->damage);
+}
+
+/* The shared pixmap is complete, so the back buffer only needs what changed
+ * since it was last shown. The client's own buffer is new every frame.
+ */
+static RegionPtr
+ms_prime_back_damage(xf86CrtcPtr crtc, PixmapPtr ppix, Bool shared)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
+    msPixmapPrivPtr ppriv = ms_prime_source_priv(ppix);
+    BoxRec whole = { 0, 0, ppix->drawable.width, ppix->drawable.height };
+    int i;
+
+    if (!shared || !ppriv) {
+        RegionReset(&back->dmg, &whole);
+        return &back->dmg;
+    }
+
+    for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++)
+        RegionUnion(&prime_scanout->buf[i].dmg, &prime_scanout->buf[i].dmg,
+                    &ppriv->painted);
+    RegionEmpty(&ppriv->painted);
+    return &back->dmg;
+}
+
 static uint32_t
-ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, int *fence_fd)
+ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr damage,
+                      int *fence_fd)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
+    BoxPtr box = RegionRects(damage);
+    int nbox = RegionNumRects(damage);
     GCPtr gc;
 
     gc = GetScratchGC(back->px->drawable.depth, screen);
@@ -194,10 +252,12 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, int *fence_fd)
         return 0;
 
     ValidateGC(&back->px->drawable, gc);
-    gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc, 0, 0,
-                      back->px->drawable.width, back->px->drawable.height,
-                      0, 0);
+    for (; nbox--; box++)
+        gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc,
+                          box->x1, box->y1, box->x2 - box->x1,
+                          box->y2 - box->y1, box->x1, box->y1);
     FreeScratchGC(gc);
+    RegionEmpty(damage);
 
     if (drmmode_crtc_can_fence_flip(crtc))
         *fence_fd = ms->glamor.egl_create_fence_fd(screen);
@@ -214,6 +274,14 @@ ms_prime_flip_kind(const drmmode_prime_direct_rec *direct)
     return direct->scanout_source ? DRMMODE_FLIP_SCANOUT : DRMMODE_FLIP_COPY;
 }
 
+static uint64_t
+ms_prime_frame_period(xf86CrtcPtr crtc)
+{
+    double refresh = xf86ModeVRefresh(&crtc->mode);
+
+    return refresh > 0.0 ? 1000000.0 / refresh : 0;
+}
+
 static void
 ms_prime_flip_target(xf86CrtcPtr crtc, drmmode_flip_kind kind)
 {
@@ -222,27 +290,51 @@ ms_prime_flip_target(xf86CrtcPtr crtc, drmmode_flip_kind kind)
     uint64_t ust, msc;
 
     lead->kind = kind;
-    lead->target_msc = ms_get_crtc_ust_msc(crtc, &ust, &msc) == Success ?
-        msc + 1 : 0;
+    lead->commit_ust = GetTimeInMicros();
+    if (ms_get_crtc_ust_msc(crtc, &ust, &msc) != Success) {
+        lead->target_msc = 0;
+        return;
+    }
+    lead->target_msc = msc + 1;
+    lead->target_ust = ust + ms_prime_frame_period(crtc);
 }
 
+/* A flip that missed its vblank although it was ready a full lead ahead of it
+ * needs a longer lead. Misses caused by the composition finishing late are
+ * covered by the composition time estimate instead.
+ */
 static void
-ms_prime_flip_timing(xf86CrtcPtr crtc, uint64_t msc)
+ms_prime_flip_timing(xf86CrtcPtr crtc, uint64_t msc, uint64_t ready)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_commit_lead_rec *lead = &drmmode_crtc->tearfree.compose.lead;
-    double refresh = xf86ModeVRefresh(&crtc->mode);
+    uint64_t *usec = &lead->usec[lead->kind];
+    uint64_t period = ms_prime_frame_period(crtc);
+    Bool late;
 
-    if (!lead->target_msc)
+    if (!lead->target_msc || !period)
         return;
 
-    lead->late_history = (lead->late_history << 1) | (msc > lead->target_msc);
-    if (__builtin_popcount(lead->late_history) < 2 || refresh <= 0.0)
+    late = msc > lead->target_msc && ready < lead->target_ust &&
+        lead->target_ust - ready >= *usec;
+    lead->late_history = (lead->late_history << 1) | late;
+    if (__builtin_popcount(lead->late_history) < 2)
         return;
 
     lead->late_history = 0;
-    lead->usec[lead->kind] = min(lead->usec[lead->kind] + 1000,
-                                 (uint64_t) (1000000.0 / refresh));
+    *usec = min(*usec + 1000, period);
+}
+
+static void
+ms_prime_flip_timing_done(xf86CrtcPtr crtc, uint64_t msc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
+    Bool fenced = compose->fence_fd >= 0;
+    uint64_t signaled = ms_compose_timing_release(compose, TRUE);
+
+    if (!fenced || signaled)
+        ms_prime_flip_timing(crtc, msc, max(compose->lead.commit_ust, signaled));
 }
 
 Bool
@@ -260,6 +352,7 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 
     if (direct->covered)
         ms_prime_overlay_prepare(crtc);
+    ms_prime_discard_front_damage(crtc);
 
     if (direct->scanout_source &&
         ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout")) {
@@ -268,7 +361,10 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
         fb_id = fb.fb_id;
     } else {
         ms_prime_release_fb(crtc, &fb);
-        fb_id = ms_prime_copy_to_back(crtc, src, &fence_fd);
+        fb_id = ms_prime_copy_to_back(crtc, src,
+                                      ms_prime_back_damage(crtc, ppix,
+                                                           !direct->source),
+                                      &fence_fd);
         if (!fb_id) {
             ms_overlay_flip_failed(crtc);
             return FALSE;
@@ -276,11 +372,13 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     }
 
     ms_prime_set_scanout_content(crtc, TRUE);
+    drmmode_crtc->tearfree.compose.fence_fd = fence_fd >= 0 ? dup(fence_fd) : -1;
     ret = drmmode_crtc_flip(crtc, fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
                             fence_fd, (void *)(intptr_t) seq);
     if (fence_fd >= 0)
         close(fence_fd);
     if (ret) {
+        ms_compose_timing_release(&drmmode_crtc->tearfree.compose, FALSE);
         ms_overlay_flip_failed(crtc);
         ms_prime_release_fb(crtc, &fb);
         return FALSE;
@@ -299,7 +397,7 @@ ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_direct_fbs_rec *fbs = &prime_scanout->direct_fbs;
 
-    ms_prime_flip_timing(crtc, msc);
+    ms_prime_flip_timing_done(crtc, msc);
     if (!fbs->pending.fb_id)
         prime_scanout->back_idx ^= 1;
     ms_overlay_flip_done(crtc);
@@ -317,6 +415,7 @@ ms_prime_flip_aborted(xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
     ms_prime_release_fb(crtc, &ms_prime_scanout(crtc)->direct_fbs.pending);
+    ms_compose_timing_release(&drmmode_crtc->tearfree.compose, FALSE);
     ms_overlay_flip_aborted(crtc);
     drmmode_crtc->tearfree.flip_seq = 0;
     ms_tearfree_dri_abort_all(crtc);
@@ -381,15 +480,16 @@ ms_prime_present(xf86CrtcPtr crtc)
     drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
     msPixmapPrivPtr ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
                                             drmmode_crtc->prime_pixmap_back);
-    uint64_t start = GetTimeInMicros(), elapsed;
+    uint64_t start = GetTimeInMicros();
 
+    compose->start = start;
     ppriv->wait_for_damage = FALSE;
     if (!drmmode_SharedPixmapPresentNow(drmmode_crtc->prime_pixmap_back, crtc,
                                         drmmode_crtc->drmmode))
         ppriv->wait_for_damage = TRUE;
 
-    elapsed = GetTimeInMicros() - start;
-    compose->usec = max(elapsed, compose->usec - compose->usec / 8);
+    if (drmmode_crtc->tearfree.flip_seq)
+        ms_compose_timing_measured(compose, GetTimeInMicros() - start);
 }
 
 void
