@@ -188,7 +188,8 @@ ms_present_abort_vblank(RRCrtcPtr crtc, uint64_t event_id, uint64_t msc)
     xf86CrtcPtr xf86_crtc = crtc->devPrivate;
 
     /* Check if this is a fake flip routed through TearFree and abort it */
-    if (ms_tearfree_dri_abort(xf86_crtc, ms_present_event_match, &event_id))
+    if (ms_scrn_is_modesetting(xf86_crtc->scrn) &&
+        ms_tearfree_dri_abort(xf86_crtc, ms_present_event_match, &event_id))
         return;
 #endif
 
@@ -347,6 +348,9 @@ ms_present_check_window_flip(RRCrtcPtr crtc,
 {
     xf86CrtcPtr xf86_crtc = crtc->devPrivate;
     modesettingPtr ms = modesettingPTR(xf86_crtc->scrn);
+
+    if (crtc->pScreen != window->drawable.pScreen)
+        return ms_prime_crtc_flipping(xf86_crtc);
 
     if (!ms_tearfree_is_active_on_crtc(xf86_crtc))
         return FALSE;
@@ -529,6 +533,12 @@ ms_present_window_flip(RRCrtcPtr crtc,
         return FALSE;
 
     event->event_id = event_id;
+    if (crtc->pScreen != toplevel->drawable.pScreen)
+        return ms_prime_window_flip(crtc->devPrivate,
+                                    toplevel->drawable.pScreen, event,
+                                    ms_present_flip_handler,
+                                    ms_present_flip_abort);
+
     return ms_tearfree_window_flip(crtc->devPrivate, toplevel, !sync_flip,
                                    event, ms_present_flip_handler,
                                    ms_present_flip_abort);

@@ -802,21 +802,23 @@ dispatch_secondary_dirty(ScreenPtr pScreen)
     }
 }
 
-static void
+static Bool
 ms_dirty_paint(PixmapDirtyUpdatePtr dirty)
 {
     ScreenPtr screen = dirty->src->pScreen;
     RegionRec pixregion;
+    Bool painted = TRUE;
 
     PixmapRegionInit(&pixregion, dirty->secondary_dst);
     DamageRegionAppend(&dirty->secondary_dst->drawable, &pixregion);
     if (modesettingPTR(xf86ScreenToScrn(screen))->drmmode.tearfree_enable)
-        ms_compositor_sync_dirty(dirty);
+        painted = ms_compositor_sync_dirty(dirty);
     else
         PixmapSyncDirtyHelper(dirty);
 
     DamageRegionProcessPending(&dirty->secondary_dst->drawable);
     RegionUninit(&pixregion);
+    return painted;
 }
 
 static void
@@ -1863,22 +1865,27 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
     msPixmapPrivPtr ppriv = msGetPixmapPriv(&ms->drmmode, secondary_dst->primary_pixmap);
 
     RegionPtr region;
+    Bool painted;
 
 #ifdef HAVE_GBM
-    if (ms->drmmode.tearfree_enable)
+    if (ms->drmmode.tearfree_enable) {
+        Bool new_frame;
+
         ms_compositor_update_prime(ppriv->dirty);
+        if (ms_compositor_prime_direct(ppriv->dirty, &new_frame))
+            return new_frame;
+    }
 #endif
 
     region = DamageRegion(ppriv->dirty->damage);
-    if (RegionNotEmpty(region)) {
-        ms_dirty_paint(ppriv->dirty);
+    if (!RegionNotEmpty(region))
+        return FALSE;
+
+    painted = ms_dirty_paint(ppriv->dirty);
+    if (painted)
         ms_fence_shared_pixmap(pScreen, ppriv);
-        DamageEmpty(ppriv->dirty->damage);
-
-        return TRUE;
-    }
-
-    return FALSE;
+    DamageEmpty(ppriv->dirty->damage);
+    return painted;
 }
 
 static int

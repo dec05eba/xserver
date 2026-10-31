@@ -403,12 +403,52 @@ ms_tearfree_queue_crtc_event(xf86CrtcPtr crtc, void *event,
 }
 
 static Bool
+ms_prime_queue_event(xf86CrtcPtr crtc, struct ms_flipdata *flipdata,
+                     Bool on_reference_crtc)
+{
+    if (!ms_tearfree_queue_event(crtc, flipdata, on_reference_crtc))
+        return FALSE;
+
+    ms_prime_kick(crtc);
+    return TRUE;
+}
+
+Bool
+ms_prime_window_flip(xf86CrtcPtr crtc, ScreenPtr screen, void *event,
+                     ms_pageflip_handler_proc pageflip_handler,
+                     ms_pageflip_abort_proc pageflip_abort)
+{
+    struct ms_flipdata *flipdata = NULL;
+
+    if (ms_prime_crtc_flipping(crtc))
+        flipdata = ms_tearfree_flipdata(screen, event, pageflip_handler,
+                                        pageflip_abort);
+    if (flipdata && ms_prime_queue_event(crtc, flipdata, TRUE))
+        return TRUE;
+
+    free(flipdata);
+    free(event);
+    return FALSE;
+}
+
+static Bool
 ms_tearfree_dri_flip(xf86CrtcPtr crtc, void *event,
                      ms_pageflip_handler_proc pageflip_handler,
                      ms_pageflip_abort_proc pageflip_abort)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+
+    if (ms_prime_crtc_flipping(crtc)) {
+        struct ms_flipdata *flipdata =
+            ms_tearfree_flipdata(xf86ScrnToScreen(crtc->scrn), event,
+                                 pageflip_handler, pageflip_abort);
+
+        if (flipdata && ms_prime_queue_event(crtc, flipdata, TRUE))
+            return TRUE;
+        free(flipdata);
+        return FALSE;
+    }
 
     if (!ms_tearfree_is_active_on_crtc(crtc))
         return FALSE;
@@ -470,6 +510,33 @@ ms_tearfree_window_flip(xf86CrtcPtr crtc, WindowPtr window, Bool async,
     return TRUE;
 }
 
+static void
+ms_prime_window_unflip(ScreenPtr screen, WindowPtr window,
+                       struct ms_flipdata *flipdata)
+{
+    ScreenPtr secondary;
+    int i;
+
+    xorg_list_for_each_entry(secondary, &screen->secondary_list,
+                             secondary_head) {
+        ScrnInfoPtr scrn = xf86ScreenToScrn(secondary);
+        xf86CrtcConfigPtr config;
+
+        if (!secondary->is_output_secondary || !ms_scrn_is_modesetting(scrn))
+            continue;
+
+        config = XF86_CRTC_CONFIG_PTR(scrn);
+        for (i = 0; i < config->num_crtc; i++) {
+            xf86CrtcPtr crtc = config->crtc[i];
+            drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+            if (ms_prime_crtc_flipping(crtc) &&
+                drmmode_crtc->prime_scanout.direct.window == window)
+                ms_prime_queue_event(crtc, flipdata, !flipdata->flip_count);
+        }
+    }
+}
+
 Bool
 ms_tearfree_window_unflip(ScreenPtr screen, WindowPtr window, void *event,
                           ms_pageflip_handler_proc pageflip_handler,
@@ -493,6 +560,7 @@ ms_tearfree_window_unflip(ScreenPtr screen, WindowPtr window, void *event,
         if (ms_tearfree_scans_out_window(crtc, window))
             ms_tearfree_queue_event(crtc, flipdata, !flipdata->flip_count);
     }
+    ms_prime_window_unflip(screen, window, flipdata);
 
     if (!flipdata->flip_count) {
         free(flipdata);
@@ -803,6 +871,14 @@ ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
         }
     }
     ms_tearfree_dri_complete(&flips, msc, usec);
+}
+
+void
+ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    ms_tearfree_dri_notify(&drmmode_crtc->tearfree, msc, usec);
 }
 
 static Bool

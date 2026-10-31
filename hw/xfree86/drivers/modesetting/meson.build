@@ -8,6 +8,7 @@ modesetting_srcs = [
     'hdr_edid.c',
     'pageflip.c',
     'present.c',
+    'prime.c',
     'vblank.c',
 ]
 

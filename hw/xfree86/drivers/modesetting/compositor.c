@@ -578,6 +578,7 @@ ms_compositor_dirty_box(PixmapDirtyUpdatePtr dirty, BoxPtr box)
     box->y2 = dirty->y + (rotated ? dst->drawable.width : dst->drawable.height);
 }
 
+#ifdef HAVE_GBM
 static void
 ms_compositor_prime_target(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
                            ms_compositor_target_rec *target)
@@ -589,6 +590,7 @@ ms_compositor_prime_target(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
     target->composition = &drmmode_crtc->prime_scanout.composition;
     target->user_ctm = drmmode_crtc_user_ctm(crtc);
 }
+#endif
 
 Bool
 ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
@@ -596,11 +598,13 @@ ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
     ScreenPtr screen = dirty->src->pScreen;
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     PixmapPtr dst = ms_compositor_dirty_dst(dirty);
-    xf86CrtcPtr crtc = drmmode_prime_scanout_crtc(dirty->secondary_dst);
     ms_compositor_paint_rec paint = {
         .sdr_white_level = modesettingPTR(scrn)->drmmode.sdr_white_level_default,
     };
+#ifdef HAVE_GBM
+    xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
     ms_compositor_target_rec target;
+#endif
     PicturePtr dst_picture;
     Bool painted = FALSE;
     RegionRec region;
@@ -614,17 +618,17 @@ ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
         return FALSE;
     }
 
+#ifdef HAVE_GBM
     if (crtc) {
         ms_compositor_prime_target(dirty, crtc, &target);
         paint.sdr_white_level = target.composition->sdr_white_level;
-#ifdef HAVE_GBM
         if (target.composition->pq) {
             ms_compositor_paint_pq(&target, dst, &region, &paint);
             RegionUninit(&region);
             return TRUE;
         }
-#endif
     }
+#endif
 
     dst_picture = ms_compositor_create_picture(screen, dst);
     if (dst_picture) {
@@ -644,18 +648,25 @@ ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty)
 }
 
 #ifdef HAVE_GBM
+static Bool
+ms_compositor_dirty_on_crtc(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return dirty->secondary_dst == drmmode_crtc->prime_pixmap ||
+        dirty->secondary_dst == drmmode_crtc->prime_pixmap_back;
+}
+
 static void
 ms_compositor_damage_prime(ScreenPtr screen, xf86CrtcPtr crtc)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     PixmapDirtyUpdatePtr dirty;
 
     xorg_list_for_each_entry(dirty, &screen->pixmap_dirty_list, ent) {
         RegionRec region;
         BoxRec box;
 
-        if (dirty->secondary_dst != drmmode_crtc->prime_pixmap &&
-            dirty->secondary_dst != drmmode_crtc->prime_pixmap_back)
+        if (!ms_compositor_dirty_on_crtc(dirty, crtc))
             continue;
 
         ms_compositor_dirty_box(dirty, &box);
@@ -666,12 +677,32 @@ ms_compositor_damage_prime(ScreenPtr screen, xf86CrtcPtr crtc)
     }
 }
 
+static Bool
+ms_compositor_take_prime_damage(ScreenPtr screen, xf86CrtcPtr crtc)
+{
+    PixmapDirtyUpdatePtr dirty;
+    Bool damaged = FALSE;
+
+    xorg_list_for_each_entry(dirty, &screen->pixmap_dirty_list, ent) {
+        BoxRec box;
+
+        if (!ms_compositor_dirty_on_crtc(dirty, crtc))
+            continue;
+
+        ms_compositor_dirty_box(dirty, &box);
+        damaged |= RegionContainsRect(DamageRegion(dirty->damage), &box) !=
+            rgnOUT;
+        DamageEmpty(dirty->damage);
+    }
+    return damaged;
+}
+
 void
 ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
 {
     ScreenPtr screen = dirty->src->pScreen;
     modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
-    xf86CrtcPtr crtc = drmmode_prime_scanout_crtc(dirty->secondary_dst);
+    xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
     drmmode_crtc_private_ptr drmmode_crtc;
     Bool pq;
 
@@ -692,7 +723,7 @@ ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
 
 #ifdef HAVE_GBM
 static Bool
-ms_compositor_cursor_on_crtc(ScrnInfoPtr scrn, xf86CrtcPtr crtc)
+ms_compositor_cursor_in_box(ScrnInfoPtr scrn, BoxPtr bounds)
 {
     modesettingPtr ms = modesettingPTR(scrn);
     ms_sw_cursor_ptr sw_cursor;
@@ -700,8 +731,8 @@ ms_compositor_cursor_on_crtc(ScrnInfoPtr scrn, xf86CrtcPtr crtc)
     xorg_list_for_each_entry(sw_cursor, &ms->compositor.sw_cursors, entry) {
         BoxPtr box = &sw_cursor->box;
 
-        if (box->x1 < crtc->bounds.x2 && box->x2 > crtc->bounds.x1 &&
-            box->y1 < crtc->bounds.y2 && box->y2 > crtc->bounds.y1)
+        if (box->x1 < bounds->x2 && box->x2 > bounds->x1 &&
+            box->y1 < bounds->y2 && box->y2 > bounds->y1)
             return TRUE;
     }
     return FALSE;
@@ -717,7 +748,7 @@ ms_compositor_scanout_window(xf86CrtcPtr crtc, PixmapPtr *pixmap)
     WindowPtr window;
 
     if (!ms->drmmode.pageflip || crtc->transform_in_use ||
-        ms_compositor_cursor_on_crtc(scrn, crtc))
+        ms_compositor_cursor_in_box(scrn, &crtc->bounds))
         return NULL;
 
     window = CompositeServerScanoutWindow(scrn->pScreen, &crtc->bounds);
@@ -840,6 +871,79 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc)
 
     ms_compositor_update_output_mode(crtc, NULL);
     return FALSE;
+}
+
+static WindowPtr
+ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
+                           BoxPtr box, PixmapPtr *pixmap)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(dirty->src->pScreen);
+    WindowPtr window;
+
+    if (dirty->rotation != RR_Rotate_0 || dirty->dst_x || dirty->dst_y ||
+        ms_compositor_cursor_in_box(scrn, box))
+        return NULL;
+
+    window = CompositeServerScanoutWindow(scrn->pScreen, box);
+    if (!window)
+        return NULL;
+
+    *pixmap = present_window_flip_pixmap(window);
+    if (!*pixmap ||
+        ((*pixmap)->drawable.depth != 24 && (*pixmap)->drawable.depth != 30))
+        return NULL;
+
+    if (!drmmode_crtc_can_show_pq(crtc) &&
+        CompositeServerHdrWindow(scrn->pScreen, box))
+        return NULL;
+
+    return window;
+}
+
+Bool
+ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
+{
+    ScreenPtr screen = dirty->src->pScreen;
+    xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
+    drmmode_prime_direct_rec *direct;
+    const struct hdr_output_metadata *metadata = NULL;
+    PixmapPtr pixmap = NULL, imported = NULL;
+    WindowPtr window, hdr_window;
+    Bool was_direct;
+    BoxRec box;
+
+    if (!crtc)
+        return FALSE;
+
+    direct = &((drmmode_crtc_private_ptr) crtc->driver_private)->prime_scanout.direct;
+    ms_compositor_dirty_box(dirty, &box);
+    window = ms_compositor_prime_window(dirty, crtc, &box, &pixmap);
+    if (window)
+        imported = ms_prime_import(crtc, pixmap);
+
+    if (!imported) {
+        was_direct = direct->window != NULL;
+        ms_prime_clear_direct(crtc);
+        if (was_direct)
+            ms_compositor_damage_prime(screen, crtc);
+        return FALSE;
+    }
+
+    *new_frame = ms_compositor_take_prime_damage(screen, crtc) ||
+        pixmap != direct->pixmap;
+
+    hdr_window = CompositeServerHdrWindow(screen, &box);
+    if (hdr_window)
+        metadata = ms_hdr_window_metadata(hdr_window);
+
+    direct->window = window;
+    direct->pixmap = pixmap;
+    direct->imported = imported;
+    direct->pq = hdr_window != NULL;
+    direct->has_metadata = metadata != NULL;
+    if (metadata)
+        direct->metadata = *metadata;
+    return TRUE;
 }
 #endif
 

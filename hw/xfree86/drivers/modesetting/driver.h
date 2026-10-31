@@ -288,9 +288,28 @@ Bool ms_tearfree_window_unflip(ScreenPtr screen, WindowPtr window, void *event,
                                ms_pageflip_handler_proc pageflip_handler,
                                ms_pageflip_abort_proc pageflip_abort);
 
+void ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
+
+Bool ms_prime_window_flip(xf86CrtcPtr crtc, ScreenPtr screen, void *event,
+                          ms_pageflip_handler_proc pageflip_handler,
+                          ms_pageflip_abort_proc pageflip_abort);
+
 Bool ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap);
 
 Bool ms_compositor_direct_flip(xf86CrtcPtr crtc);
+Bool ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame);
+
+Bool ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix);
+void ms_prime_destroy_scanout(xf86CrtcPtr crtc);
+Bool ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq);
+void ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
+void ms_prime_flip_aborted(xf86CrtcPtr crtc);
+xf86CrtcPtr ms_prime_crtc(PixmapPtr ppix);
+Bool ms_prime_crtc_flipping(xf86CrtcPtr crtc);
+void ms_prime_kick(xf86CrtcPtr crtc);
+Bool ms_prime_update_output_mode(ScrnInfoPtr scrn);
+PixmapPtr ms_prime_import(xf86CrtcPtr crtc, PixmapPtr pixmap);
+void ms_prime_clear_direct(xf86CrtcPtr crtc);
 
 #endif
 
@@ -306,7 +325,9 @@ Bool ms_compositor_create_screen_resources(ScreenPtr screen);
 void ms_compositor_update_damages(ScreenPtr screen);
 void ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region);
 Bool ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty);
+#ifdef HAVE_GBM
 void ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty);
+#endif
 void ms_compositor_set_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,
                               CursorPtr cursor, int x, int y);
 void ms_compositor_move_cursor(ScrnInfoPtr scrn, ms_sw_cursor_ptr sw_cursor,

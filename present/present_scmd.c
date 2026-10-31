@@ -375,7 +375,7 @@ present_check_flip(RRCrtcPtr            crtc,
     ScreenPtr                   screen = window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
 
-    if (crtc) {
+    if (crtc && !present_window_flips(screen)) {
        screen_priv = present_screen_priv(crtc->pScreen);
     }
     if (reason)
@@ -972,7 +972,7 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
     ScreenPtr                   screen = window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
     present_flip_slot_ptr       slot = NULL;
-    if (vblank && vblank->crtc) {
+    if (vblank && vblank->crtc && !present_window_flips(screen)) {
         screen_priv=present_screen_priv(vblank->crtc->pScreen);
     }
 

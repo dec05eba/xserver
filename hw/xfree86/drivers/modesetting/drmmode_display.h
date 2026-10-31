@@ -257,9 +257,25 @@ typedef struct {
 } drmmode_tearfree_rec, *drmmode_tearfree_ptr;
 
 typedef struct {
+    PixmapPtr source;
+    PixmapPtr imported;
+} drmmode_prime_import_rec;
+
+typedef struct {
+    WindowPtr window;
+    PixmapPtr pixmap;
+    PixmapPtr imported;
+    Bool pq;
+    Bool has_metadata;
+    struct hdr_output_metadata metadata;
+    drmmode_prime_import_rec imports[4];
+} drmmode_prime_direct_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
     uint32_t back_idx;
     drmmode_composition_rec composition;
+    drmmode_prime_direct_rec direct;
 } drmmode_prime_scanout_rec;
 
 typedef struct {
@@ -423,9 +439,14 @@ Bool drmmode_SharedPixmapPresentOnVBlank(PixmapPtr frontTarget, xf86CrtcPtr crtc
 Bool drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
                               drmmode_ptr drmmode);
 void drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode);
-xf86CrtcPtr drmmode_prime_scanout_crtc(PixmapPtr ppix);
-Bool drmmode_prime_update_output_mode(ScrnInfoPtr scrn);
 Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
+PixmapPtr drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width,
+                                   int height, int depth, drmmode_bo *bo,
+                                   uint32_t *fb_id);
+void drmmode_shadow_fb_destroy(xf86CrtcPtr crtc, PixmapPtr pixmap,
+                               void *data, drmmode_bo *bo, uint32_t *fb_id);
+void drmmode_clear_pixmap(PixmapPtr pixmap);
+Bool drmmode_crtc_can_fence_flip(xf86CrtcPtr crtc);
 
 extern Bool drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp);
 extern Bool drmmode_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode);

@@ -1,0 +1,344 @@
+/*
+ * Copyright © 2026 dec05eba
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+#include "dix-config.h"
+
+#include <string.h>
+#include <unistd.h>
+#include <xf86.h>
+#include <xf86Crtc.h>
+
+#include "driver.h"
+
+#ifdef HAVE_GBM
+#include <gbm.h>
+#include <drm_fourcc.h>
+
+static drmmode_prime_scanout_rec *
+ms_prime_scanout(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return &drmmode_crtc->prime_scanout;
+}
+
+static void
+ms_prime_release_import(drmmode_prime_import_rec *import)
+{
+    if (import->imported)
+        dixDestroyPixmap(import->imported, 0);
+    if (import->source)
+        dixDestroyPixmap(import->source, 0);
+    import->source = NULL;
+    import->imported = NULL;
+}
+
+void
+ms_prime_clear_direct(xf86CrtcPtr crtc)
+{
+    drmmode_prime_direct_rec *direct = &ms_prime_scanout(crtc)->direct;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(direct->imports); i++)
+        ms_prime_release_import(&direct->imports[i]);
+    memset(direct, 0, sizeof(*direct));
+}
+
+void
+ms_prime_destroy_scanout(xf86CrtcPtr crtc)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++) {
+        if (prime_scanout->buf[i].px) {
+            drmmode_shadow_fb_destroy(crtc, prime_scanout->buf[i].px,
+                                      (void *)(long)1,
+                                      &prime_scanout->buf[i].bo,
+                                      &prime_scanout->buf[i].fb_id);
+            prime_scanout->buf[i].px = NULL;
+        }
+    }
+    prime_scanout->back_idx = 0;
+
+    if (prime_scanout->composition.intermediate)
+        dixDestroyPixmap(prime_scanout->composition.intermediate, 0);
+    memset(&prime_scanout->composition, 0, sizeof(prime_scanout->composition));
+
+    ms_prime_clear_direct(crtc);
+}
+
+Bool
+ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++) {
+        prime_scanout->buf[i].px =
+            drmmode_shadow_fb_create(crtc, NULL, ppix->drawable.width,
+                                     ppix->drawable.height,
+                                     ppix->drawable.depth,
+                                     &prime_scanout->buf[i].bo,
+                                     &prime_scanout->buf[i].fb_id);
+        if (!prime_scanout->buf[i].px) {
+            ms_prime_destroy_scanout(crtc);
+            return FALSE;
+        }
+        drmmode_clear_pixmap(prime_scanout->buf[i].px);
+    }
+    return TRUE;
+}
+
+static void
+ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_direct_rec *direct = &prime_scanout->direct;
+
+    if (direct->imported)
+        drmmode_crtc_set_scanout_content(crtc, direct->pq,
+                                         direct->has_metadata ?
+                                         &direct->metadata : NULL,
+                                         with_next_flip);
+    else
+        drmmode_crtc_set_scanout_content(crtc, prime_scanout->composition.pq,
+                                         NULL, with_next_flip);
+}
+
+Bool
+ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
+{
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
+    PixmapPtr src = prime_scanout->direct.imported ?
+        prime_scanout->direct.imported : ppix;
+    int fence_fd = -1;
+    GCPtr gc;
+    int ret;
+
+    gc = GetScratchGC(back->px->drawable.depth, screen);
+    if (!gc)
+        return FALSE;
+
+    ValidateGC(&back->px->drawable, gc);
+    gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc, 0, 0,
+                      back->px->drawable.width, back->px->drawable.height,
+                      0, 0);
+    FreeScratchGC(gc);
+
+    if (drmmode_crtc_can_fence_flip(crtc))
+        fence_fd = ms->glamor.egl_create_fence_fd(screen);
+    if (fence_fd < 0)
+        ms->glamor.finish(screen);
+
+    ms_prime_set_scanout_content(crtc, TRUE);
+    ret = drmmode_crtc_flip(crtc, back->fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
+                            fence_fd, (void *)(intptr_t) seq);
+    if (fence_fd >= 0)
+        close(fence_fd);
+    if (ret)
+        return FALSE;
+
+    drmmode_crtc->tearfree.flip_seq = seq;
+    return TRUE;
+}
+
+void
+ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    ms_prime_scanout(crtc)->back_idx ^= 1;
+    drmmode_crtc->tearfree.flip_seq = 0;
+    ms_tearfree_dri_flipped(crtc, msc, usec);
+}
+
+void
+ms_prime_flip_aborted(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    drmmode_crtc->tearfree.flip_seq = 0;
+    ms_tearfree_dri_abort_all(crtc);
+}
+
+xf86CrtcPtr
+ms_prime_crtc(PixmapPtr ppix)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(ppix->drawable.pScreen);
+    xf86CrtcConfigPtr config;
+    int i;
+
+    if (!ms_scrn_is_modesetting(scrn))
+        return NULL;
+
+    config = XF86_CRTC_CONFIG_PTR(scrn);
+    for (i = 0; i < config->num_crtc; i++) {
+        xf86CrtcPtr crtc = config->crtc[i];
+        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+        if (drmmode_crtc->prime_scanout.buf[0].px &&
+            (drmmode_crtc->prime_pixmap == ppix ||
+             drmmode_crtc->prime_pixmap_back == ppix))
+            return crtc;
+    }
+    return NULL;
+}
+
+Bool
+ms_prime_crtc_flipping(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc;
+
+    if (!ms_scrn_is_modesetting(crtc->scrn))
+        return FALSE;
+
+    drmmode_crtc = crtc->driver_private;
+    return drmmode_crtc->flipping_active &&
+        drmmode_crtc->prime_scanout.buf[0].px;
+}
+
+static Bool
+ms_prime_idle(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return msGetPixmapPriv(drmmode_crtc->drmmode,
+                           drmmode_crtc->prime_pixmap_back)->wait_for_damage;
+}
+
+void
+ms_prime_kick(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    msPixmapPrivPtr ppriv;
+
+    if (!ms_prime_idle(crtc))
+        return;
+
+    ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
+                            drmmode_crtc->prime_pixmap_back);
+    ppriv->wait_for_damage =
+        !drmmode_SharedPixmapPresentOnVBlank(drmmode_crtc->prime_pixmap_back,
+                                             crtc, drmmode_crtc->drmmode);
+}
+
+static Bool
+ms_prime_crtc_update_output_mode(xf86CrtcPtr crtc)
+{
+    if (!ms_prime_crtc_flipping(crtc))
+        return TRUE;
+
+    if (!ms_prime_idle(crtc))
+        return FALSE;
+
+    ms_prime_set_scanout_content(crtc, FALSE);
+    ms_prime_kick(crtc);
+    return TRUE;
+}
+
+Bool
+ms_prime_update_output_mode(ScrnInfoPtr scrn)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    Bool updated = TRUE;
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++)
+        updated &= ms_prime_crtc_update_output_mode(config->crtc[i]);
+    return updated;
+}
+
+static PixmapPtr
+ms_prime_import_pixmap(xf86CrtcPtr crtc, PixmapPtr pixmap)
+{
+    ScreenPtr src_screen = pixmap->drawable.pScreen;
+    ScrnInfoPtr src_scrn = xf86ScreenToScrn(src_screen);
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    PixmapPtr imported = NULL;
+    struct gbm_bo *bo;
+    int fd;
+
+    if (!ms_scrn_is_modesetting(src_scrn) ||
+        !modesettingPTR(src_scrn)->drmmode.glamor)
+        return NULL;
+
+    bo = modesettingPTR(src_scrn)->glamor.gbm_bo_from_pixmap(src_screen,
+                                                              pixmap);
+    if (!bo)
+        return NULL;
+
+    if (gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_LINEAR &&
+        gbm_bo_get_plane_count(bo) == 1 && gbm_bo_get_offset(bo, 0) == 0 &&
+        (fd = gbm_bo_get_fd(bo)) >= 0) {
+        imported = screen->CreatePixmap(screen, 0, 0, pixmap->drawable.depth,
+                                        CREATE_PIXMAP_USAGE_SHARED);
+        if (imported &&
+            !ms->glamor.back_pixmap_from_fd(imported, fd,
+                                            pixmap->drawable.width,
+                                            pixmap->drawable.height,
+                                            gbm_bo_get_stride(bo),
+                                            pixmap->drawable.depth,
+                                            pixmap->drawable.bitsPerPixel)) {
+            dixDestroyPixmap(imported, 0);
+            imported = NULL;
+        }
+        close(fd);
+    }
+
+    gbm_bo_destroy(bo);
+    return imported;
+}
+
+PixmapPtr
+ms_prime_import(xf86CrtcPtr crtc, PixmapPtr pixmap)
+{
+    drmmode_prime_direct_rec *direct = &ms_prime_scanout(crtc)->direct;
+    drmmode_prime_import_rec import;
+    int last = ARRAY_SIZE(direct->imports) - 1;
+    int i;
+
+    for (i = 0; i < last && direct->imports[i].source != pixmap; i++)
+        ;
+
+    if (direct->imports[i].source == pixmap) {
+        import = direct->imports[i];
+    } else {
+        ms_prime_release_import(&direct->imports[last]);
+        i = last;
+        pixmap->refcnt++;
+        import.source = pixmap;
+        import.imported = ms_prime_import_pixmap(crtc, pixmap);
+    }
+
+    memmove(&direct->imports[1], &direct->imports[0],
+            i * sizeof(direct->imports[0]));
+    direct->imports[0] = import;
+    return import.imported;
+}
+#endif

@@ -50,7 +50,8 @@ Limitations:
 - Reading the root window works with GetImage (screenshots, `xwd`, ffmpeg
   x11grab), but not with CopyArea or Render.
 - Fullscreen windows on monitors connected to a secondary GPU (reverse PRIME)
-  don't bypass compositing.
+  are copied instead of scanned out directly, and only skip compositing when
+  the application renders on that GPU (for example with `prime-run`).
 - With a software cursor, fullscreen windows on the monitor with the cursor
   don't bypass compositing.
 
@@ -171,3 +172,16 @@ Select the modesetting driver in the Device section of xorg.conf (for example `/
 
 HDR also needs the NVIDIA kernel driver to expose the properties listed in the
 HDR section.
+
+Multiple GPUs
+-------------
+
+Monitors connected to a second GPU (reverse PRIME), such as the HDMI port that
+is wired to the NVIDIA GPU on many laptops, are tear-free and support HDR when
+compositing is on.
+
+Fullscreen applications that render on the GPU their monitor is connected to,
+for example a game started with `prime-run` on that HDMI monitor, are handled
+by that GPU alone. The other GPU doesn't composite or copy their frames, so
+there is practically no performance penalty compared to a monitor that doesn't
+use PRIME.

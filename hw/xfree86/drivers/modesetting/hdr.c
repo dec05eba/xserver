@@ -92,10 +92,12 @@ ms_hdr_update(ScreenPtr screen)
     if (!ms->output_mode_dirty || !scrn->vtSema)
         return;
 
+#ifdef HAVE_GBM
     if (screen->isGPU) {
-        ms->output_mode_dirty = !drmmode_prime_update_output_mode(scrn);
+        ms->output_mode_dirty = !ms_prime_update_output_mode(scrn);
         return;
     }
+#endif
 
     if (!screen->root)
         return;
