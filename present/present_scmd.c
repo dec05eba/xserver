@@ -123,27 +123,27 @@ present_create_window_flip_slot(present_screen_priv_ptr screen_priv,
     return slot;
 }
 
-static present_flip_slot_ptr
-present_get_pending_flip_slot(present_screen_priv_ptr screen_priv,
-                              present_vblank_ptr vblank)
-{
-    present_flip_slot_ptr slot;
-
-    xorg_list_for_each_entry(slot, &screen_priv->flip_slots, entry) {
-        if (slot->flip_pending == vblank)
-            return slot;
-    }
-    return NULL;
-}
-
 static void
 present_maybe_free_flip_slot(present_flip_slot_ptr slot)
 {
-    if (slot->flip_pending || slot->flip_pixmap || slot->unflip_event_id ||
+    if (slot->pending_flips || slot->flip_pixmap || slot->unflip_event_id ||
         slot->window_pixmap)
         return;
     xorg_list_del(&slot->entry);
     free(slot);
+}
+
+static Bool
+present_slot_pixmap_pending(present_flip_slot_ptr slot, PixmapPtr pixmap)
+{
+    present_vblank_ptr vblank;
+
+    xorg_list_for_each_entry(vblank, &present_flip_queue, event_queue) {
+        if (vblank->flip_slot == slot && !vblank->queued &&
+            vblank->pixmap == pixmap)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 static Bool
@@ -155,7 +155,7 @@ present_pixmap_is_flipping(present_screen_priv_ptr screen_priv,
     xorg_list_for_each_entry(slot, &screen_priv->flip_slots, entry) {
         if (slot->flip_pixmap == pixmap)
             return TRUE;
-        if (slot->flip_pending && slot->flip_pending->pixmap == pixmap)
+        if (slot->pending_flips && present_slot_pixmap_pending(slot, pixmap))
             return TRUE;
     }
     return FALSE;
@@ -434,7 +434,9 @@ present_window_flip(present_flip_slot_ptr slot, present_vblank_ptr vblank)
     vblank->executed = TRUE;
     CompositeServerPresented(vblank->window, pixmap);
 
-    if (slot->window_pixmap && old_pixmap == slot->flip_pixmap) {
+    if (slot->window_pixmap &&
+        (old_pixmap == slot->flip_pixmap ||
+         present_slot_pixmap_pending(slot, old_pixmap))) {
         dixDestroyPixmap(old_pixmap, old_pixmap->drawable.id);
     }
     else {
@@ -578,7 +580,8 @@ present_re_execute(present_vblank_ptr vblank)
 static Bool
 present_flip_slot_busy(present_flip_slot_ptr slot)
 {
-    return slot && (slot->flip_pending || slot->unflip_event_id);
+    return slot && (slot->unflip_event_id ||
+                    (slot->flip_pending && !slot->window_flip));
 }
 
 static void
@@ -738,8 +741,7 @@ static void
 present_flip_notify(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
 {
     ScreenPtr                   screen = vblank->screen;
-    present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
-    present_flip_slot_ptr       slot = present_get_pending_flip_slot(screen_priv, vblank);
+    present_flip_slot_ptr       slot = vblank->flip_slot;
     CARD8                       mode = present_vblank_suboptimal(vblank) ?
         PresentCompleteModeSuboptimalCopy : PresentCompleteModeFlip;
 
@@ -748,7 +750,7 @@ present_flip_notify(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
                   vblank->pixmap ? vblank->pixmap->drawable.id : 0,
                   vblank->window ? vblank->window->drawable.id : 0));
 
-    assert (slot && vblank == slot->flip_pending);
+    assert (slot && slot->pending_flips > 0);
 
     present_slot_idle(screen, slot);
 
@@ -764,10 +766,13 @@ present_flip_notify(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
 
     vblank->pixmap = NULL;
     vblank->idle_fence = NULL;
+    vblank->flip_slot = NULL;
 
-    slot->flip_pending = NULL;
+    slot->pending_flips--;
+    if (slot->flip_pending == vblank)
+        slot->flip_pending = NULL;
 
-    if (vblank->abort_flip)
+    if (vblank->abort_flip && !slot->pending_flips)
         present_unflip_slot(screen, slot);
 
     present_vblank_notify(vblank, PresentCompleteKindPixmap, mode, ust, crtc_msc);
@@ -934,6 +939,12 @@ present_scmd_clear_window_flip(WindowPtr window)
     ScreenPtr                   screen = window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
     present_flip_slot_ptr       slot;
+    present_vblank_ptr          vblank;
+
+    xorg_list_for_each_entry(vblank, &present_flip_queue, event_queue) {
+        if (!vblank->queued && vblank->window == window)
+            vblank->window = NULL;
+    }
 
 restart:
     xorg_list_for_each_entry(slot, &screen_priv->flip_slots, entry) {
@@ -974,6 +985,7 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
     ScreenPtr                   screen = window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
     present_flip_slot_ptr       slot = NULL;
+    present_vblank_ptr          previous_pending;
     if (vblank && vblank->crtc && !present_window_flips(screen)) {
         screen_priv=present_screen_priv(vblank->crtc->pScreen);
     }
@@ -985,7 +997,7 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
         slot = present_create_window_flip_slot(screen_priv, vblank->window);
         if (!slot) {
             vblank->flip = FALSE;
-        } else if (slot->flip_pending || slot->unflip_event_id) {
+        } else if (present_flip_slot_busy(slot)) {
             DebugPresent(("\tr %" PRIu64 " %p (pending %p unflip %" PRIu64 ")\n",
                           vblank->event_id, vblank,
                           slot->flip_pending, slot->unflip_event_id));
@@ -1013,7 +1025,10 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
             /* Prepare to flip by placing it in the flip queue and
              * and sticking it into the flip_pending field
              */
+            previous_pending = slot->flip_pending;
             slot->flip_pending = vblank;
+            slot->pending_flips++;
+            vblank->flip_slot = slot;
 
             xorg_list_add(&vblank->event_queue, &present_flip_queue);
             /* Try to flip
@@ -1040,7 +1055,9 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
             xorg_list_del(&vblank->event_queue);
             /* Oops, flip failed. Clear the flip_pending field
               */
-            slot->flip_pending = NULL;
+            slot->flip_pending = previous_pending;
+            slot->pending_flips--;
+            vblank->flip_slot = NULL;
             present_maybe_free_flip_slot(slot);
             present_vblank_copy_instead(vblank);
         }

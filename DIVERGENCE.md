@@ -103,6 +103,10 @@ rate works with directly scanned out windows.
 Monitors that are composited are composed just before each vblank, so a new
 frame reaches the screen at the next vblank and frame pacing stays even.
 
+When an application draws more frames than the monitor can show, the newest
+frame is shown at each refresh and the older ones are dropped, so frames
+don't queue up and add latency.
+
 On laptops with two GPUs, fullscreen applications started with NVIDIA's
 `prime-run` on a monitor connected to the NVIDIA GPU are scanned out straight
 from the NVIDIA GPU's memory. They avoid all copies, so they perform the same

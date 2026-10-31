@@ -89,6 +89,7 @@ struct present_vblank {
     Bool                flip_ready;     /* wants to flip, but waiting for previous flip or unflip */
     Bool                sync_flip;      /* do flip synchronous to vblank */
     Bool                abort_flip;     /* aborting this flip */
+    struct present_flip_slot_rec *flip_slot; /* slot this flip is pending on */
     PresentFlipReason   reason;         /* reason for which flip is not possible */
     Bool                has_suboptimal; /* whether client can support SuboptimalCopy mode */
     Bool                executed;
@@ -168,7 +169,8 @@ typedef struct present_flip_slot_rec {
     WindowPtr           pixmap_window;
     PixmapPtr           window_pixmap;
     RRCrtcPtr           crtc;
-    present_vblank_ptr  flip_pending;
+    present_vblank_ptr  flip_pending;   /* the newest pending flip */
+    int                 pending_flips;
     uint64_t            unflip_event_id;
 
     /* Currently active flipped pixmap and fence */
