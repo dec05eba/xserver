@@ -24,6 +24,20 @@
 #include "present_priv.h"
 #include <unistd.h>
 
+Bool
+present_vblank_suboptimal(present_vblank_ptr vblank)
+{
+    if (!vblank->has_suboptimal || !vblank->pixmap || !vblank->window)
+        return FALSE;
+
+#ifdef DRI3
+    if (dri3_offload_pixmap_suboptimal(vblank->window, vblank->pixmap))
+        return TRUE;
+#endif /* DRI3 */
+
+    return vblank->reason == PRESENT_FLIP_REASON_BUFFER_FORMAT;
+}
+
 void
 present_vblank_notify(present_vblank_ptr vblank, CARD8 kind, CARD8 mode, uint64_t ust, uint64_t crtc_msc)
 {

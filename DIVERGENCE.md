@@ -51,7 +51,9 @@ Limitations:
   x11grab), but not with CopyArea or Render.
 - Fullscreen windows on monitors connected to a secondary GPU (reverse PRIME)
   are copied instead of scanned out directly, and only skip compositing when
-  the application renders on that GPU (for example with `prime-run`).
+  the application renders on that GPU (for example with `prime-run`). The
+  exception is applications started with NVIDIA's `prime-run` on a monitor
+  connected to the NVIDIA GPU.
 - With a software cursor, fullscreen windows on the monitor with the cursor
   don't bypass compositing.
 
@@ -189,3 +191,9 @@ for example a game started with `prime-run` on that HDMI monitor, are handled
 by that GPU alone. The other GPU doesn't composite or copy their frames, so
 there is practically no performance penalty compared to a monitor that doesn't
 use PRIME.
+
+Applications started with NVIDIA's `prime-run` are shown straight from the
+NVIDIA GPU's memory when they are fullscreen on a monitor connected to that
+GPU, without being copied at all. When another window, such as a
+notification, appears on top of such an application, the application switches
+to a slower mode until that window is gone, which can cause a short stutter.

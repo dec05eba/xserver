@@ -7,6 +7,7 @@ modesetting_srcs = [
     'dumb_bo.c',
     'hdr.c',
     'hdr_edid.c',
+    'offload.c',
     'pageflip.c',
     'present.c',
     'prime.c',

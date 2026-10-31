@@ -45,12 +45,15 @@ typedef struct dri3_screen_priv {
     CloseScreenProcPtr          CloseScreen;
     ConfigNotifyProcPtr         ConfigNotify;
     DestroyWindowProcPtr        DestroyWindow;
+    SourceValidateProcPtr       SourceValidate;
+    DestroyPixmapProcPtr        DestroyPixmap;
 
     Bool                        formats_cached;
     CARD32                      num_formats;
     dri3_dmabuf_format_ptr      formats;
 
     const dri3_screen_info_rec *info;
+    const dri3_offload_info_rec *offload;
 } dri3_screen_priv_rec, *dri3_screen_priv_ptr;
 
 #define wrap(priv,real,mem,func) {\
@@ -104,5 +107,31 @@ dri3_get_supported_modifiers(ScreenPtr screen, DrawablePtr drawable,
 
 int
 dri3_import_syncobj(ClientPtr client, ScreenPtr screen, XID id, int fd);
+
+Bool
+dri3_screen_supports_modifier(ScreenPtr screen, CARD8 depth, CARD8 bpp,
+                              CARD64 modifier);
+
+/* Render offload */
+
+Bool
+dri3_offload_screen_init(ScreenPtr screen);
+
+void
+dri3_offload_close_screen(ScreenPtr screen);
+
+ScreenPtr
+dri3_offload_screen(ClientPtr client, ScreenPtr screen);
+
+Bool
+dri3_offload_can_scanout_window(ScreenPtr render_screen, WindowPtr window);
+
+int
+dri3_offload_pixmap_from_fds(PixmapPtr *ppixmap, ScreenPtr screen,
+                             ScreenPtr render_screen,
+                             CARD8 num_fds, const int *fds,
+                             CARD16 width, CARD16 height,
+                             const CARD32 *strides, const CARD32 *offsets,
+                             CARD8 depth, CARD8 bpp, CARD64 modifier);
 
 #endif /* _DRI3PRIV_H_ */

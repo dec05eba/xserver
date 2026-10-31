@@ -285,6 +285,11 @@ present_pixmap(WindowPtr window,
     ScreenPtr                   screen = window->drawable.pScreen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
 
+#ifdef DRI3
+    if (pixmap)
+        dri3_offload_pixmap_presented(pixmap);
+#endif /* DRI3 */
+
     return screen_priv->present_pixmap(window,
                                        pixmap,
                                        serial,

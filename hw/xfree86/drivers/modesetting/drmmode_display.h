@@ -292,7 +292,8 @@ typedef struct {
 typedef struct {
     WindowPtr window;
     PixmapPtr pixmap;
-    PixmapPtr imported;
+    PixmapPtr source;
+    Bool scanout_source;
     Bool pq;
     Bool has_metadata;
     struct hdr_output_metadata metadata;
@@ -300,10 +301,21 @@ typedef struct {
 } drmmode_prime_direct_rec;
 
 typedef struct {
+    PixmapPtr pixmap;
+    uint32_t fb_id;
+} drmmode_prime_fb_rec;
+
+typedef struct {
+    drmmode_prime_fb_rec pending;
+    drmmode_prime_fb_rec front;
+} drmmode_prime_direct_fbs_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[2];
     uint32_t back_idx;
     drmmode_composition_rec composition;
     drmmode_prime_direct_rec direct;
+    drmmode_prime_direct_fbs_rec direct_fbs;
     Bool kick;
 } drmmode_prime_scanout_rec;
 
@@ -472,6 +484,7 @@ Bool drmmode_SharedPixmapPresentNow(PixmapPtr ppix, xf86CrtcPtr crtc,
                                     drmmode_ptr drmmode);
 void drmmode_DisableSharedPixmapFlipping(xf86CrtcPtr crtc, drmmode_ptr drmmode);
 Bool drmmode_prime_output_supports_hdr(RROutputPtr randr_output);
+Bool drmmode_driver_is(int fd, const char *name);
 void drmmode_plane_color_init(xf86CrtcPtr crtc);
 Bool drmmode_plane_color_supported(xf86CrtcPtr crtc);
 int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,

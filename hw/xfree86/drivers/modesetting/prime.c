@@ -53,6 +53,16 @@ ms_prime_release_import(drmmode_prime_import_rec *import)
     import->imported = NULL;
 }
 
+static void
+ms_prime_release_fb(xf86CrtcPtr crtc, drmmode_prime_fb_rec *fb)
+{
+    if (fb->fb_id)
+        drmModeRmFB(modesettingPTR(crtc->scrn)->fd, fb->fb_id);
+    if (fb->pixmap)
+        dixDestroyPixmap(fb->pixmap, 0);
+    *fb = (drmmode_prime_fb_rec) { 0 };
+}
+
 void
 ms_prime_clear_direct(xf86CrtcPtr crtc)
 {
@@ -86,6 +96,8 @@ ms_prime_destroy_scanout(xf86CrtcPtr crtc)
     memset(&prime_scanout->composition, 0, sizeof(prime_scanout->composition));
 
     ms_prime_clear_direct(crtc);
+    ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.pending);
+    ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.front);
 }
 
 Bool
@@ -116,7 +128,7 @@ ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_direct_rec *direct = &prime_scanout->direct;
 
-    if (direct->imported)
+    if (direct->source)
         drmmode_crtc_set_scanout_content(crtc, direct->pq,
                                          direct->has_metadata ?
                                          &direct->metadata : NULL,
@@ -124,6 +136,32 @@ ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
     else
         drmmode_crtc_set_scanout_content(crtc, prime_scanout->composition.pq,
                                          NULL, with_next_flip);
+}
+
+static uint32_t
+ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, int *fence_fd)
+{
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
+    GCPtr gc;
+
+    gc = GetScratchGC(back->px->drawable.depth, screen);
+    if (!gc)
+        return 0;
+
+    ValidateGC(&back->px->drawable, gc);
+    gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc, 0, 0,
+                      back->px->drawable.width, back->px->drawable.height,
+                      0, 0);
+    FreeScratchGC(gc);
+
+    if (drmmode_crtc_can_fence_flip(crtc))
+        *fence_fd = ms->glamor.egl_create_fence_fd(screen);
+    if (*fence_fd < 0)
+        ms->glamor.finish(screen);
+    return back->fb_id;
 }
 
 static void
@@ -158,39 +196,38 @@ Bool
 ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
-    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
-    PixmapPtr src = prime_scanout->direct.imported ?
-        prime_scanout->direct.imported : ppix;
+    drmmode_prime_direct_rec *direct = &prime_scanout->direct;
+    PixmapPtr src = direct->source ? direct->source : ppix;
+    drmmode_prime_fb_rec fb = { 0 };
+    uint32_t fb_id;
     int fence_fd = -1;
-    GCPtr gc;
     int ret;
 
-    gc = GetScratchGC(back->px->drawable.depth, screen);
-    if (!gc)
-        return FALSE;
-
-    ValidateGC(&back->px->drawable, gc);
-    gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc, 0, 0,
-                      back->px->drawable.width, back->px->drawable.height,
-                      0, 0);
-    FreeScratchGC(gc);
-
-    if (drmmode_crtc_can_fence_flip(crtc))
-        fence_fd = ms->glamor.egl_create_fence_fd(screen);
-    if (fence_fd < 0)
-        ms->glamor.finish(screen);
+    if (direct->scanout_source &&
+        ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout")) {
+        fb.pixmap = src;
+        src->refcnt++;
+        fb_id = fb.fb_id;
+    } else {
+        ms_prime_release_fb(crtc, &fb);
+        fb_id = ms_prime_copy_to_back(crtc, src, &fence_fd);
+        if (!fb_id)
+            return FALSE;
+    }
 
     ms_prime_set_scanout_content(crtc, TRUE);
-    ret = drmmode_crtc_flip(crtc, back->fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
+    ret = drmmode_crtc_flip(crtc, fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
                             fence_fd, (void *)(intptr_t) seq);
     if (fence_fd >= 0)
         close(fence_fd);
-    if (ret)
+    if (ret) {
+        ms_prime_release_fb(crtc, &fb);
         return FALSE;
+    }
 
+    prime_scanout->direct_fbs.pending = fb;
     drmmode_crtc->tearfree.flip_seq = seq;
     ms_prime_flip_target(crtc);
     return TRUE;
@@ -200,9 +237,16 @@ void
 ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_direct_fbs_rec *fbs = &prime_scanout->direct_fbs;
 
     ms_prime_flip_timing(crtc, msc);
-    ms_prime_scanout(crtc)->back_idx ^= 1;
+    if (!fbs->pending.fb_id)
+        prime_scanout->back_idx ^= 1;
+    ms_prime_release_fb(crtc, &fbs->front);
+    fbs->front = fbs->pending;
+    fbs->pending = (drmmode_prime_fb_rec) { 0 };
+
     drmmode_crtc->tearfree.flip_seq = 0;
     ms_tearfree_dri_flipped(crtc, msc, usec);
 }
@@ -212,6 +256,7 @@ ms_prime_flip_aborted(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
+    ms_prime_release_fb(crtc, &ms_prime_scanout(crtc)->direct_fbs.pending);
     drmmode_crtc->tearfree.flip_seq = 0;
     ms_tearfree_dri_abort_all(crtc);
 }
@@ -348,9 +393,14 @@ ms_prime_import_pixmap(xf86CrtcPtr crtc, PixmapPtr pixmap)
     ScrnInfoPtr src_scrn = xf86ScreenToScrn(src_screen);
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
     modesettingPtr ms = modesettingPTR(crtc->scrn);
-    PixmapPtr imported = NULL;
+    PixmapPtr imported = ms_offload_native_pixmap(pixmap);
     struct gbm_bo *bo;
     int fd;
+
+    if (imported && imported->drawable.pScreen == screen) {
+        imported->refcnt++;
+        return imported;
+    }
 
     if (!ms_scrn_is_modesetting(src_scrn) ||
         !modesettingPTR(src_scrn)->drmmode.glamor)
@@ -361,6 +411,7 @@ ms_prime_import_pixmap(xf86CrtcPtr crtc, PixmapPtr pixmap)
     if (!bo)
         return NULL;
 
+    imported = NULL;
     if (gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_LINEAR &&
         gbm_bo_get_plane_count(bo) == 1 && gbm_bo_get_offset(bo, 0) == 0 &&
         (fd = gbm_bo_get_fd(bo)) >= 0) {

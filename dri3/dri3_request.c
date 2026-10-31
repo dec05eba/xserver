@@ -140,12 +140,32 @@ dri3_send_open_reply(ClientPtr client, int fd)
 }
 
 static int
+dri3_client_pixmap_from_fds(ClientPtr client, PixmapPtr *ppixmap,
+                            ScreenPtr screen, CARD8 num_fds, const int *fds,
+                            CARD16 width, CARD16 height,
+                            const CARD32 *strides, const CARD32 *offsets,
+                            CARD8 depth, CARD8 bpp, CARD64 modifier)
+{
+    ScreenPtr render_screen = dri3_offload_screen(client, screen);
+
+    if (render_screen &&
+        !dri3_screen_supports_modifier(screen, depth, bpp, modifier))
+        return dri3_offload_pixmap_from_fds(ppixmap, screen, render_screen,
+                                            num_fds, fds, width, height,
+                                            strides, offsets, depth, bpp,
+                                            modifier);
+
+    return dri3_pixmap_from_fds(ppixmap, screen, num_fds, fds, width, height,
+                                strides, offsets, depth, bpp, modifier);
+}
+
+static int
 proc_dri3_open(ClientPtr client)
 {
     REQUEST(xDRI3OpenReq);
     RRProviderPtr provider;
     DrawablePtr drawable;
-    ScreenPtr screen;
+    ScreenPtr screen, render_screen;
     int fd;
     int status;
 
@@ -165,6 +185,9 @@ proc_dri3_open(ClientPtr client)
             return BadMatch;
     }
     screen = drawable->pScreen;
+
+    if (!provider && (render_screen = dri3_offload_screen(client, screen)))
+        screen = render_screen;
 
     status = dri3_open(client, screen, provider, &fd);
     if (status != Success)
@@ -221,12 +244,12 @@ proc_dri3_pixmap_from_buffer(ClientPtr client)
 
     offset = 0;
     stride = stuff->stride;
-    rc = dri3_pixmap_from_fds(&pixmap,
-                              drawable->pScreen, 1, &fd,
-                              stuff->width, stuff->height,
-                              &stride, &offset,
-                              stuff->depth, stuff->bpp,
-                              DRM_FORMAT_MOD_INVALID);
+    rc = dri3_client_pixmap_from_fds(client, &pixmap,
+                                     drawable->pScreen, 1, &fd,
+                                     stuff->width, stuff->height,
+                                     &stride, &offset,
+                                     stuff->depth, stuff->bpp,
+                                     DRM_FORMAT_MOD_INVALID);
     close (fd);
     if (rc != Success)
         return rc;
@@ -371,7 +394,8 @@ proc_dri3_get_supported_modifiers(ClientPtr client)
         .sequenceNumber = client->sequence,
     };
     WindowPtr window;
-    ScreenPtr pScreen;
+    ScreenPtr pScreen, render_screen;
+    DrawablePtr drawable;
     CARD64 *window_modifiers = NULL;
     CARD64 *screen_modifiers = NULL;
     CARD32 nwindowmodifiers = 0;
@@ -385,11 +409,19 @@ proc_dri3_get_supported_modifiers(ClientPtr client)
     if (status != Success)
         return status;
     pScreen = window->drawable.pScreen;
+    drawable = &window->drawable;
 
-    dri3_get_supported_modifiers(pScreen, &window->drawable,
-				 stuff->depth, stuff->bpp,
-                                 &nwindowmodifiers, &window_modifiers,
-                                 &nscreenmodifiers, &screen_modifiers);
+    if ((render_screen = dri3_offload_screen(client, pScreen))) {
+        pScreen = render_screen;
+        drawable = NULL;
+    }
+
+    if (!render_screen ||
+        dri3_offload_can_scanout_window(render_screen, window))
+        dri3_get_supported_modifiers(pScreen, drawable,
+                                     stuff->depth, stuff->bpp,
+                                     &nwindowmodifiers, &window_modifiers,
+                                     &nscreenmodifiers, &screen_modifiers);
 
     rep.numWindowModifiers = nwindowmodifiers;
     rep.numScreenModifiers = nscreenmodifiers;
@@ -482,12 +514,12 @@ proc_dri3_pixmap_from_buffers(ClientPtr client)
     offsets[2] = stuff->offset2;
     offsets[3] = stuff->offset3;
 
-    rc = dri3_pixmap_from_fds(&pixmap, screen,
-                              stuff->num_buffers, fds,
-                              stuff->width, stuff->height,
-                              strides, offsets,
-                              stuff->depth, stuff->bpp,
-                              stuff->modifier);
+    rc = dri3_client_pixmap_from_fds(client, &pixmap, screen,
+                                     stuff->num_buffers, fds,
+                                     stuff->width, stuff->height,
+                                     strides, offsets,
+                                     stuff->depth, stuff->bpp,
+                                     stuff->modifier);
 
     for (i = 0; i < stuff->num_buffers; i++)
         close (fds[i]);

@@ -1,5 +1,6 @@
 srcs_dri3 = [
 	'dri3.c',
+	'dri3_offload.c',
 	'dri3_request.c',
 	'dri3_screen.c',
 ]

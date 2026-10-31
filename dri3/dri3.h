@@ -142,6 +142,29 @@ typedef struct dri3_screen_info {
 extern _X_EXPORT Bool
 dri3_screen_init(ScreenPtr screen, const dri3_screen_info_rec *info);
 
+typedef Bool (*dri3_renders_client_proc) (ScreenPtr screen,
+                                          ClientPtr client);
+
+typedef Bool (*dri3_can_scanout_window_proc) (ScreenPtr screen,
+                                              WindowPtr window);
+
+typedef struct dri3_offload_info {
+    dri3_renders_client_proc        renders_client;
+    dri3_can_scanout_window_proc    can_scanout_window;
+} dri3_offload_info_rec, *dri3_offload_info_ptr;
+
+extern _X_EXPORT Bool
+dri3_offload_init(ScreenPtr screen, const dri3_offload_info_rec *info);
+
+extern _X_EXPORT PixmapPtr
+dri3_offload_native_pixmap(PixmapPtr pixmap);
+
+void
+dri3_offload_pixmap_presented(PixmapPtr pixmap);
+
+Bool
+dri3_offload_pixmap_suboptimal(WindowPtr window, PixmapPtr pixmap);
+
 extern _X_EXPORT int
 dri3_send_open_reply(ClientPtr client, int fd);
 

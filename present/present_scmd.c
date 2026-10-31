@@ -740,6 +740,8 @@ present_flip_notify(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
     ScreenPtr                   screen = vblank->screen;
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
     present_flip_slot_ptr       slot = present_get_pending_flip_slot(screen_priv, vblank);
+    CARD8                       mode = present_vblank_suboptimal(vblank) ?
+        PresentCompleteModeSuboptimalCopy : PresentCompleteModeFlip;
 
     DebugPresent(("\tn %" PRIu64 " %p %" PRIu64 " %" PRIu64 ": %08" PRIx32 " -> %08" PRIx32 "\n",
                   vblank->event_id, vblank, vblank->exec_msc, vblank->target_msc,
@@ -768,7 +770,7 @@ present_flip_notify(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
     if (vblank->abort_flip)
         present_unflip_slot(screen, slot);
 
-    present_vblank_notify(vblank, PresentCompleteKindPixmap, PresentCompleteModeFlip, ust, crtc_msc);
+    present_vblank_notify(vblank, PresentCompleteKindPixmap, mode, ust, crtc_msc);
     present_vblank_destroy(vblank);
 
     present_flip_try_ready(screen);

@@ -295,6 +295,8 @@ Bool ms_prime_window_flip(xf86CrtcPtr crtc, ScreenPtr screen, void *event,
                           ms_pageflip_abort_proc pageflip_abort);
 
 Bool ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap);
+Bool ms_import_flip_fb(ScreenPtr screen, PixmapPtr pixmap, uint32_t *fb_id,
+                       const char *log_prefix);
 
 Bool ms_compositor_direct_flip(xf86CrtcPtr crtc);
 Bool ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame);
@@ -311,6 +313,10 @@ void ms_prime_flush_kicks(ScreenPtr screen, void *timeout);
 Bool ms_prime_update_output_mode(ScrnInfoPtr scrn);
 PixmapPtr ms_prime_import(xf86CrtcPtr crtc, PixmapPtr pixmap);
 void ms_prime_clear_direct(xf86CrtcPtr crtc);
+Bool ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window);
+
+void ms_offload_init(ScreenPtr screen);
+PixmapPtr ms_offload_native_pixmap(PixmapPtr pixmap);
 
 #endif
 

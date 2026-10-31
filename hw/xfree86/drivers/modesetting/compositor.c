@@ -862,6 +862,10 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc)
             return TRUE;
         }
 
+        (*scrn->pScreen->SourceValidate) (&pixmap->drawable, 0, 0,
+                                          pixmap->drawable.width,
+                                          pixmap->drawable.height,
+                                          IncludeInferiors);
         if (ms_do_direct_flip(scrn->pScreen, crtc, window, pixmap, async))
             return TRUE;
 
@@ -872,6 +876,18 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc)
     return FALSE;
 }
 
+static Bool
+ms_compositor_prime_output_usable(PixmapDirtyUpdatePtr dirty,
+                                  xf86CrtcPtr crtc, BoxPtr box)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(dirty->src->pScreen);
+
+    return dirty->rotation == RR_Rotate_0 && !dirty->dst_x && !dirty->dst_y &&
+        !ms_compositor_cursor_in_box(scrn, box) &&
+        (drmmode_crtc_can_show_pq(crtc) ||
+         !CompositeServerHdrWindow(scrn->pScreen, box));
+}
+
 static WindowPtr
 ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
                            BoxPtr box, PixmapPtr *pixmap)
@@ -879,8 +895,7 @@ ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
     ScrnInfoPtr scrn = xf86ScreenToScrn(dirty->src->pScreen);
     WindowPtr window;
 
-    if (dirty->rotation != RR_Rotate_0 || dirty->dst_x || dirty->dst_y ||
-        ms_compositor_cursor_in_box(scrn, box))
+    if (!ms_compositor_prime_output_usable(dirty, crtc, box))
         return NULL;
 
     window = CompositeServerScanoutWindow(scrn->pScreen, box);
@@ -892,11 +907,31 @@ ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
         ((*pixmap)->drawable.depth != 24 && (*pixmap)->drawable.depth != 30))
         return NULL;
 
-    if (!drmmode_crtc_can_show_pq(crtc) &&
-        CompositeServerHdrWindow(scrn->pScreen, box))
-        return NULL;
-
     return window;
+}
+
+Bool
+ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window)
+{
+    PixmapDirtyUpdatePtr dirty;
+
+    if (window->drawable.depth != 24 && window->drawable.depth != 30)
+        return FALSE;
+
+    xorg_list_for_each_entry(dirty, &window->drawable.pScreen->pixmap_dirty_list,
+                             ent) {
+        xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
+        BoxRec box;
+
+        if (!crtc || xf86ScrnToScreen(crtc->scrn) != secondary)
+            continue;
+
+        ms_compositor_dirty_box(dirty, &box);
+        if (ms_compositor_prime_output_usable(dirty, crtc, &box) &&
+            CompositeServerCanScanoutWindow(window, &box))
+            return TRUE;
+    }
+    return FALSE;
 }
 
 Bool
@@ -904,21 +939,29 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
 {
     ScreenPtr screen = dirty->src->pScreen;
     xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
+    drmmode_prime_scanout_rec *prime_scanout;
     drmmode_prime_direct_rec *direct;
     const struct hdr_output_metadata *metadata = NULL;
     PixmapPtr pixmap = NULL, imported = NULL;
     WindowPtr window, hdr_window;
-    Bool was_direct;
+    Bool was_direct, native, scanout_source;
     BoxRec box;
 
     if (!crtc)
         return FALSE;
 
-    direct = &((drmmode_crtc_private_ptr) crtc->driver_private)->prime_scanout.direct;
+    prime_scanout = &((drmmode_crtc_private_ptr) crtc->driver_private)->prime_scanout;
+    direct = &prime_scanout->direct;
     ms_compositor_dirty_box(dirty, &box);
     window = ms_compositor_prime_window(dirty, crtc, &box, &pixmap);
     if (window)
         imported = ms_prime_import(crtc, pixmap);
+
+    native = imported && imported == ms_offload_native_pixmap(pixmap);
+    scanout_source = native &&
+        ms_pixmap_scanout_format_supported(xf86ScrnToScreen(crtc->scrn),
+                                           imported);
+    hdr_window = CompositeServerHdrWindow(screen, &box);
 
     if (!imported) {
         was_direct = direct->window != NULL;
@@ -928,16 +971,21 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
         return FALSE;
     }
 
+    if (!native)
+        (*screen->SourceValidate) (&pixmap->drawable, 0, 0,
+                                   pixmap->drawable.width,
+                                   pixmap->drawable.height, IncludeInferiors);
+
     *new_frame = ms_compositor_take_prime_damage(screen, crtc) ||
         pixmap != direct->pixmap;
 
-    hdr_window = CompositeServerHdrWindow(screen, &box);
     if (hdr_window)
         metadata = ms_hdr_window_metadata(hdr_window);
 
     direct->window = window;
     direct->pixmap = pixmap;
-    direct->imported = imported;
+    direct->source = imported;
+    direct->scanout_source = scanout_source;
     direct->pq = hdr_window != NULL;
     direct->has_metadata = metadata != NULL;
     if (metadata)

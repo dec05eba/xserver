@@ -35,6 +35,7 @@ dri3_close_screen(ScreenPtr screen)
     dri3_screen_priv_ptr screen_priv = dri3_screen_priv(screen);
 
     unwrap(screen_priv, screen, CloseScreen);
+    dri3_offload_close_screen(screen);
 
     free(screen_priv);
     return (*screen->CloseScreen) (screen);
@@ -58,6 +59,9 @@ dri3_screen_init(ScreenPtr screen, const dri3_screen_info_rec *info)
         screen_priv->info = info;
 
         dixSetPrivate(&screen->devPrivates, &dri3_screen_private_key, screen_priv);
+
+        if (!dri3_offload_screen_init(screen))
+            return FALSE;
     }
 
     return TRUE;

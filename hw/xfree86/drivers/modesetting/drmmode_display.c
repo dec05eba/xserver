@@ -69,7 +69,7 @@ static PixmapPtr drmmode_create_pixmap_header(ScreenPtr pScreen, int width, int 
                                               int depth, int bitsPerPixel, int devKind,
                                               void *pPixData);
 
-static Bool
+Bool
 drmmode_driver_is(int fd, const char *name)
 {
     drmVersionPtr version = drmGetVersion(fd);

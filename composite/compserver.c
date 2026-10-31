@@ -404,11 +404,16 @@ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
     PicturePtr pSrc, pMask = NULL;
     int error;
 
-    if (src->hdr && server->PaintHdr &&
-        (*server->PaintHdr) (pDst, x, y, pWin, pPixmap, src->x, src->y,
-                             &pLayer->region, &pLayer->exposed,
-                             pLayer->opacity, closure))
-        return;
+    if (src->hdr && server->PaintHdr) {
+        (*pPixmap->drawable.pScreen->SourceValidate) (&pPixmap->drawable, 0, 0,
+                                                      pPixmap->drawable.width,
+                                                      pPixmap->drawable.height,
+                                                      IncludeInferiors);
+        if ((*server->PaintHdr) (pDst, x, y, pWin, pPixmap, src->x, src->y,
+                                 &pLayer->region, &pLayer->exposed,
+                                 pLayer->opacity, closure))
+            return;
+    }
 
     pSrc = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pWin),
                          0, NULL, serverClient, &error);
@@ -866,23 +871,25 @@ compServerSublayersMatchScanout(CompServerPtr server, WindowPtr pToplevel,
     return TRUE;
 }
 
-WindowPtr
-CompositeServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox)
+static WindowPtr
+compServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, WindowPtr pResizing)
 {
     CompServerPtr server = compServerGet(pScreen);
     WindowPtr pWin, pScanout;
 
     for (pWin = pScreen->root->firstChild; pWin; pWin = pWin->nextSib) {
+        Bool held = pWin != pResizing && compServerWindowHeld(pWin);
         int overlap;
 
         if (!compServerPaintsWindow(pWin))
             continue;
 
         overlap = RegionContainsRect(&pWin->borderSize, pBox);
-        if (overlap == rgnOUT && !compServerHeldFrameOverlaps(pWin, pBox))
+        if (overlap == rgnOUT &&
+            (!held || !compServerHeldFrameOverlaps(pWin, pBox)))
             continue;
 
-        if (overlap != rgnIN || compServerWindowHeld(pWin) ||
+        if (overlap != rgnIN || held ||
             compServerWindowOpacity(server, pWin) != COMP_SERVER_OPAQUE)
             return NULL;
 
@@ -894,6 +901,20 @@ CompositeServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox)
     }
 
     return NULL;
+}
+
+WindowPtr
+CompositeServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox)
+{
+    return compServerScanoutWindow(pScreen, pBox, NULL);
+}
+
+Bool
+CompositeServerCanScanoutWindow(WindowPtr pWin, BoxPtr pBox)
+{
+    return pWin->parent &&
+        compServerScanoutWindow(pWin->drawable.pScreen, pBox,
+                                compServerToplevel(pWin)) == pWin;
 }
 
 static PixmapPtr

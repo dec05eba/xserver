@@ -2382,8 +2382,10 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
     pScreen->StopFlippingPixmapTracking = msStopFlippingPixmapTracking;
 
 #ifdef HAVE_GBM
-    if (ms->drmmode.glamor && pScreen->isGPU)
+    if (ms->drmmode.glamor && pScreen->isGPU) {
         ms_init_reverse_prime_offload_mode(pScrn);
+        ms_offload_init(pScreen);
+    }
 #endif
 
     if (!xf86CrtcScreenInit(pScreen))

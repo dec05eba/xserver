@@ -74,6 +74,9 @@ extern _X_EXPORT void CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst,
 extern _X_EXPORT WindowPtr CompositeServerScanoutWindow(ScreenPtr pScreen,
                                                         BoxPtr pBox);
 
+extern _X_EXPORT Bool CompositeServerCanScanoutWindow(WindowPtr pWin,
+                                                      BoxPtr pBox);
+
 extern _X_EXPORT void CompositeServerSetHdrWindow(WindowPtr pWin, Bool hdr);
 
 extern _X_EXPORT WindowPtr CompositeServerHdrWindow(ScreenPtr pScreen,

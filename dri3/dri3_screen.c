@@ -260,7 +260,7 @@ dri3_get_supported_modifiers(ScreenPtr screen, DrawablePtr drawable,
     memcpy(screen_mods, screen_format->modifiers,
            screen_format->num_modifiers * sizeof(CARD64));
 
-    if (!info->get_drawable_modifiers ||
+    if (!drawable || !info->get_drawable_modifiers ||
         !info->get_drawable_modifiers(drawable, format,
                                       &num_drawable_mods,
                                       &drawable_mods)) {
@@ -275,6 +275,33 @@ dri3_get_supported_modifiers(ScreenPtr screen, DrawablePtr drawable,
     *screen_modifiers = screen_mods;
 
     return Success;
+}
+
+Bool
+dri3_screen_supports_modifier(ScreenPtr screen, CARD8 depth, CARD8 bpp,
+                              CARD64 modifier)
+{
+    dri3_screen_priv_ptr ds = dri3_screen_priv(screen);
+    CARD32 format = drm_format_for_depth(depth, bpp);
+    int i, j;
+
+    if (modifier == DRM_FORMAT_MOD_INVALID ||
+        modifier == DRM_FORMAT_MOD_LINEAR)
+        return TRUE;
+
+    if (cache_formats_and_modifiers(screen) != Success)
+        return FALSE;
+
+    for (i = 0; i < ds->num_formats; i++) {
+        if (ds->formats[i].format != format)
+            continue;
+
+        for (j = 0; j < ds->formats[i].num_modifiers; j++) {
+            if (ds->formats[i].modifiers[j] == modifier)
+                return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 int dri3_import_syncobj(ClientPtr client, ScreenPtr screen, XID id, int fd)

@@ -147,7 +147,7 @@ present_execute_post(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
      */
     if (vblank->kind == PresentCompleteKindPixmap) {
         if (vblank->pixmap && vblank->window) {
-            if (vblank->has_suboptimal && vblank->reason == PRESENT_FLIP_REASON_BUFFER_FORMAT)
+            if (present_vblank_suboptimal(vblank))
                 mode = PresentCompleteModeSuboptimalCopy;
             else
                 mode = PresentCompleteModeCopy;

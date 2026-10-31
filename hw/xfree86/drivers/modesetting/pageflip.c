@@ -598,7 +598,7 @@ ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap)
 #endif
 }
 
-static Bool
+Bool
 ms_import_flip_fb(ScreenPtr screen, PixmapPtr pixmap, uint32_t *fb_id,
                   const char *log_prefix)
 {

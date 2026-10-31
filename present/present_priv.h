@@ -481,6 +481,9 @@ present_screen_priv_init(ScreenPtr screen);
 /*
  * present_vblank.c
  */
+Bool
+present_vblank_suboptimal(present_vblank_ptr vblank);
+
 void
 present_vblank_notify(present_vblank_ptr vblank, CARD8 kind, CARD8 mode, uint64_t ust, uint64_t crtc_msc);
 
