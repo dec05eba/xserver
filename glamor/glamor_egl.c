@@ -264,7 +264,7 @@ glamor_egl_query_modifiers(struct glamor_egl_screen_private *glamor_egl,
 
 static Bool
 glamor_egl_is_external_only(struct glamor_egl_screen_private *glamor_egl,
-                            struct gbm_bo *bo)
+                            struct gbm_bo *bo, uint32_t format)
 {
 #if defined(GBM_BO_FD_FOR_PLANE) && defined(HAVE_EGL_QUERY_DMABUF)
     uint64_t modifier = gbm_bo_get_modifier(bo);
@@ -276,8 +276,8 @@ glamor_egl_is_external_only(struct glamor_egl_screen_private *glamor_egl,
     if (!glamor_egl->dmabuf_capable)
         return FALSE;
 
-    num = glamor_egl_query_modifiers(glamor_egl, gbm_bo_get_format(bo),
-                                     &modifiers, &external_only);
+    num = glamor_egl_query_modifiers(glamor_egl, format, &modifiers,
+                                     &external_only);
     for (i = 0; i < num; i++) {
         if (modifiers[i] == modifier) {
             ret = external_only[i];
@@ -421,8 +421,8 @@ glamor_egl_bo_from_nvidia(struct gbm_bo *bo)
     return nvidia;
 }
 
-/* NVIDIA's Vulkan driver shares 30-bit swapchains as pitch linear
- * A2B10G10R10 buffers, regardless of the channel order of the window.
+/* NVIDIA's Vulkan driver shares 30-bit swapchains as A2B10G10R10 buffers,
+ * regardless of the channel order of the window.
  */
 static uint32_t
 glamor_egl_bo_format(struct gbm_bo *bo)
@@ -443,7 +443,8 @@ glamor_egl_bo_format(struct gbm_bo *bo)
 
 #ifdef GBM_BO_WITH_MODIFIERS
     if (gbm_bo_get_modifier(bo) != DRM_FORMAT_MOD_LINEAR &&
-        gbm_bo_get_modifier(bo) != DRM_FORMAT_MOD_INVALID)
+        gbm_bo_get_modifier(bo) != DRM_FORMAT_MOD_INVALID &&
+        !fourcc_mod_is_vendor(gbm_bo_get_modifier(bo), NVIDIA))
         return format;
 #endif
 
@@ -570,7 +571,7 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
     }
 
     glamor_set_pixmap_type(pixmap, GLAMOR_TEXTURE_DRM);
-    if (glamor_egl_is_external_only(glamor_egl, bo)) {
+    if (glamor_egl_is_external_only(glamor_egl, bo, format)) {
         textured = glamor_egl_set_pixmap_external(pixmap, bo, format);
     } else {
         glamor_create_texture_from_image(screen, image, &texture);

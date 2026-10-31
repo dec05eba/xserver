@@ -286,6 +286,12 @@ get_drawable_modifiers(DrawablePtr draw, uint32_t format,
         return TRUE;
     }
 
+    /* NVIDIA's planes only scan out 10-bit as BGR, which is also the channel
+     * order NVIDIA's clients write 30-bit windows in.
+     */
+    if (format == DRM_FORMAT_XRGB2101010)
+        format = drmmode_depth30_format(scrn);
+
     *num_modifiers = get_modifiers_set(scrn, format, modifiers, TRUE, FALSE);
     return TRUE;
 }

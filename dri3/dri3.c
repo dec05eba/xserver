@@ -116,7 +116,7 @@ bail:
 uint32_t
 drm_format_for_depth(uint32_t depth, uint32_t bpp)
 {
-    switch (bpp) {
+    switch (depth) {
         case 16:
             return DRM_FORMAT_RGB565;
         case 24:
