@@ -463,7 +463,14 @@ ms_prime_idle(xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
     return msGetPixmapPriv(drmmode_crtc->drmmode,
-                           drmmode_crtc->prime_pixmap_back)->wait_for_damage;
+                           drmmode_crtc->prime_pixmap_back)->wait_for_damage &&
+        !ms_cursor_in_flight(crtc);
+}
+
+Bool
+ms_prime_flip_wanted(xf86CrtcPtr crtc)
+{
+    return ms_prime_scanout(crtc)->kick;
 }
 
 void

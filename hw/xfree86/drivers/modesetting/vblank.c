@@ -687,6 +687,8 @@ ms_drm_abort_one(struct ms_drm_queue *q)
     if (q->aborted)
         return;
 
+    ms_cursor_flip_done(q->crtc, q->seq);
+
     /* Don't remove vblank events if they were queued in the kernel */
     if (q->kernel_queued) {
         q->abort(q->data);
@@ -752,14 +754,22 @@ ms_drm_abort(ScrnInfoPtr scrn, Bool (*match)(void *data, void *match_data),
  * drm event queue and calls the handler for it.
  */
 static uint64_t
-ms_event_msc(xf86CrtcPtr crtc, uint64_t frame, uint64_t ns, Bool is64bit)
+ms_event_msc(xf86CrtcPtr crtc, uint64_t frame, uint64_t ns, Bool is64bit,
+             Bool at_vblank)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
+    uint64_t msc, ust;
+
+    if (!ms->emulate_vblank)
+        return ms_kernel_msc_to_crtc_msc(crtc, frame, is64bit);
 
     /* With emulated vblanks only page flip events come from the kernel */
-    if (ms->emulate_vblank)
-        return is64bit ? frame : ms_vblank_emul_flipped(crtc, ns / 1000);
-    return ms_kernel_msc_to_crtc_msc(crtc, frame, is64bit);
+    if (is64bit)
+        return frame;
+    if (at_vblank)
+        return ms_vblank_emul_flipped(crtc, ns / 1000);
+    ms_vblank_emul_at(crtc, ns / 1000, &msc, &ust);
+    return msc;
 }
 
 static void
@@ -775,7 +785,8 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
     xorg_list_for_each_entry(q, &ms_drm_queue, list) {
         if (q->seq == seq) {
             crtc = q->crtc;
-            msc = ms_event_msc(crtc, frame, ns, is64bit);
+            msc = ms_event_msc(crtc, frame, ns, is64bit,
+                               !ms_cursor_only_event(crtc, seq));
 
             /* Write the current MSC to this event to ensure its handler runs in
              * the loop below. This is done because we don't want to run the
@@ -801,6 +812,7 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
             free(q);
         }
     }
+    ms_cursor_flip_done(crtc, seq);
 
     /* Find this CRTC's next queued MSC and next non-queued MSC to be handled */
     msc = UINT64_MAX;

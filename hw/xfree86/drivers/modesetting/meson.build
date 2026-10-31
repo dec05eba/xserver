@@ -1,6 +1,7 @@
 modesetting_srcs = [
     'colorop.c',
     'compositor.c',
+    'cursor.c',
     'dri2.c',
     'driver.c',
     'drmmode_display.c',

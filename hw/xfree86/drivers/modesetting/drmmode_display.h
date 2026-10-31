@@ -373,12 +373,34 @@ typedef struct {
 } drmmode_vblank_emul_rec;
 
 typedef struct {
+    struct dumb_bo *bo;
+    uint32_t fb_id;
+    int width, height;
+} drmmode_cursor_buffer_rec;
+
+typedef struct {
+    uint32_t id;
+    int shown;
+    int flight;
+    uint32_t flight_seq;
+    Bool flight_alone;
+} drmmode_cursor_plane_rec;
+
+typedef struct {
+    drmmode_cursor_buffer_rec buf[3];
+    int image;
+    int width, height;
+    int x, y;
+    Bool up;
+    drmmode_cursor_plane_rec plane;
+} drmmode_cursor_rec;
+
+typedef struct {
     drmmode_ptr drmmode;
     drmModeCrtcPtr mode_crtc;
     uint32_t vblank_pipe;
     int dpms_mode;
-    struct dumb_bo *cursor_bo;
-    Bool cursor_up;
+    drmmode_cursor_rec cursor;
     uint16_t lut_r[256], lut_g[256], lut_b[256];
 
     drmmode_prop_info_rec props[DRMMODE_CRTC__COUNT];
@@ -415,8 +437,6 @@ typedef struct {
 
     uint64_t next_msc;
     drmmode_vblank_emul_rec vblank_emul;
-
-    int cursor_width, cursor_height;
 
     Bool need_modeset;
     struct xorg_list mode_list;
@@ -565,7 +585,11 @@ extern void drmmode_uevent_fini(ScrnInfoPtr scrn, drmmode_ptr drmmode);
 
 Bool drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode);
 void *drmmode_map_front_bo(drmmode_ptr drmmode);
-Bool drmmode_map_cursor_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode);
+int drmmode_plane_add_prop(drmModeAtomicReq *req,
+                           drmmode_crtc_private_ptr drmmode_crtc,
+                           uint32_t plane_id, enum drmmode_plane_property prop,
+                           uint64_t val);
+Bool drmmode_hdr_cursor_expects_pq(const drmmode_hdr_state_rec *state);
 void drmmode_free_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode);
 void drmmode_get_default_bpp(ScrnInfoPtr pScrn, drmmode_ptr drmmmode,
                              int *depth, int *bpp);

@@ -57,12 +57,6 @@
 
 #include "driver.h"
 
-#if X_BYTE_ORDER == X_BIG_ENDIAN
-#define cpu_to_le32(x) bswap_32(x)
-#else
-#define cpu_to_le32(x) (x)
-#endif
-
 static Bool drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height);
 static void drmmode_crtc_update_color(xf86CrtcPtr crtc);
 static PixmapPtr drmmode_create_pixmap_header(ScreenPtr pScreen, int width, int height,
@@ -534,10 +528,11 @@ drmmode_ConvertToKMode(ScrnInfoPtr scrn,
                        drmModeModeInfo * kmode, DisplayModePtr mode);
 
 
-static int
-plane_id_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
-                  uint32_t plane_id, enum drmmode_plane_property prop,
-                  uint64_t val)
+int
+drmmode_plane_add_prop(drmModeAtomicReq *req,
+                       drmmode_crtc_private_ptr drmmode_crtc,
+                       uint32_t plane_id, enum drmmode_plane_property prop,
+                       uint64_t val)
 {
     drmmode_prop_info_ptr info = &drmmode_crtc->props_plane[prop];
     int ret;
@@ -553,8 +548,8 @@ static int
 plane_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
                enum drmmode_plane_property prop, uint64_t val)
 {
-    return plane_id_add_prop(req, drmmode_crtc, drmmode_crtc->plane_id, prop,
-                             val);
+    return drmmode_plane_add_prop(req, drmmode_crtc, drmmode_crtc->plane_id, prop,
+                                  val);
 }
 
 static int
@@ -571,11 +566,11 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     BoxPtr box = &overlay->next_box;
     int ret = 0;
 
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_FB_ID, fb_id);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_CRTC_ID,
-                             fb_id ? drmmode_crtc->mode_crtc->crtc_id : 0);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_FB_ID, fb_id);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_ID,
+                                  fb_id ? drmmode_crtc->mode_crtc->crtc_id : 0);
     if (!fb_id)
         return ret;
 
@@ -587,28 +582,28 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                                              matrix_blob);
     if (blend->prop_id &&
         blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].valid)
-        ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                                 DRMMODE_PLANE_PIXEL_BLEND_MODE,
-                                 blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].value);
+        ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                      DRMMODE_PLANE_PIXEL_BLEND_MODE,
+                                      blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].value);
     /* nvidia-drm ignores SRC_X and SRC_Y on overlay planes, so the content
      * starts at the origin of the buffer.
      */
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_SRC_X, 0);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_SRC_Y, 0);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_SRC_W, (box->x2 - box->x1) << 16);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_SRC_H, (box->y2 - box->y1) << 16);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_CRTC_X, box->x1);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_CRTC_Y, box->y1);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_CRTC_W, box->x2 - box->x1);
-    ret |= plane_id_add_prop(req, drmmode_crtc, plane_id,
-                             DRMMODE_PLANE_CRTC_H, box->y2 - box->y1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_X, 0);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_Y, 0);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_W, (box->x2 - box->x1) << 16);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_H, (box->y2 - box->y1) << 16);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_X, box->x1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_Y, box->y1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_W, box->x2 - box->x1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_H, box->y2 - box->y1);
     return ret;
 }
 
@@ -1179,7 +1174,7 @@ drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode)
 /* amdgpu blends the cursor through the colour pipeline of the plane below it,
  * so the cursor stays SDR while that plane converts SDR to PQ.
  */
-static Bool
+Bool
 drmmode_hdr_cursor_expects_pq(const drmmode_hdr_state_rec *state)
 {
     return drmmode_hdr_mode_expects_pq(state->mode) && !state->plane_sdr_to_pq;
@@ -1214,13 +1209,14 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
     Bool with_overlay = overlay->plane_id &&
         (overlay->fb_id || overlay->next_fb_id);
+    Bool with_cursor = ms_cursor_needs_commit(crtc);
     int ret;
 
     /* The kernel rejects async flips that change anything other than the frame buffer, including its format,
      * modifier or pitch */
     if (!drmmode_fb_layout_equal(&layout, &drmmode_crtc->scanout_layout) ||
         (ms->atomic_modeset && src_changed) ||
-        drmmode_crtc->hdr.has_pending || with_overlay)
+        drmmode_crtc->hdr.has_pending || with_overlay || with_cursor)
         flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
     if (ms->atomic_modeset) {
@@ -1246,6 +1242,8 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             ret = overlay_plane_add_props(req, crtc,
                                           with_hdr ? &hdr->pending :
                                           &hdr->current, &overlay_matrix);
+        if (ret == 0 && with_cursor)
+            ret = ms_cursor_add_props(req, crtc);
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
         if (ret == 0)
             ret = drmModeAtomicCommit(ms->fd, req, flags, data);
@@ -1259,10 +1257,17 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
             overlay->fb_id = overlay->next_fb_id;
+            if (with_cursor)
+                ms_cursor_committed(crtc, (uint32_t) (uintptr_t) data, FALSE);
             if (with_hdr) {
                 hdr->has_pending = FALSE;
                 drmmode_crtc_set_current_hdr(crtc, &hdr->pending);
             }
+        }
+        else if (with_cursor && ret != -EBUSY && !ms_cursor_test(crtc)) {
+            ms_cursor_rejected(crtc, ret);
+            return drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
+                                     data);
         }
         else if (with_hdr && ret != -EBUSY &&
                  drmmode_crtc_test_flip(crtc, fb_id, x, y)) {
@@ -2300,164 +2305,6 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
     return ret;
 }
 
-static void
-drmmode_set_cursor_colors(xf86CrtcPtr crtc, int bg, int fg)
-{
-
-}
-
-static void
-drmmode_set_cursor_position(xf86CrtcPtr crtc, int x, int y)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_ptr drmmode = drmmode_crtc->drmmode;
-
-    drmModeMoveCursor(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id, x, y);
-}
-
-static Bool
-drmmode_set_cursor(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_ptr drmmode = drmmode_crtc->drmmode;
-    uint32_t handle = drmmode_crtc->cursor_bo->handle;
-    CursorPtr cursor = xf86CurrentCursor(crtc->scrn->pScreen);
-    int ret = -EINVAL;
-
-    if (cursor == NullCursor)
-	    return TRUE;
-
-    ret = drmModeSetCursor2(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                            handle, drmmode_crtc->cursor_width,
-                            drmmode_crtc->cursor_height,
-                            cursor->bits->xhot, cursor->bits->yhot);
-
-    /* -EINVAL can mean that an old kernel supports drmModeSetCursor but
-     * not drmModeSetCursor2, though it can mean other things too. */
-    if (ret == -EINVAL)
-        ret = drmModeSetCursor(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                               handle, drmmode_crtc->cursor_width,
-                               drmmode_crtc->cursor_height);
-
-    /* -ENXIO normally means that the current drm driver supports neither
-     * cursor_set nor cursor_set2.  Disable hardware cursor support for
-     * the rest of the session in that case. */
-    if (ret == -ENXIO) {
-        xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
-        xf86CursorInfoPtr cursor_info = xf86_config->cursor_info;
-
-        cursor_info->MaxWidth = cursor_info->MaxHeight = 0;
-        drmmode_crtc->drmmode->sw_cursor = TRUE;
-    }
-
-    /* fallback to swcursor */
-    return ret == 0;
-}
-
-static void drmmode_hide_cursor(xf86CrtcPtr crtc);
-
-/*
- * The load_cursor_argb_check driver hook.
- *
- * Sets the hardware cursor by calling the drmModeSetCursor2 ioctl.
- * On failure, returns FALSE indicating that the X server should fall
- * back to software cursors.
- */
-static uint32_t
-drmmode_cursor_pixel_to_pq(uint32_t pixel, const uint8_t *pq)
-{
-    uint32_t alpha = pixel >> 24;
-    uint32_t pq_pixel = pixel & 0xff000000;
-    int shift;
-
-    if (!alpha)
-        return pixel;
-
-    for (shift = 0; shift < 24; shift += 8) {
-        uint32_t straight = min(((pixel >> shift) & 0xff) * 255 / alpha, 255);
-
-        pq_pixel |= (pq[straight] * alpha / 255) << shift;
-    }
-    return pq_pixel;
-}
-
-static Bool
-drmmode_load_cursor_argb_check(xf86CrtcPtr crtc, CARD32 *image)
-{
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
-    CursorPtr cursor = xf86CurrentCursor(crtc->scrn->pScreen);
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    const drmmode_hdr_state_rec *hdr = &drmmode_crtc->hdr.current;
-    Bool pq = drmmode_hdr_cursor_expects_pq(hdr);
-    uint8_t pq_table[256];
-    int width, height, x, y, i;
-    uint32_t *ptr;
-
-    if (pq)
-        ms_hdr_sdr_to_pq_table(hdr->sdr_white_level, pq_table);
-
-    /* cursor should be mapped already */
-    ptr = (uint32_t *) (drmmode_crtc->cursor_bo->ptr);
-
-    /* FIXME deal with rotation */
-    /* Only enabled for some kms drivers, as some display hw is known broken with this */
-    if (crtc->rotation == RR_Rotate_0 && ms->allow_cursor_size_optim) {
-        for (width = ms->min_cursor_width; width < cursor->bits->width; )
-            width *= 2;
-        for (height = ms->min_cursor_height; height < cursor->bits->height; )
-            height *= 2;
-
-        /* assume only square works for now */
-        width = height = max(width, height);
-
-        /* if the max limits aren't square+POT we may have gone a bit over */
-        width = min(width, ms->max_cursor_width);
-        height = min(height, ms->max_cursor_height);
-    } else {
-        width = ms->max_cursor_width;
-        height = ms->max_cursor_height;
-    }
-
-    drmmode_crtc->cursor_width = width;
-    drmmode_crtc->cursor_height = height;
-
-    i = 0;
-    for (y = 0; y < height; y++) {
-        for (x = 0; x < width; x++) {
-            uint32_t pixel = image[y * ms->max_cursor_width + x];
-
-            ptr[i++] = cpu_to_le32(pq ? drmmode_cursor_pixel_to_pq(pixel, pq_table) :
-                                   pixel);
-        }
-    }
-    /* clear the remainder for good measure */
-    while (i < ms->max_cursor_width * ms->max_cursor_height)
-        ptr[i++] = 0;
-
-    if (drmmode_crtc->cursor_up)
-        return drmmode_set_cursor(crtc);
-    return TRUE;
-}
-
-static void
-drmmode_hide_cursor(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_ptr drmmode = drmmode_crtc->drmmode;
-
-    drmmode_crtc->cursor_up = FALSE;
-    drmModeSetCursor(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id, 0,
-                     drmmode_crtc->cursor_width, drmmode_crtc->cursor_height);
-}
-
-static Bool
-drmmode_show_cursor(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_crtc->cursor_up = TRUE;
-    return drmmode_set_cursor(crtc);
-}
-
 static uint32_t
 drmmode_create_blob(drmmode_ptr drmmode, const void *data, size_t size)
 {
@@ -2859,11 +2706,11 @@ drmmode_crtc_destroy(xf86CrtcPtr crtc)
 static const xf86CrtcFuncsRec drmmode_crtc_funcs = {
     .dpms = drmmode_crtc_dpms,
     .set_mode_major = drmmode_set_mode_major,
-    .set_cursor_colors = drmmode_set_cursor_colors,
-    .set_cursor_position = drmmode_set_cursor_position,
-    .show_cursor_check = drmmode_show_cursor,
-    .hide_cursor = drmmode_hide_cursor,
-    .load_cursor_argb_check = drmmode_load_cursor_argb_check,
+    .set_cursor_colors = ms_cursor_set_colors,
+    .set_cursor_position = ms_cursor_set_position,
+    .show_cursor_check = ms_cursor_show,
+    .hide_cursor = ms_cursor_hide,
+    .load_cursor_argb_check = ms_cursor_load_argb,
 
     .gamma_set = drmmode_crtc_gamma_set,
     .destroy = drmmode_crtc_destroy,
@@ -2894,7 +2741,8 @@ is_plane_assigned(ScrnInfoPtr scrn, int plane_id)
         xf86CrtcPtr iter = xf86_config->crtc[c];
         drmmode_crtc_private_ptr drmmode_crtc = iter->driver_private;
         if (drmmode_crtc->plane_id == plane_id ||
-            drmmode_crtc->overlay_plane.plane_id == plane_id)
+            drmmode_crtc->overlay_plane.plane_id == plane_id ||
+            drmmode_crtc->cursor.plane.id == plane_id)
             return TRUE;
     }
 
@@ -3125,51 +2973,82 @@ drmmode_plane_has_format(const drmModePlane *kplane, uint32_t format)
     return FALSE;
 }
 
+static uint32_t
+drmmode_crtc_find_plane(xf86CrtcPtr crtc, int num, enum drmmode_plane_type type,
+                        drmModeObjectProperties **plane_props)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_ptr drmmode = drmmode_crtc->drmmode;
+    drmModePlaneRes *kplane_res;
+    uint32_t plane_id = 0;
+    uint32_t i;
+
+    if (!drmmode_crtc->plane_id)
+        return 0;
+
+    kplane_res = drmModeGetPlaneResources(drmmode->fd);
+    for (i = 0; kplane_res && i < kplane_res->count_planes && !plane_id; i++) {
+        drmModePlane *kplane = drmModeGetPlane(drmmode->fd,
+                                               kplane_res->planes[i]);
+        drmModeObjectProperties *props = NULL;
+
+        if (kplane && (kplane->possible_crtcs & (1 << num)) &&
+            !is_plane_assigned(drmmode->scrn, kplane->plane_id) &&
+            drmmode_plane_has_format(kplane, DRM_FORMAT_ARGB8888))
+            props = drmModeObjectGetProperties(drmmode->fd, kplane->plane_id,
+                                               DRM_MODE_OBJECT_PLANE);
+        if (props &&
+            drmmode_prop_get_value(&drmmode_crtc->props_plane[DRMMODE_PLANE_TYPE],
+                                   props, DRMMODE_PLANE_TYPE__COUNT) == type) {
+            plane_id = kplane->plane_id;
+            if (plane_props) {
+                *plane_props = props;
+                props = NULL;
+            }
+        }
+        drmModeFreeObjectProperties(props);
+        drmModeFreePlane(kplane);
+    }
+    drmModeFreePlaneResources(kplane_res);
+    return plane_id;
+}
+
 static void
 drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
     drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
-    drmModePlaneRes *kplane_res;
-    uint32_t i;
+    drmModeObjectProperties *props = NULL;
 
-    if (!drmmode_crtc->plane_id)
-        return;
-
-    kplane_res = drmModeGetPlaneResources(drmmode->fd);
-    for (i = 0; kplane_res && i < kplane_res->count_planes &&
-         !overlay->plane_id; i++) {
-        drmModePlane *kplane = drmModeGetPlane(drmmode->fd,
-                                               kplane_res->planes[i]);
-        drmModeObjectProperties *props;
-
-        if (kplane && (kplane->possible_crtcs & (1 << num)) &&
-            !is_plane_assigned(drmmode->scrn, kplane->plane_id) &&
-            drmmode_plane_has_format(kplane, DRM_FORMAT_ARGB8888) &&
-            (props = drmModeObjectGetProperties(drmmode->fd, kplane->plane_id,
-                                                DRM_MODE_OBJECT_PLANE))) {
-            if (drmmode_prop_get_value(&drmmode_crtc->props_plane[DRMMODE_PLANE_TYPE],
-                                       props, DRMMODE_PLANE_TYPE__COUNT) ==
-                DRMMODE_PLANE_TYPE_OVERLAY) {
-                overlay->plane_id = kplane->plane_id;
-                drmmode_prop_info_update(drmmode, drmmode_crtc->props_plane,
-                                         DRMMODE_PLANE__COUNT, props);
-            }
-            drmModeFreeObjectProperties(props);
-        }
-        drmModeFreePlane(kplane);
-    }
-    drmModeFreePlaneResources(kplane_res);
-
+    overlay->plane_id = drmmode_crtc_find_plane(crtc, num,
+                                                DRMMODE_PLANE_TYPE_OVERLAY,
+                                                &props);
     if (!overlay->plane_id)
         return;
 
+    drmmode_prop_info_update(drmmode, drmmode_crtc->props_plane,
+                             DRMMODE_PLANE__COUNT, props);
+    drmModeFreeObjectProperties(props);
     if (drmmode->plane_color_pipeline)
         drmmode_plane_color_init(crtc, overlay->plane_id, &overlay->color);
     xf86DrvMsg(drmmode->scrn->scrnIndex, X_INFO,
                "Using overlay plane %u for CRTC %u\n", overlay->plane_id,
                drmmode_crtc->mode_crtc->crtc_id);
+}
+
+static void
+drmmode_crtc_find_cursor_plane(xf86CrtcPtr crtc, int num)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_cursor_plane_rec *plane = &drmmode_crtc->cursor.plane;
+
+    plane->id = drmmode_crtc_find_plane(crtc, num, DRMMODE_PLANE_TYPE_CURSOR,
+                                        NULL);
+    if (plane->id)
+        xf86DrvMsg(drmmode_crtc->drmmode->scrn->scrnIndex, X_INFO,
+                   "Using cursor plane %u for CRTC %u\n", plane->id,
+                   drmmode_crtc->mode_crtc->crtc_id);
 }
 
 static uint32_t
@@ -3264,8 +3143,10 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
                              DRMMODE_CRTC__COUNT, props);
     drmModeFreeObjectProperties(props);
     drmmode_crtc_create_planes(crtc, num);
-    if (modesettingPTR(pScrn)->atomic_modeset)
+    if (modesettingPTR(pScrn)->atomic_modeset) {
         drmmode_crtc_find_overlay_plane(crtc, num);
+        drmmode_crtc_find_cursor_plane(crtc, num);
+    }
     if (drmmode->plane_color_pipeline)
         drmmode_plane_color_init(crtc, drmmode_crtc->plane_id,
                                  &drmmode_crtc->plane_color);
@@ -5270,88 +5151,28 @@ drmmode_uevent_fini(ScrnInfoPtr scrn, drmmode_ptr drmmode)
 #endif
 }
 
-static void drmmode_probe_cursor_size(xf86CrtcPtr crtc)
-{
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint32_t handle = drmmode_crtc->cursor_bo->handle;
-    drmmode_ptr drmmode = drmmode_crtc->drmmode;
-    int width, height, size;
-
-    ms->min_cursor_width = ms->max_cursor_width;
-    ms->min_cursor_height = ms->max_cursor_height;
-
-    /* probe square min first */
-    for (size = 1; size <= ms->max_cursor_width &&
-             size <= ms->max_cursor_height; size *= 2) {
-        int ret;
-
-        ret = drmModeSetCursor2(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                                handle, size, size, 0, 0);
-        if (ret == 0)
-            break;
-    }
-
-    /* check if smaller width works with non-square */
-    for (width = 1; width <= size; width *= 2) {
-        int ret;
-
-        ret = drmModeSetCursor2(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                                handle, width, size, 0, 0);
-        if (ret == 0) {
-            ms->min_cursor_width = width;
-            break;
-        }
-    }
-
-    /* check if smaller height works with non-square */
-    for (height = 1; height <= size; height *= 2) {
-        int ret;
-
-        ret = drmModeSetCursor2(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                                handle, size, height, 0, 0);
-        if (ret == 0) {
-            ms->min_cursor_height = height;
-            break;
-        }
-    }
-
-    drmModeSetCursor2(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id, 0, 0, 0, 0, 0);
-}
-
 /* create front and cursor BOs */
 Bool
 drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
 {
     modesettingPtr ms = modesettingPTR(pScrn);
     xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
-    int width;
-    int height;
-    int bpp = ms->drmmode.kbpp;
+    int cpp = (ms->drmmode.kbpp + 7) / 8;
     int i;
-    int cpp = (bpp + 7) / 8;
-
-    width = pScrn->virtualX;
-    height = pScrn->virtualY;
 
     if (!drmmode->tearfree_enable) {
-        if (!drmmode_create_front_bo(drmmode, width, height))
+        if (!drmmode_create_front_bo(drmmode, pScrn->virtualX,
+                                     pScrn->virtualY))
             return FALSE;
         pScrn->displayWidth = drmmode_bo_get_pitch(&drmmode->front_bo) / cpp;
     }
 
-    width = ms->max_cursor_width;
-    height = ms->max_cursor_height;
-    bpp = 32;
     for (i = 0; i < xf86_config->num_crtc; i++) {
-        xf86CrtcPtr crtc = xf86_config->crtc[i];
-        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-
-        drmmode_crtc->cursor_bo =
-            dumb_bo_create(drmmode->fd, width, height, bpp);
+        if (!ms_cursor_create_buffers(xf86_config->crtc[i]))
+            return FALSE;
     }
 
-    drmmode_probe_cursor_size(xf86_config->crtc[0]);
+    ms_cursor_probe_sizes(xf86_config->crtc[0]);
 
     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, MS_LOGLEVEL_DEBUG,
                    "Supported cursor sizes %dx%d -> %dx%d\n",
@@ -5382,23 +5203,6 @@ drmmode_map_secondary_bo(drmmode_ptr drmmode, msPixmapPrivPtr ppriv)
     return ppriv->backing_bo->ptr;
 }
 
-Bool
-drmmode_map_cursor_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
-{
-    xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
-    int i, ret;
-
-    for (i = 0; i < xf86_config->num_crtc; i++) {
-        xf86CrtcPtr crtc = xf86_config->crtc[i];
-        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-
-        ret = dumb_bo_map(drmmode->fd, drmmode_crtc->cursor_bo);
-        if (ret)
-            return FALSE;
-    }
-    return TRUE;
-}
-
 void
 drmmode_free_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
 {
@@ -5414,9 +5218,8 @@ drmmode_free_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
 
     for (i = 0; i < xf86_config->num_crtc; i++) {
         xf86CrtcPtr crtc = xf86_config->crtc[i];
-        drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-        dumb_bo_destroy(drmmode->fd, drmmode_crtc->cursor_bo);
+        ms_cursor_destroy_buffers(crtc);
         drmmode_destroy_tearfree_shadow(crtc);
     }
 }

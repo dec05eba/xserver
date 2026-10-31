@@ -308,6 +308,7 @@ void ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
 void ms_prime_flip_aborted(xf86CrtcPtr crtc);
 xf86CrtcPtr ms_prime_crtc(PixmapPtr ppix);
 Bool ms_prime_crtc_flipping(xf86CrtcPtr crtc);
+Bool ms_prime_flip_wanted(xf86CrtcPtr crtc);
 void ms_prime_kick(xf86CrtcPtr crtc);
 void ms_prime_flush_kicks(ScreenPtr screen, void *timeout);
 Bool ms_prime_update_output_mode(ScrnInfoPtr scrn);
@@ -335,6 +336,25 @@ void ms_overlay_flip_failed(xf86CrtcPtr crtc);
 void ms_overlay_rejected(xf86CrtcPtr crtc, int error);
 void ms_overlay_destroy(xf86CrtcPtr crtc);
 
+Bool ms_cursor_create_buffers(xf86CrtcPtr crtc);
+Bool ms_cursor_map_buffers(ScrnInfoPtr scrn);
+void ms_cursor_destroy_buffers(xf86CrtcPtr crtc);
+void ms_cursor_probe_sizes(xf86CrtcPtr crtc);
+void ms_cursor_set_colors(xf86CrtcPtr crtc, int bg, int fg);
+void ms_cursor_set_position(xf86CrtcPtr crtc, int x, int y);
+Bool ms_cursor_show(xf86CrtcPtr crtc);
+void ms_cursor_hide(xf86CrtcPtr crtc);
+Bool ms_cursor_load_argb(xf86CrtcPtr crtc, CARD32 *image);
+Bool ms_cursor_needs_commit(xf86CrtcPtr crtc);
+Bool ms_cursor_in_flight(xf86CrtcPtr crtc);
+int ms_cursor_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc);
+void ms_cursor_committed(xf86CrtcPtr crtc, uint32_t seq, Bool alone);
+Bool ms_cursor_only_event(xf86CrtcPtr crtc, uint32_t seq);
+Bool ms_cursor_test(xf86CrtcPtr crtc);
+void ms_cursor_rejected(xf86CrtcPtr crtc, int error);
+void ms_cursor_flip_done(xf86CrtcPtr crtc, uint32_t seq);
+void ms_cursor_commit_pending(ScreenPtr screen);
+
 Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
 int ms_flush_drm_events(ScreenPtr screen);
 void ms_drain_drm_events(ScreenPtr screen);
@@ -342,6 +362,7 @@ Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
 #ifdef HAVE_GBM
+Bool ms_tearfree_flip_wanted(xf86CrtcPtr crtc);
 uint64_t ms_compose_timing_release(drmmode_compose_timing_rec *compose,
                                    Bool flipped);
 void ms_compose_timing_measured(drmmode_compose_timing_rec *compose,

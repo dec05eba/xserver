@@ -201,7 +201,8 @@ do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
             /* The failure could be caused by a pending TearFree flip, in which
              * case we should wait until there's a new event and try again.
              */
-            if (!trf->flip_seq || ms_flush_drm_events_timeout(screen, -1) < 0) {
+            if (!(trf->flip_seq || ms_cursor_in_flight(crtc)) ||
+                ms_flush_drm_events_timeout(screen, -1) < 0) {
                 ms_drm_abort_seq(crtc->scrn, seq);
                 return TRUE;
             }
@@ -1022,6 +1023,17 @@ ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next)
     elapsed = now > ust ? now - ust : 0;
     *next = ust + (elapsed / period + 1) * period;
     return TRUE;
+}
+
+Bool
+ms_tearfree_flip_wanted(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+
+    return RegionNotEmpty(&trf->buf[trf->back_idx ^ 1].dmg) ||
+        trf->scanout.fb_id || drmmode_crtc_has_pending_hdr(crtc) ||
+        !xorg_list_is_empty(&trf->dri_flip_list);
 }
 
 Bool

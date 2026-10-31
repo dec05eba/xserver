@@ -701,19 +701,14 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
         }
 
         /* Skip if the last flip is still pending or a DRI client is flipping */
-        if (trf->flip_seq || ms->drmmode.dri2_flipping ||
-            ms->drmmode.present_flipping)
+        if (trf->flip_seq || ms_cursor_in_flight(crtc) ||
+            ms->drmmode.dri2_flipping || ms->drmmode.present_flipping)
             continue;
 
         if (ms_compositor_direct_flip(crtc))
             continue;
 
-        /* Skip if there isn't any damage on the front buffer, it's on screen
-         * already and nothing waits for a flip
-         */
-        if (RegionNil(&trf->buf[trf->back_idx ^ 1].dmg) && !trf->scanout.fb_id &&
-            !drmmode_crtc_has_pending_hdr(crtc) &&
-            xorg_list_is_empty(&trf->dri_flip_list))
+        if (!ms_tearfree_flip_wanted(crtc))
             continue;
 
         if (!ms_tearfree_compose_due(crtc, timeout))
@@ -919,6 +914,7 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
     if (!pScreen->isGPU)
         ms_prime_flush_kicks(pScreen, timeout);
 #endif
+    ms_cursor_commit_pending(pScreen);
 }
 
 static void
@@ -2055,7 +2051,7 @@ CreateScreenResources(ScreenPtr pScreen)
     drmmode_uevent_init(pScrn, &ms->drmmode);
 
     if (!ms->drmmode.sw_cursor)
-        drmmode_map_cursor_bos(pScrn, &ms->drmmode);
+        ms_cursor_map_buffers(pScrn);
 
     if (dixPrivateKeyRegistered(rrPrivKey)) {
         rrScrPrivPtr pScrPriv = rrGetScrPriv(pScreen);
