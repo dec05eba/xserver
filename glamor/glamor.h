@@ -412,6 +412,7 @@ extern _X_EXPORT Bool
 
 extern _X_EXPORT const char *glamor_egl_get_driver_name(ScreenPtr screen);
 extern _X_EXPORT int glamor_egl_create_fence_fd(ScreenPtr screen);
+extern _X_EXPORT int glamor_egl_pixmap_rendering_fd(PixmapPtr pixmap);
 
 #endif
 

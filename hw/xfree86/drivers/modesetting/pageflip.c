@@ -909,20 +909,39 @@ ms_compose_elapsed(drmmode_compose_timing_rec *compose, uint64_t end)
     return end > compose->start ? end - compose->start : 0;
 }
 
+static uint64_t
+ms_compose_clients_done(drmmode_render_fences_rec *fences)
+{
+    uint64_t done = 0, signaled;
+    int i;
+
+    for (i = 0; i < fences->num; i++) {
+        if (ms_fence_signal_time(fences->fd[i], &signaled))
+            done = max(done, signaled);
+        close(fences->fd[i]);
+    }
+    fences->num = 0;
+    return done;
+}
+
 uint64_t
 ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 {
+    uint64_t start = max(compose->start,
+                         ms_compose_clients_done(&compose->clients));
     uint64_t signaled = 0;
 
     if (compose->fence_fd < 0)
         return 0;
 
-    if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled))
+    if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled) &&
+        compose->start)
         compose->usec = max(compose->usec,
-                            ms_compose_elapsed(compose, signaled));
+                            signaled > start ? signaled - start : 0);
 
     close(compose->fence_fd);
     compose->fence_fd = -1;
+    compose->start = 0;
     return signaled;
 }
 
@@ -1068,6 +1087,8 @@ ms_tearfree_compose(xf86CrtcPtr crtc, drmmode_shadow_fb_ptr buf)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
 
+    ms_compositor_take_client_rendering(crtc->scrn->pScreen, &crtc->bounds,
+                                        compose);
     compose->start = GetTimeInMicros();
     compose->fence_fd = drmmode_compose_damage_fenced(crtc, buf->px,
                                                       &buf->dmg);

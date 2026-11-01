@@ -266,10 +266,16 @@ typedef struct {
 } drmmode_commit_lead_rec;
 
 typedef struct {
+    int fd[8];
+    int num;
+} drmmode_render_fences_rec;
+
+typedef struct {
     uint64_t usec;
     uint64_t start;
     int fence_fd;
     drmmode_commit_lead_rec lead;
+    drmmode_render_fences_rec clients;
 } drmmode_compose_timing_rec;
 
 typedef struct {

@@ -103,6 +103,7 @@ present_vblank_init(present_vblank_ptr vblank,
 
     xorg_list_append(&vblank->window_list, &window_priv->vblank);
     xorg_list_init(&vblank->event_queue);
+    vblank->rendering_fd = -1;
 
     vblank->screen = screen;
     vblank->window = window;
@@ -291,6 +292,11 @@ present_vblank_destroy(present_vblank_ptr vblank)
 
     if (vblank->notifies)
         present_destroy_notifies(vblank->notifies, vblank->num_notifies);
+
+    if (vblank->rendering_fd >= 0) {
+        SetNotifyFd(vblank->rendering_fd, NULL, 0, NULL);
+        close(vblank->rendering_fd);
+    }
 
 #ifdef DRI3
     if (vblank->efd >= 0) {

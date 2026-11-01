@@ -1126,6 +1126,7 @@ load_glamor(ScrnInfoPtr pScrn)
     ms->glamor.xv_init = LoaderSymbolFromModule(mod, "glamor_xv_init");
     ms->glamor.egl_get_driver_name = LoaderSymbolFromModule(mod, "glamor_egl_get_driver_name");
     ms->glamor.egl_create_fence_fd = LoaderSymbolFromModule(mod, "glamor_egl_create_fence_fd");
+    ms->glamor.egl_pixmap_rendering_fd = LoaderSymbolFromModule(mod, "glamor_egl_pixmap_rendering_fd");
     ms->glamor.convert_color = LoaderSymbolFromModule(mod, "glamor_convert_color");
 
     return TRUE;
@@ -2605,6 +2606,7 @@ CloseScreen(ScreenPtr pScreen)
     }
 
     ms_hdr_close_screen(pScreen);
+    ms_compositor_close_screen(pScreen);
 
     pScreen->CreateScreenResources = ms->createScreenResources;
     pScreen->BlockHandler = ms->BlockHandler;

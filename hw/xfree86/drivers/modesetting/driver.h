@@ -101,6 +101,11 @@ struct ms_drm_queue {
     Bool aborted;
 };
 
+typedef struct {
+    int fd;
+    BoxRec box;
+} ms_client_render_rec;
+
 typedef struct _modesettingRec {
     int fd;
     Bool fd_passed;
@@ -157,6 +162,8 @@ typedef struct _modesettingRec {
     struct {
         xf86EnableDisableFBAccessProc *EnableDisableFBAccess;
         struct xorg_list sw_cursors;
+        ms_client_render_rec renders[16];
+        int num_renders;
     } compositor;
 
     /* shadow API */
@@ -196,6 +203,7 @@ typedef struct _modesettingRec {
         XF86VideoAdaptorPtr (*xv_init)(ScreenPtr, int);
         const char *(*egl_get_driver_name)(ScreenPtr);
         int (*egl_create_fence_fd)(ScreenPtr);
+        int (*egl_pixmap_rendering_fd)(PixmapPtr);
         Bool (*convert_color)(PixmapPtr, PixmapPtr, RegionPtr, int, int, Bool,
                               CARD16, const glamor_color_conversion *);
     } glamor;
@@ -372,6 +380,11 @@ void ms_compose_timing_measured(drmmode_compose_timing_rec *compose,
 #endif
 
 void ms_compositor_screen_init(ScrnInfoPtr scrn);
+void ms_compositor_close_screen(ScreenPtr screen);
+void ms_compositor_client_rendering(WindowPtr window, int fd);
+void ms_compositor_take_client_rendering(ScreenPtr screen,
+                                         const BoxRec *bounds,
+                                         drmmode_compose_timing_rec *compose);
 Bool ms_compositor_create_screen_resources(ScreenPtr screen);
 void ms_compositor_update_damages(ScreenPtr screen);
 void ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region);

@@ -32,8 +32,10 @@
 #define GLAMOR_FOR_XORG
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <linux/dma-buf.h>
 #include <xf86.h>
 #include <xf86Priv.h>
 #include <xf86drm.h>
@@ -1202,6 +1204,42 @@ glamor_egl_create_fence_fd(ScreenPtr screen)
     fd = eglDupNativeFenceFDANDROID(glamor_egl->display, sync);
     eglDestroySyncKHR(glamor_egl->display, sync);
     return fd;
+}
+
+int
+glamor_egl_pixmap_rendering_fd(PixmapPtr pixmap)
+{
+#ifdef DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+    struct dma_buf_export_sync_file args = {
+        .flags = DMA_BUF_SYNC_READ,
+        .fd = -1,
+    };
+    struct pollfd pfd = { .events = POLLIN };
+    struct gbm_bo *bo;
+    int dmabuf_fd;
+
+    bo = glamor_gbm_bo_from_pixmap_internal(pixmap->drawable.pScreen, pixmap);
+    if (!bo)
+        return -1;
+
+    dmabuf_fd = gbm_bo_get_fd(bo);
+    gbm_bo_destroy(bo);
+    if (dmabuf_fd < 0)
+        return -1;
+
+    if (drmIoctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &args) != 0)
+        args.fd = -1;
+    close(dmabuf_fd);
+
+    pfd.fd = args.fd;
+    if (args.fd >= 0 && poll(&pfd, 1, 0) != 0) {
+        close(args.fd);
+        return -1;
+    }
+    return args.fd;
+#else
+    return -1;
+#endif
 }
 
 static Bool

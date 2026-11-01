@@ -93,6 +93,7 @@ struct present_vblank {
     PresentFlipReason   reason;         /* reason for which flip is not possible */
     Bool                has_suboptimal; /* whether client can support SuboptimalCopy mode */
     Bool                executed;
+    int                 rendering_fd;   /* readable once the pixmap is rendered */
     uint64_t            hidden_since;   /* held back while the window is hidden */
 #ifdef DRI3
     struct dri3_syncobj *acquire_syncobj;

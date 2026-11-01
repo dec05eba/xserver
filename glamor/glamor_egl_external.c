@@ -23,6 +23,7 @@
 
 #include "dix-config.h"
 
+#include <poll.h>
 #include <unistd.h>
 #include <linux/dma-buf.h>
 #include <xf86drm.h>
@@ -140,11 +141,18 @@ glamor_egl_external_wait_writers(struct glamor_egl_external_pixmap *pixmap)
         .fd = -1,
     };
     EGLint attribs[] = { EGL_SYNC_NATIVE_FENCE_FD_ANDROID, -1, EGL_NONE };
+    struct pollfd pfd = { .events = POLLIN };
     EGLSyncKHR sync;
 
     if (pixmap->dmabuf_fd < 0 || !context->has_native_fence ||
         drmIoctl(pixmap->dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &args) != 0)
         return;
+
+    pfd.fd = args.fd;
+    if (poll(&pfd, 1, 0) != 0) {
+        close(args.fd);
+        return;
+    }
 
     attribs[1] = args.fd;
     sync = eglCreateSyncKHR(context->display, EGL_SYNC_NATIVE_FENCE_ANDROID,
