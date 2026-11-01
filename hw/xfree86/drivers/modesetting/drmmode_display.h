@@ -449,6 +449,7 @@ typedef struct {
     int flight;
     uint32_t flight_seq;
     Bool flight_alone;
+    int scanout_busy_fd;
 } drmmode_cursor_plane_rec;
 
 typedef struct {

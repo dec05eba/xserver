@@ -421,6 +421,61 @@ ms_cursor_moved_notify(int fd, int ready, void *data)
         return;
 }
 
+static PixmapPtr
+ms_cursor_scanout_pixmap(xf86CrtcPtr crtc)
+{
+#ifdef HAVE_GBM
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+
+    if (trf->scanout.pixmap)
+        return trf->scanout.pixmap;
+    if (ms_tearfree_is_active_on_crtc(crtc))
+        return trf->buf[trf->back_idx ^ 1].px;
+#endif
+    return NULL;
+}
+
+static void
+ms_cursor_scanout_idle(int fd, int ready, void *data)
+{
+    xf86CrtcPtr crtc = data;
+
+    SetNotifyFd(fd, NULL, 0, NULL);
+    close(fd);
+    ms_cursor(crtc)->plane.scanout_busy_fd = -1;
+}
+
+/* With HDR, amdgpu commits the plane below the cursor again with a cursor
+ * update, which then waits for GPU work on the buffer on screen, like another
+ * client reading it, and holds up the next flip meanwhile.
+ */
+static Bool
+ms_cursor_scanout_busy(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_cursor_plane_rec *plane = &ms_cursor(crtc)->plane;
+    PixmapPtr pixmap;
+
+    if (plane->scanout_busy_fd >= 0)
+        return TRUE;
+
+    if (!drmmode_crtc_hdr_enabled(crtc))
+        return FALSE;
+
+    pixmap = ms_cursor_scanout_pixmap(crtc);
+    if (!pixmap || !ms->glamor.egl_pixmap_rendering_fd)
+        return FALSE;
+
+    plane->scanout_busy_fd = ms->glamor.egl_pixmap_rendering_fd(pixmap);
+    if (plane->scanout_busy_fd < 0)
+        return FALSE;
+
+    SetNotifyFd(plane->scanout_busy_fd, ms_cursor_scanout_idle,
+                X_NOTIFY_READ, crtc);
+    return TRUE;
+}
+
 void
 ms_cursor_screen_init(ScrnInfoPtr scrn)
 {
@@ -436,6 +491,15 @@ void
 ms_cursor_close_screen(ScrnInfoPtr scrn)
 {
     modesettingPtr ms = modesettingPTR(scrn);
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++) {
+        drmmode_cursor_plane_rec *plane = &ms_cursor(config->crtc[i])->plane;
+
+        if (plane->scanout_busy_fd >= 0)
+            ms_cursor_scanout_idle(plane->scanout_busy_fd, 0, config->crtc[i]);
+    }
 
     if (ms->cursor_moved_fd < 0)
         return;
@@ -598,6 +662,9 @@ ms_cursor_commit(xf86CrtcPtr crtc)
     int ret;
 
     if (!scrn->vtSema || !xf86_crtc_on(crtc))
+        return;
+
+    if (ms_cursor_scanout_busy(crtc))
         return;
 
     seq = ms_drm_queue_alloc(crtc, crtc, ms_cursor_handler, ms_cursor_abort);

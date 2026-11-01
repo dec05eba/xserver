@@ -3234,6 +3234,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     drmmode_crtc->prime_scanout.commit.content.buf_idx = -1;
     drmmode_crtc->prime_scanout.commit.flight.buf_idx = -1;
     drmmode_crtc->next_msc = UINT64_MAX;
+    drmmode_crtc->cursor.plane.scanout_busy_fd = -1;
 
     props = drmModeObjectGetProperties(drmmode->fd, mode_res->crtcs[num],
                                        DRM_MODE_OBJECT_CRTC);
