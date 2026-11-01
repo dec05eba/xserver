@@ -1232,7 +1232,9 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         drmmode_hdr_rec *hdr = &drmmode_crtc->hdr;
         drmmode_hdr_blobs hdr_blobs = { 0 };
         Bool with_hdr = hdr->has_pending;
-        uint32_t overlay_matrix = 0;
+        Bool overlay_toggled = with_overlay &&
+            !overlay->fb_id != !overlay->next_fb_id;
+        uint32_t overlay_matrix = 0, primary_matrix = 0;
 
         if (!req)
             return 1;
@@ -1250,6 +1252,17 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             ret = overlay_plane_add_props(req, crtc,
                                           with_hdr ? &hdr->pending :
                                           &hdr->current, &overlay_matrix);
+        /* amdgpu can lose the colour pipeline of the primary plane when the
+         * overlay plane is turned on or off, so it's committed again then.
+         */
+        if (ret == 0 && overlay_toggled && !with_hdr &&
+            drmmode_plane_color_supported(crtc))
+            ret = drmmode_plane_color_add_props(req, crtc,
+                                                drmmode_crtc->plane_id,
+                                                &drmmode_crtc->plane_color,
+                                                hdr->current.plane_sdr_to_pq,
+                                                hdr->current.sdr_white_level,
+                                                &primary_matrix);
         if (ret == 0 && with_cursor)
             ret = ms_cursor_add_props(req, crtc);
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
@@ -1259,6 +1272,8 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         drmmode_destroy_hdr_blobs(drmmode_crtc->drmmode, &hdr_blobs);
         if (overlay_matrix)
             drmModeDestroyPropertyBlob(ms->fd, overlay_matrix);
+        if (primary_matrix)
+            drmModeDestroyPropertyBlob(ms->fd, primary_matrix);
 
         if (ret == 0) {
             drmmode_crtc->scanout_layout = layout;
