@@ -344,24 +344,23 @@ static Bool
 ms_present_check_window_flip(RRCrtcPtr crtc,
                              WindowPtr window,
                              PixmapPtr pixmap,
-                             Bool sync_flip,
                              PresentFlipReason *reason)
 {
     xf86CrtcPtr xf86_crtc = crtc->devPrivate;
     modesettingPtr ms = modesettingPTR(xf86_crtc->scrn);
 
     if (crtc->pScreen != window->drawable.pScreen)
-        return ms_prime_crtc_flipping(xf86_crtc) &&
-            (sync_flip || ms_compositor_prime_output_for_window(window));
+        return ms_prime_crtc_flipping(xf86_crtc);
 
     if (!ms_tearfree_is_active_on_crtc(xf86_crtc))
         return FALSE;
 
-    if (!ms_present_window_covers_crtc(window, xf86_crtc))
-        return sync_flip;
+    if (ms_present_window_covers_crtc(window, xf86_crtc) &&
+        !ms->glamor.pixmap_is_external(pixmap) &&
+        !ms_present_format_supported(window->drawable.pScreen, pixmap, reason))
+        return FALSE;
 
-    return ms->glamor.pixmap_is_external(pixmap) ||
-        ms_present_format_supported(window->drawable.pScreen, pixmap, reason);
+    return TRUE;
 }
 
 static Bool
@@ -379,8 +378,7 @@ ms_present_check_flip(RRCrtcPtr crtc,
         *reason = PRESENT_FLIP_REASON_UNKNOWN;
 
     if (ms->drmmode.tearfree_enable)
-        return ms_present_check_window_flip(crtc, window, pixmap, sync_flip,
-                                            reason);
+        return ms_present_check_window_flip(crtc, window, pixmap, reason);
 
     if (ms->drmmode.sprites_visible > 0)
         goto no_flip;
