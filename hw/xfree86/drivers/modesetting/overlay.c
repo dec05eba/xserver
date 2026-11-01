@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <xf86.h>
 #include <xf86Crtc.h>
+#include <compositeext.h>
 
 #include "driver.h"
 
@@ -146,6 +147,46 @@ ms_overlay_clear_next(xf86CrtcPtr crtc)
     overlay->next_fb_id = 0;
 }
 
+static void
+ms_overlay_forget_cover(xf86CrtcPtr crtc)
+{
+    ms_overlay_plane(crtc)->cover.window = NULL;
+}
+
+Bool
+ms_overlay_cover_shown(xf86CrtcPtr crtc, WindowPtr window, RegionPtr cover,
+                       Bool pq)
+{
+    drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
+    drmmode_overlay_cover_rec *shown = &overlay->cover;
+
+    return overlay->fb_id && shown->window == window && shown->pq == pq &&
+        shown->serial == CompositeServerCoverSerial(window, cover) &&
+        RegionEqual(&shown->region, cover);
+}
+
+void
+ms_overlay_keep(xf86CrtcPtr crtc)
+{
+    drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
+
+    ms_overlay_clear_next(crtc);
+    overlay->next_fb_id = overlay->fb_id;
+}
+
+void
+ms_overlay_queue_cover(xf86CrtcPtr crtc, const BoxRec *box, WindowPtr window,
+                       RegionPtr cover, Bool pq)
+{
+    drmmode_overlay_cover_rec *queued = &ms_overlay_plane(crtc)->cover;
+
+    ms_overlay_queue(crtc, box);
+    queued->window = window;
+    queued->pq = pq;
+    queued->serial = CompositeServerCoverSerial(window, cover);
+    RegionCopy(&queued->region, cover);
+}
+
 void
 ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box)
 {
@@ -179,6 +220,7 @@ void
 ms_overlay_flip_aborted(xf86CrtcPtr crtc)
 {
     ms_overlay_plane(crtc)->buffers.pending = FALSE;
+    ms_overlay_forget_cover(crtc);
 }
 
 void
@@ -188,6 +230,7 @@ ms_overlay_flip_failed(xf86CrtcPtr crtc)
 
     overlay->buffers.pending = FALSE;
     ms_overlay_clear_next(crtc);
+    ms_overlay_forget_cover(crtc);
 }
 
 void
@@ -210,4 +253,5 @@ ms_overlay_destroy(xf86CrtcPtr crtc)
     ms_overlay_destroy_buffers(crtc);
     overlay->fb_id = 0;
     ms_overlay_clear_next(crtc);
+    ms_overlay_forget_cover(crtc);
 }

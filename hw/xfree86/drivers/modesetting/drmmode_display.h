@@ -395,6 +395,13 @@ typedef struct {
 } drmmode_overlay_buffers_rec;
 
 typedef struct {
+    WindowPtr window;
+    RegionRec region;
+    uint64_t serial;
+    Bool pq;
+} drmmode_overlay_cover_rec;
+
+typedef struct {
     uint32_t plane_id;
     uint32_t fb_id;
     uint32_t next_fb_id;
@@ -402,6 +409,7 @@ typedef struct {
     BoxRec next_box;
     drmmode_plane_color_rec color;
     drmmode_overlay_buffers_rec buffers;
+    drmmode_overlay_cover_rec cover;
 } drmmode_overlay_plane_rec;
 
 typedef struct {

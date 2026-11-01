@@ -1233,7 +1233,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     Bool format_changed = layout.format != drmmode_crtc->scanout_layout.format;
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
     Bool with_overlay = overlay->plane_id &&
-        (overlay->fb_id || overlay->next_fb_id);
+        overlay->fb_id != overlay->next_fb_id;
     Bool with_cursor = ms_cursor_needs_commit(crtc);
     int ret;
 
@@ -3071,6 +3071,7 @@ drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
     drmModeObjectProperties *props = NULL;
 
     overlay->next_fence_fd = -1;
+    RegionNull(&overlay->cover.region);
     overlay->plane_id = drmmode_crtc_find_plane(crtc, num,
                                                 DRMMODE_PLANE_TYPE_OVERLAY,
                                                 &props);

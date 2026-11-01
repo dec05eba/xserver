@@ -220,6 +220,7 @@ typedef struct _CompServerWindow {
     RegionRec painted;
     Bool seen;
     Bool hidden;
+    uint64_t damageSerial;
     CARD32 presentCount;
     CompServerHeldFrameRec held;
     CompServerFrameWaitRec wait;
@@ -262,6 +263,8 @@ typedef struct _CompServerFrameTiming {
 
 typedef struct _CompServer {
     RegionRec damage;
+    uint64_t damageSerial;
+    uint64_t layoutSerial;
     struct xorg_list windows;
     struct xorg_list directWindows;
     CompositeServerPaintHdrProcPtr PaintHdr;

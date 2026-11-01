@@ -352,6 +352,11 @@ int ms_dmabuf_writer_fence(int dmabuf_fd);
 void ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box);
 PixmapPtr ms_overlay_back_buffer(xf86CrtcPtr crtc);
 void ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box);
+Bool ms_overlay_cover_shown(xf86CrtcPtr crtc, WindowPtr window,
+                            RegionPtr cover, Bool pq);
+void ms_overlay_keep(xf86CrtcPtr crtc);
+void ms_overlay_queue_cover(xf86CrtcPtr crtc, const BoxRec *box,
+                            WindowPtr window, RegionPtr cover, Bool pq);
 void ms_overlay_flip_done(xf86CrtcPtr crtc);
 void ms_overlay_flip_aborted(xf86CrtcPtr crtc);
 void ms_overlay_flip_failed(xf86CrtcPtr crtc);

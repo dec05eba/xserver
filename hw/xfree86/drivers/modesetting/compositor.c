@@ -921,9 +921,17 @@ ms_compositor_overlay_cover(xf86CrtcPtr crtc, WindowPtr window,
     BoxRec box;
     Bool pq;
 
+    if (!drmmode_crtc_overlay_content(crtc, &pq))
+        return FALSE;
+
+    if (!drmmode_crtc_has_pending_hdr(crtc) &&
+        ms_overlay_cover_shown(crtc, window, cover, pq)) {
+        ms_overlay_keep(crtc);
+        return TRUE;
+    }
+
     ms_overlay_box(cover, &crtc->bounds, &box);
-    if (!drmmode_crtc_overlay_content(crtc, &pq) ||
-        !(back = ms_overlay_back_buffer(crtc)) ||
+    if (!(back = ms_overlay_back_buffer(crtc)) ||
         !ms_compositor_paint_cover(crtc, back, &box, cover, window, pq,
                                    &drmmode_crtc->overlay_plane.buffers.cover_sdr))
         return FALSE;
@@ -932,7 +940,7 @@ ms_compositor_overlay_cover(xf86CrtcPtr crtc, WindowPtr window,
     box.y1 -= crtc->bounds.y1;
     box.x2 -= crtc->bounds.x1;
     box.y2 -= crtc->bounds.y1;
-    ms_overlay_queue(crtc, &box);
+    ms_overlay_queue_cover(crtc, &box, window, cover, pq);
     return TRUE;
 }
 
@@ -1071,6 +1079,7 @@ ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
     ScrnInfoPtr scrn = crtc->scrn;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
+    drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
     PixmapPtr pixmap = NULL;
     WindowPtr window;
     RegionRec cover;
@@ -1081,9 +1090,10 @@ ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
     covered = RegionNotEmpty(&cover);
     if (window && ms_compositor_update_output_mode(crtc, window) &&
         (!covered || ms_compositor_overlay_cover(crtc, window, &cover))) {
-        if (pixmap == scanout->pixmap && scanout->fb_id && !covered &&
-            !drmmode_crtc->overlay_plane.fb_id &&
+        if (pixmap == scanout->pixmap && scanout->fb_id &&
+            overlay->next_fb_id == overlay->fb_id &&
             !drmmode_crtc_has_pending_hdr(crtc)) {
+            ms_overlay_clear_next(crtc);
             ms_tearfree_dri_complete_at_vblank(crtc);
             flipped = TRUE;
         } else {

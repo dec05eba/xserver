@@ -187,18 +187,47 @@ void
 compServerAddDamage(CompServerPtr server, RegionPtr pRegion)
 {
     RegionUnion(&server->damage, &server->damage, pRegion);
+    server->layoutSerial = ++server->damageSerial;
 }
 
 void
 compServerCollectDamage(WindowPtr pWin)
 {
     CompServerPtr server = compServerGet(pWin->drawable.pScreen);
+    CompServerWindowPtr sw = GetCompServerWindow(pWin);
     DamagePtr pDamage = GetCompWindow(pWin)->damage;
     RegionPtr pRegion = DamageRegion(pDamage);
 
     RegionTranslate(pRegion, pWin->drawable.x, pWin->drawable.y);
-    compServerAddDamage(server, pRegion);
+    if (sw) {
+        RegionUnion(&server->damage, &server->damage, pRegion);
+        sw->damageSerial = ++server->damageSerial;
+    } else {
+        compServerAddDamage(server, pRegion);
+    }
     DamageEmpty(pDamage);
+}
+
+uint64_t
+CompositeServerCoverSerial(WindowPtr pWin, RegionPtr pRegion)
+{
+    CompServerPtr server = compServerGet(pWin->drawable.pScreen);
+    WindowPtr pTop = compServerToplevel(pWin), pAbove;
+    uint64_t serial;
+
+    if (!server)
+        return 0;
+
+    serial = server->layoutSerial;
+    for (pAbove = pWin->drawable.pScreen->root->firstChild;
+         pAbove && pAbove != pTop; pAbove = pAbove->nextSib) {
+        CompServerWindowPtr sw = GetCompServerWindow(pAbove);
+
+        if (sw && RegionContainsRect(pRegion,
+                                     RegionExtents(&pAbove->borderSize)) != rgnOUT)
+            serial = max(serial, sw->damageSerial);
+    }
+    return serial;
 }
 
 static CompServerWindowPtr
