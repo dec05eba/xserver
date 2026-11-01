@@ -58,8 +58,6 @@ static void present_syncobj_triggered(int fd, int xevents, void *data)
 }
 #endif /* DRI3 */
 
-#define PRESENT_HIDDEN_MAX_HOLD_USEC 1000000
-
 static uint64_t *
 present_client_last_shown_usec(PixmapPtr pixmap)
 {
@@ -79,9 +77,10 @@ present_wait_shown(present_vblank_ptr vblank, uint64_t crtc_msc)
     WindowPtr window = vblank->window;
     ScreenPtr screen = window->drawable.pScreen;
     present_screen_priv_ptr screen_priv = present_screen_priv(screen);
+    uint64_t hold = screen_priv->hidden_frame_usec;
     uint64_t now = GetTimeInMicros(), *shown;
 
-    if (!vblank->pixmap)
+    if (!vblank->pixmap || !hold)
         return FALSE;
 
     shown = present_client_last_shown_usec(vblank->pixmap);
@@ -92,12 +91,12 @@ present_wait_shown(present_vblank_ptr vblank, uint64_t crtc_msc)
         return FALSE;
     }
 
-    if (shown && *shown && now - *shown < PRESENT_HIDDEN_MAX_HOLD_USEC)
+    if (shown && *shown && now - *shown < hold)
         return FALSE;
 
     if (!vblank->hidden_since)
         vblank->hidden_since = now;
-    if (now - vblank->hidden_since >= PRESENT_HIDDEN_MAX_HOLD_USEC)
+    if (now - vblank->hidden_since >= hold)
         return FALSE;
 
     return screen_priv->queue_vblank(screen, window, vblank->crtc,

@@ -652,6 +652,27 @@ ms_present_allow_tearing(ScrnInfoPtr scrn)
     return allow_tearing;
 }
 
+static int
+ms_present_hidden_window_fps(ScrnInfoPtr scrn)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+    MessageType from = X_DEFAULT;
+    int fps = 1;
+
+    if (xf86GetOptValInteger(ms->drmmode.Options, OPTION_HIDDEN_WINDOW_FPS,
+                             &fps)) {
+        from = X_CONFIG;
+        if (fps < 0) {
+            xf86DrvMsg(scrn->scrnIndex, X_WARNING,
+                       "HiddenWindowFPS must not be negative, using 1\n");
+            from = X_DEFAULT;
+            fps = 1;
+        }
+    }
+    xf86DrvMsg(scrn->scrnIndex, from, "HiddenWindowFPS: %d\n", fps);
+    return fps;
+}
+
 Bool
 ms_present_screen_init(ScreenPtr screen)
 {
@@ -667,5 +688,9 @@ ms_present_screen_init(ScreenPtr screen)
         ms->drmmode.can_async_flip = allow_tearing;
     }
 
-    return present_screen_init(screen, &ms_present_screen_info);
+    if (!present_screen_init(screen, &ms_present_screen_info))
+        return FALSE;
+
+    present_set_hidden_window_fps(screen, ms_present_hidden_window_fps(scrn));
+    return TRUE;
 }

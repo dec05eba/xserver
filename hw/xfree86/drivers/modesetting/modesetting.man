@@ -118,6 +118,17 @@ either way.
 The default is
 .B off.
 .TP
+.BI "Option \*qHiddenWindowFPS\*q \*q" integer \*q
+With
+.B Compositing,
+applications whose windows are completely covered or off screen show at most
+this many frames per second, so they don't take GPU time from what's visible.
+Applications that wait for their frames to be shown slow down to the same
+rate. 0 lets them run as if they were visible.
+.br
+The default is
+.B 1.
+.TP
 .BI "Option \*qZaphodHeads\*q \*q" string \*q
 Specify the RandR output(s) to use with zaphod mode for a particular driver
 instance.  If you use this option you must use this option for all instances

@@ -194,6 +194,7 @@ present_screen_priv_init(ScreenPtr screen)
 
     dixSetPrivate(&screen->devPrivates, &present_screen_private_key, screen_priv);
     screen_priv->pScreen = screen;
+    screen_priv->hidden_frame_usec = 1000000;
     xorg_list_init(&screen_priv->flip_slots);
 
     return screen_priv;
@@ -240,6 +241,15 @@ present_screen_init(ScreenPtr screen, present_screen_info_ptr info)
     }
 
     return TRUE;
+}
+
+void
+present_set_hidden_window_fps(ScreenPtr screen, int fps)
+{
+    present_screen_priv_ptr screen_priv = present_screen_priv(screen);
+
+    if (screen_priv)
+        screen_priv->hidden_frame_usec = fps > 0 ? 1000000 / fps : 0;
 }
 
 /*

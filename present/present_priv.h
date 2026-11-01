@@ -193,6 +193,7 @@ struct present_screen_priv {
     struct xorg_list            flip_slots;
 
     uint32_t                    fake_interval;
+    uint64_t                    hidden_frame_usec;
 
     present_screen_info_ptr     info;
 

@@ -111,6 +111,12 @@ each vblank and they still run uncapped. To show their frames immediately with
 async flips, which can tear, set the `AllowTearing` option to true in the
 Device section of xorg.conf.
 
+Applications whose windows are completely covered or off screen, for example on
+another workspace, are slowed down to 1 frame per second, so they don't take
+GPU time from what you're looking at. The `HiddenWindowFPS` option in the
+Device section of xorg.conf sets that rate, and 0 lets them run as if they were
+visible.
+
 On laptops with two GPUs, fullscreen applications started with NVIDIA's
 `prime-run` on a monitor connected to the NVIDIA GPU are scanned out straight
 from the NVIDIA GPU's memory. They avoid all copies, so they perform the same

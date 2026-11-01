@@ -179,6 +179,9 @@ extern _X_EXPORT Bool
 present_screen_init(ScreenPtr screen, present_screen_info_ptr info);
 
 extern _X_EXPORT void
+present_set_hidden_window_fps(ScreenPtr screen, int fps);
+
+extern _X_EXPORT void
 present_check_flips(WindowPtr window);
 
 extern _X_EXPORT PixmapPtr
