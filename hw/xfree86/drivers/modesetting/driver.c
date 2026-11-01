@@ -555,6 +555,7 @@ GetRec(ScrnInfoPtr pScrn)
         return TRUE;
 
     pScrn->driverPrivate = XNFcallocarray(1, sizeof(modesettingRec));
+    modesettingPTR(pScrn)->cursor_moved_fd = -1;
 
     return TRUE;
 }
@@ -915,7 +916,7 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
     if (!pScreen->isGPU)
         ms_prime_flush_kicks(pScreen, timeout);
 #endif
-    ms_cursor_commit_pending(pScreen);
+    ms_cursor_commit_pending(pScreen, timeout);
 }
 
 static void
@@ -2373,11 +2374,13 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
         ms_compositor_screen_init(pScrn);
 
     /* Need to extend HWcursor support to handle mask interleave */
-    if (!ms->drmmode.sw_cursor)
+    if (!ms->drmmode.sw_cursor) {
         xf86_cursors_init(pScreen, ms->max_cursor_width, ms->max_cursor_height,
                           HARDWARE_CURSOR_SOURCE_MASK_INTERLEAVE_64 |
                           HARDWARE_CURSOR_UPDATE_UNHIDDEN |
                           HARDWARE_CURSOR_ARGB);
+        ms_cursor_screen_init(pScrn);
+    }
 
     /* Must force it before EnterVT, so we are in control of VT and
      * later memory should be bound when allocating, e.g rotate_mem */
@@ -2566,6 +2569,8 @@ CloseScreen(ScreenPtr pScreen)
 
     /* Clear mask of assigned crtc's in this generation */
     ms_ent->assigned_crtcs = 0;
+
+    ms_cursor_close_screen(pScrn);
 
 #ifdef DRI2
     if (ms->drmmode.dri2_enable) {

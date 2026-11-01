@@ -166,6 +166,8 @@ typedef struct _modesettingRec {
         int num_renders;
     } compositor;
 
+    int cursor_moved_fd;
+
     /* shadow API */
     struct {
         Bool (*Setup)(ScreenPtr);
@@ -363,7 +365,11 @@ Bool ms_cursor_only_event(xf86CrtcPtr crtc, uint32_t seq);
 Bool ms_cursor_test(xf86CrtcPtr crtc);
 void ms_cursor_rejected(xf86CrtcPtr crtc, int error);
 void ms_cursor_flip_done(xf86CrtcPtr crtc, uint32_t seq);
-void ms_cursor_commit_pending(ScreenPtr screen);
+void ms_cursor_commit_pending(ScreenPtr screen, void *timeout);
+Bool ms_cursor_take_moved(xf86CrtcPtr crtc);
+void ms_cursor_set_moved(xf86CrtcPtr crtc);
+void ms_cursor_screen_init(ScrnInfoPtr scrn);
+void ms_cursor_close_screen(ScrnInfoPtr scrn);
 
 Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
 int ms_flush_drm_events(ScreenPtr screen);

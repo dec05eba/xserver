@@ -1235,9 +1235,12 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         Bool overlay_toggled = with_overlay &&
             !overlay->fb_id != !overlay->next_fb_id;
         uint32_t overlay_matrix = 0, primary_matrix = 0;
+        Bool cursor_moved;
 
         if (!req)
             return 1;
+
+        cursor_moved = with_cursor && ms_cursor_take_moved(crtc);
 
         ret = plane_add_props(req, crtc, fb_id, x, y);
         if (ret == 0 && in_fence_fd >= 0)
@@ -1274,6 +1277,9 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             drmModeDestroyPropertyBlob(ms->fd, overlay_matrix);
         if (primary_matrix)
             drmModeDestroyPropertyBlob(ms->fd, primary_matrix);
+
+        if (ret && cursor_moved)
+            ms_cursor_set_moved(crtc);
 
         if (ret == 0) {
             drmmode_crtc->scanout_layout = layout;
@@ -3066,6 +3072,13 @@ drmmode_crtc_find_cursor_plane(xf86CrtcPtr crtc, int num)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_cursor_plane_rec *plane = &drmmode_crtc->cursor.plane;
+
+    /* nvidia-drm turns legacy cursor calls into commits that wait for vblank.
+     * Other drivers update the cursor right away with them, even while a flip
+     * is waiting for its buffer to be rendered.
+     */
+    if (!drmmode_driver_is(drmmode_crtc->drmmode->fd, "nvidia-drm"))
+        return;
 
     plane->id = drmmode_crtc_find_plane(crtc, num, DRMMODE_PLANE_TYPE_CURSOR,
                                         NULL);

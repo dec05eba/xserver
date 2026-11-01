@@ -386,6 +386,10 @@ typedef struct {
 } drmmode_cursor_buffer_rec;
 
 typedef struct {
+    int x, y;
+} drmmode_cursor_position_rec;
+
+typedef struct {
     uint32_t id;
     int shown;
     int flight;
@@ -400,6 +404,7 @@ typedef struct {
     int x, y;
     Bool up;
     drmmode_cursor_plane_rec plane;
+    Bool moved;
 } drmmode_cursor_rec;
 
 typedef struct {

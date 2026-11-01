@@ -25,6 +25,8 @@
 
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/eventfd.h>
 #include <xf86.h>
 #include <xf86Crtc.h>
 #include <xf86drm.h>
@@ -175,13 +177,33 @@ ms_cursor_in_flight(xf86CrtcPtr crtc)
     return ms_cursor(crtc)->plane.flight_seq != 0;
 }
 
+static drmmode_cursor_position_rec
+ms_cursor_position(drmmode_cursor_rec *cursor)
+{
+    drmmode_cursor_position_rec position;
+
+    input_lock();
+    position.x = cursor->x;
+    position.y = cursor->y;
+    input_unlock();
+    return position;
+}
+
+static Bool
+ms_cursor_moved(xf86CrtcPtr crtc)
+{
+    return __atomic_load_n(&ms_cursor(crtc)->moved, __ATOMIC_ACQUIRE);
+}
+
 Bool
 ms_cursor_needs_commit(xf86CrtcPtr crtc)
 {
     drmmode_cursor_rec *cursor = ms_cursor(crtc);
+    int wanted = ms_cursor_wanted(cursor);
 
     return cursor->plane.id && !cursor->plane.flight_seq &&
-        ms_cursor_wanted(cursor) != cursor->plane.shown;
+        (wanted != cursor->plane.shown ||
+         (wanted != MS_CURSOR_NONE && ms_cursor_moved(crtc)));
 }
 
 static Bool
@@ -390,6 +412,59 @@ ms_cursor_hide(xf86CrtcPtr crtc)
                          cursor->width, cursor->height);
 }
 
+static void
+ms_cursor_moved_notify(int fd, int ready, void *data)
+{
+    uint64_t count;
+
+    if (read(fd, &count, sizeof(count)) != sizeof(count))
+        return;
+}
+
+void
+ms_cursor_screen_init(ScrnInfoPtr scrn)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+
+    ms->cursor_moved_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (ms->cursor_moved_fd >= 0)
+        SetNotifyFd(ms->cursor_moved_fd, ms_cursor_moved_notify,
+                    X_NOTIFY_READ, NULL);
+}
+
+void
+ms_cursor_close_screen(ScrnInfoPtr scrn)
+{
+    modesettingPtr ms = modesettingPTR(scrn);
+
+    if (ms->cursor_moved_fd < 0)
+        return;
+
+    SetNotifyFd(ms->cursor_moved_fd, NULL, 0, NULL);
+    close(ms->cursor_moved_fd);
+    ms->cursor_moved_fd = -1;
+}
+
+Bool
+ms_cursor_take_moved(xf86CrtcPtr crtc)
+{
+    return __atomic_exchange_n(&ms_cursor(crtc)->moved, FALSE,
+                               __ATOMIC_ACQ_REL);
+}
+
+void
+ms_cursor_set_moved(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    uint64_t one = 1;
+
+    if (__atomic_exchange_n(&ms_cursor(crtc)->moved, TRUE, __ATOMIC_ACQ_REL) ||
+        ms->cursor_moved_fd < 0)
+        return;
+    if (write(ms->cursor_moved_fd, &one, sizeof(one)) != sizeof(one))
+        return;
+}
+
 void
 ms_cursor_set_position(xf86CrtcPtr crtc, int x, int y)
 {
@@ -397,7 +472,12 @@ ms_cursor_set_position(xf86CrtcPtr crtc, int x, int y)
 
     cursor->x = x;
     cursor->y = y;
-    drmModeMoveCursor(ms_cursor_fd(crtc), ms_cursor_crtc_id(crtc), x, y);
+    if (!cursor->plane.id) {
+        drmModeMoveCursor(ms_cursor_fd(crtc), ms_cursor_crtc_id(crtc), x, y);
+        return;
+    }
+
+    ms_cursor_set_moved(crtc);
 }
 
 void
@@ -415,6 +495,7 @@ ms_cursor_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc)
     drmmode_cursor_buffer_rec *buf =
         wanted == MS_CURSOR_NONE ? NULL : &cursor->buf[wanted];
     uint32_t fb_id = buf ? buf->fb_id : 0;
+    drmmode_cursor_position_rec position = ms_cursor_position(cursor);
     int ret = 0;
 
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
@@ -434,9 +515,9 @@ ms_cursor_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc)
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
                                   DRMMODE_PLANE_SRC_H, buf->height << 16);
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_CRTC_X, (int64_t) cursor->x);
+                                  DRMMODE_PLANE_CRTC_X, (int64_t) position.x);
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_CRTC_Y, (int64_t) cursor->y);
+                                  DRMMODE_PLANE_CRTC_Y, (int64_t) position.y);
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
                                   DRMMODE_PLANE_CRTC_W, buf->width);
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
@@ -516,6 +597,7 @@ static void
 ms_cursor_commit(xf86CrtcPtr crtc)
 {
     ScrnInfoPtr scrn = crtc->scrn;
+    Bool moved;
     uint32_t seq;
     int ret;
 
@@ -526,6 +608,7 @@ ms_cursor_commit(xf86CrtcPtr crtc)
     if (!seq)
         return;
 
+    moved = ms_cursor_take_moved(crtc);
     ret = ms_cursor_do_commit(crtc, DRM_MODE_ATOMIC_NONBLOCK |
                               DRM_MODE_PAGE_FLIP_EVENT, seq);
     if (ret == 0) {
@@ -533,6 +616,8 @@ ms_cursor_commit(xf86CrtcPtr crtc)
         return;
     }
 
+    if (moved)
+        ms_cursor_set_moved(crtc);
     ms_drm_abort_seq(scrn, seq);
     if (ret != -EBUSY)
         ms_cursor_rejected(crtc, ret);
@@ -554,8 +639,18 @@ ms_cursor_flip_expected(xf86CrtcPtr crtc)
 #endif
 }
 
+static Bool
+ms_cursor_commit_due(xf86CrtcPtr crtc, void *timeout)
+{
+#ifdef HAVE_GBM
+    return ms_tearfree_compose_due(crtc, timeout);
+#else
+    return TRUE;
+#endif
+}
+
 void
-ms_cursor_commit_pending(ScreenPtr screen)
+ms_cursor_commit_pending(ScreenPtr screen, void *timeout)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -564,7 +659,8 @@ ms_cursor_commit_pending(ScreenPtr screen)
     for (c = 0; c < xf86_config->num_crtc; c++) {
         xf86CrtcPtr crtc = xf86_config->crtc[c];
 
-        if (ms_cursor_needs_commit(crtc) && !ms_cursor_flip_expected(crtc))
+        if (ms_cursor_needs_commit(crtc) && !ms_cursor_flip_expected(crtc) &&
+            ms_cursor_commit_due(crtc, timeout))
             ms_cursor_commit(crtc);
     }
 }
