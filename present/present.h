@@ -141,6 +141,9 @@ typedef void (*present_window_unflip_ptr) (ScreenPtr screen,
 typedef int (*present_pixmap_rendering_fd_ptr) (WindowPtr window,
                                                 PixmapPtr pixmap);
 
+typedef Bool (*present_cancel_window_flip_ptr) (RRCrtcPtr crtc,
+                                                uint64_t event_id);
+
 /* Doing flips has been discontinued.
  *
  * Inform driver for potential cleanup on its side.
@@ -166,6 +169,7 @@ typedef struct present_screen_info {
     present_window_unflip_ptr           window_unflip;
     present_flip_suboptimal_ptr         flip_suboptimal;
     present_pixmap_rendering_fd_ptr     pixmap_rendering_fd;
+    present_cancel_window_flip_ptr      cancel_window_flip;
 } present_screen_info_rec, *present_screen_info_ptr;
 
 /*

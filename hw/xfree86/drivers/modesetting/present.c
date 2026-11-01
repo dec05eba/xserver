@@ -596,6 +596,16 @@ ms_present_window_on_tearfree_crtc(WindowPtr window, Bool *covers)
     return shown;
 }
 
+static Bool
+ms_present_cancel_window_flip(RRCrtcPtr crtc, uint64_t event_id)
+{
+    xf86CrtcPtr xf86_crtc = crtc->devPrivate;
+
+    return ms_scrn_is_modesetting(xf86_crtc->scrn) &&
+        ms_tearfree_dri_cancel(xf86_crtc->scrn, ms_present_event_match,
+                               &event_id);
+}
+
 static int
 ms_present_pixmap_rendering_fd(WindowPtr window, PixmapPtr pixmap)
 {
@@ -637,6 +647,7 @@ static present_screen_info_rec ms_present_screen_info = {
     .window_unflip = ms_present_window_unflip,
     .flip_suboptimal = ms_present_flip_suboptimal,
     .pixmap_rendering_fd = ms_present_pixmap_rendering_fd,
+    .cancel_window_flip = ms_present_cancel_window_flip,
 #endif
 };
 

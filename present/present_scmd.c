@@ -412,6 +412,38 @@ present_flip(RRCrtcPtr crtc,
     return (*screen_priv->info->flip) (crtc, event_id, target_msc, pixmap, sync_flip);
 }
 
+static int
+present_get_ust_msc(ScreenPtr screen, RRCrtcPtr crtc, uint64_t *ust, uint64_t *msc);
+
+static void
+present_skip_window_flips(present_flip_slot_ptr slot, present_vblank_ptr latest)
+{
+    ScreenPtr                   screen = slot->pixmap_window->drawable.pScreen;
+    present_screen_info_ptr     info = present_screen_priv(screen)->info;
+    present_vblank_ptr          vblank, tmp;
+
+    if (!info->cancel_window_flip)
+        return;
+
+    xorg_list_for_each_entry_safe(vblank, tmp, &present_flip_queue, event_queue) {
+        uint64_t ust = 0, msc = 0;
+
+        if (vblank == latest || vblank->flip_slot != slot || vblank->queued ||
+            vblank->sync_flip ||
+            !info->cancel_window_flip(vblank->crtc, vblank->event_id))
+            continue;
+
+        xorg_list_del(&vblank->event_queue);
+        vblank->flip_slot = NULL;
+        slot->pending_flips--;
+        present_get_ust_msc(screen, vblank->crtc, &ust, &msc);
+        present_vblank_scrap(vblank);
+        present_vblank_notify(vblank, PresentCompleteKindPixmap,
+                              PresentCompleteModeSkip, ust, msc);
+        present_vblank_destroy(vblank);
+    }
+}
+
 static Bool
 present_window_flip(present_flip_slot_ptr slot, present_vblank_ptr vblank)
 {
@@ -445,6 +477,8 @@ present_window_flip(present_flip_slot_ptr slot, present_vblank_ptr vblank)
                              slot->window_pixmap->drawable.id);
         slot->window_pixmap = old_pixmap;
     }
+
+    present_skip_window_flips(slot, vblank);
     return TRUE;
 }
 

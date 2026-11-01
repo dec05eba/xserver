@@ -816,6 +816,51 @@ ms_tearfree_dri_abort(xf86CrtcPtr crtc,
     return FALSE;
 }
 
+static Bool
+ms_tearfree_dri_committed(drmmode_tearfree_ptr trf,
+                          const struct ms_crtc_pageflip *flip)
+{
+    return trf->flip_seq && !flip->tearfree_seq;
+}
+
+Bool
+ms_tearfree_dri_cancel(ScrnInfoPtr scrn,
+                       Bool (*match)(void *data, void *match_data),
+                       void *match_data)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    struct ms_crtc_pageflip *flip, *tmp;
+    Bool found = FALSE;
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++) {
+        drmmode_crtc_private_ptr drmmode_crtc = config->crtc[i]->driver_private;
+        drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+
+        xorg_list_for_each_entry(flip, &trf->dri_flip_list, node) {
+            if (!match(flip->flipdata->event, match_data))
+                continue;
+            if (ms_tearfree_dri_committed(trf, flip))
+                return FALSE;
+            found = TRUE;
+        }
+    }
+
+    for (i = 0; found && i < config->num_crtc; i++) {
+        drmmode_crtc_private_ptr drmmode_crtc = config->crtc[i]->driver_private;
+
+        xorg_list_for_each_entry_safe(flip, tmp,
+                                      &drmmode_crtc->tearfree.dri_flip_list,
+                                      node) {
+            if (match(flip->flipdata->event, match_data)) {
+                xorg_list_del(&flip->node);
+                ms_pageflip_abort(flip);
+            }
+        }
+    }
+    return found;
+}
+
 static int
 ms_tearfree_dri_complete(struct xorg_list *flips, uint64_t msc, uint64_t usec)
 {
