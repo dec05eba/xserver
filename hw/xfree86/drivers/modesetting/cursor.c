@@ -623,11 +623,13 @@ static Bool
 ms_cursor_flip_expected(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
 
-    if (drmmode_crtc->tearfree.flip_seq)
+    if (trf->flip_seq)
         return TRUE;
 #ifdef HAVE_GBM
-    return ms_tearfree_is_active_on_crtc(crtc) && ms_tearfree_flip_wanted(crtc);
+    return ms_tearfree_is_active_on_crtc(crtc) && !trf->scanout.fb_id &&
+        ms_tearfree_flip_wanted(crtc);
 #else
     return FALSE;
 #endif

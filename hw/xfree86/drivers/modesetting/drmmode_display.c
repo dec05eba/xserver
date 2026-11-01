@@ -3095,10 +3095,12 @@ drmmode_crtc_find_cursor_plane(xf86CrtcPtr crtc, int num)
     drmmode_cursor_plane_rec *plane = &drmmode_crtc->cursor.plane;
 
     /* nvidia-drm turns legacy cursor calls into commits that wait for vblank.
-     * Other drivers update the cursor right away with them, even while a flip
-     * is waiting for its buffer to be rendered.
+     * amdgpu does the same when it can't move the cursor asynchronously, for
+     * example while another client reads the scanned out buffer, and then
+     * waits for that GPU work too. Both hold the modeset locks meanwhile.
      */
-    if (!drmmode_driver_is(drmmode_crtc->drmmode->fd, "nvidia-drm"))
+    if (!drmmode_driver_is(drmmode_crtc->drmmode->fd, "nvidia-drm") &&
+        !drmmode_driver_is(drmmode_crtc->drmmode->fd, "amdgpu"))
         return;
 
     plane->id = drmmode_crtc_find_plane(crtc, num, DRMMODE_PLANE_TYPE_CURSOR,
