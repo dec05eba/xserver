@@ -29,11 +29,6 @@
 
 #include "driver.h"
 
-#ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
-
-/* The "PQ 125" curves map 10000 nits to 125.0 */
-#define COLOROP_PQ_125_NITS 80.0
-
 static uint32_t
 drmmode_colorop_prop(int fd, uint32_t object_id, uint32_t object_type,
                      const char *name, uint64_t *value)
@@ -74,6 +69,37 @@ drmmode_colorop_enum(int fd, uint32_t prop_id, const char *name,
     drmModeFreeProperty(prop);
     return found;
 }
+
+static Bool
+drmmode_colorop_value(int fd, uint32_t object_id, uint32_t object_type,
+                      uint32_t prop_id, uint64_t *value)
+{
+    drmModeObjectPropertiesPtr props =
+        drmModeObjectGetProperties(fd, object_id, object_type);
+    Bool found = FALSE;
+    uint32_t i;
+
+    for (i = 0; props && i < props->count_props && !found; i++) {
+        if (props->props[i] == prop_id) {
+            *value = props->prop_values[i];
+            found = TRUE;
+        }
+    }
+    drmModeFreeObjectProperties(props);
+    return found;
+}
+
+static int
+drmmode_colorop_set(drmModeAtomicReq *req, uint32_t id, uint32_t prop,
+                    uint64_t value)
+{
+    return drmModeAtomicAddProperty(req, id, prop, value) <= 0 ? -1 : 0;
+}
+
+#ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
+
+/* The "PQ 125" curves map 10000 nits to 125.0 */
+#define COLOROP_PQ_125_NITS 80.0
 
 static Bool
 drmmode_colorop_use(int fd, drmmode_plane_color_ptr color, int index,
@@ -154,12 +180,10 @@ drmmode_plane_color_parse(int fd, uint64_t pipeline,
     return TRUE;
 }
 
-void
-drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
-                         drmmode_plane_color_ptr color)
+static void
+drmmode_plane_color_pipeline_init(int fd, uint32_t plane_id,
+                                  drmmode_plane_color_ptr color)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    int fd = drmmode_crtc->drmmode->fd;
     drmModePropertyPtr prop;
     uint32_t prop_id;
     int i;
@@ -184,13 +208,6 @@ drmmode_s31_32(double value)
                                      4294967296.0 + 0.5);
 
     return value < 0 ? magnitude | (1ULL << 63) : magnitude;
-}
-
-static int
-drmmode_colorop_set(drmModeAtomicReq *req, uint32_t id, uint32_t prop,
-                    uint64_t value)
-{
-    return drmModeAtomicAddProperty(req, id, prop, value) <= 0 ? -1 : 0;
 }
 
 int
@@ -240,9 +257,9 @@ drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     return ret;
 }
 #else
-void
-drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
-                         drmmode_plane_color_ptr color)
+static void
+drmmode_plane_color_pipeline_init(int fd, uint32_t plane_id,
+                                  drmmode_plane_color_ptr color)
 {
 }
 
@@ -256,6 +273,62 @@ drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     return 0;
 }
 #endif
+
+static void
+drmmode_plane_degamma_tf_init(int fd, uint32_t plane_id,
+                              drmmode_plane_degamma_tf_ptr tf)
+{
+    uint32_t prop = drmmode_colorop_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE,
+                                         "NV_PLANE_DEGAMMA_TF", NULL);
+
+    if (prop &&
+        drmmode_colorop_enum(fd, prop, "Default", &tf->default_value) &&
+        drmmode_colorop_enum(fd, prop, "Linear", &tf->linear_value))
+        tf->prop = prop;
+}
+
+void
+drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
+                         drmmode_plane_color_ptr color)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_ptr drmmode = drmmode_crtc->drmmode;
+
+    if (modesettingPTR(crtc->scrn)->atomic_modeset)
+        drmmode_plane_degamma_tf_init(drmmode->fd, plane_id,
+                                      &color->degamma_tf);
+    if (drmmode->plane_color_pipeline)
+        drmmode_plane_color_pipeline_init(drmmode->fd, plane_id, color);
+}
+
+/* nvidia-drm turns the CRTC's DEGAMMA_LUT into an input LUT on each plane.
+ * When the CRTC colour properties change it makes new input LUTs, but only
+ * hands them to the display when the degamma state of the plane itself
+ * changes. The plane keeps reading its previous LUT, which nvidia-drm
+ * meanwhile reuses for later LUTs of any CRTC, so monitors show wrong or
+ * inverted colours. Switching between the equivalent "Default" and "Linear"
+ * transfer functions changes the degamma state of the plane.
+ */
+int
+drmmode_plane_color_refresh_degamma(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                                    uint32_t plane_id,
+                                    const drmmode_plane_color_rec *color)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    const drmmode_plane_degamma_tf_rec *tf = &color->degamma_tf;
+    uint64_t value;
+
+    if (!tf->prop)
+        return 0;
+
+    if (!drmmode_colorop_value(drmmode_crtc->drmmode->fd, plane_id,
+                               DRM_MODE_OBJECT_PLANE, tf->prop, &value))
+        return -1;
+
+    return drmmode_colorop_set(req, plane_id, tf->prop,
+                               value == tf->default_value ?
+                               tf->linear_value : tf->default_value);
+}
 
 Bool
 drmmode_plane_color_supported(xf86CrtcPtr crtc)

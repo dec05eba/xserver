@@ -273,6 +273,12 @@ typedef struct {
 } drmmode_colorop_use_rec, *drmmode_colorop_use_ptr;
 
 typedef struct {
+    uint32_t prop;
+    uint64_t default_value;
+    uint64_t linear_value;
+} drmmode_plane_degamma_tf_rec, *drmmode_plane_degamma_tf_ptr;
+
+typedef struct {
     uint32_t pipeline_prop;
     uint64_t pipeline;
     int num_ops;
@@ -281,6 +287,7 @@ typedef struct {
     drmmode_colorop_use_rec multiplier;
     drmmode_colorop_use_rec matrix;
     drmmode_colorop_use_rec inverse_eotf;
+    drmmode_plane_degamma_tf_rec degamma_tf;
 } drmmode_plane_color_rec, *drmmode_plane_color_ptr;
 
 typedef struct {
@@ -652,6 +659,9 @@ int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                                   const drmmode_plane_color_rec *color,
                                   Bool sdr_to_pq, int sdr_white_level,
                                   uint32_t *matrix_blob);
+int drmmode_plane_color_refresh_degamma(drmModeAtomicReq *req,
+                                        xf86CrtcPtr crtc, uint32_t plane_id,
+                                        const drmmode_plane_color_rec *color);
 Bool drmmode_crtc_overlay_content(xf86CrtcPtr crtc, Bool *pq);
 PixmapPtr drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width,
                                    int height, int depth, drmmode_bo *bo,

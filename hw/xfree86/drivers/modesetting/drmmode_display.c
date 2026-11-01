@@ -576,6 +576,9 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     if (!fb_id)
         return ret;
 
+    if (!overlay->fb_id)
+        ret |= drmmode_plane_color_refresh_degamma(req, crtc, plane_id,
+                                                   &overlay->color);
     if (overlay->next_fence_fd >= 0)
         ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
                                       DRMMODE_PLANE_IN_FENCE_FD,
@@ -955,6 +958,16 @@ drmmode_crtc_disable(xf86CrtcPtr crtc)
     return ret;
 }
 
+static Bool
+drmmode_crtc_color_needs_full_commit(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return drmmode_crtc->use_gamma_lut &&
+        (drmmode_crtc->hdr.current.mode != DRMMODE_HDR_OFF ||
+         drmmode_crtc->plane_color.degamma_tf.prop);
+}
+
 static void
 drmmode_set_ctm(xf86CrtcPtr crtc, const struct drm_color_ctm *ctm)
 {
@@ -968,7 +981,7 @@ drmmode_set_ctm(xf86CrtcPtr crtc, const struct drm_color_ctm *ctm)
     if (ctm_info->prop_id == 0)
         return;
 
-    if (drmmode_crtc->use_gamma_lut && drmmode_crtc->hdr.current.mode != DRMMODE_HDR_OFF) {
+    if (drmmode_crtc_color_needs_full_commit(crtc)) {
         drmmode_crtc_update_color(crtc);
         return;
     }
@@ -2418,7 +2431,7 @@ drmmode_crtc_gamma_set(xf86CrtcPtr crtc, uint16_t * red, uint16_t * green,
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
 
-    if (drmmode_crtc->use_gamma_lut && drmmode_crtc->hdr.current.mode != DRMMODE_HDR_OFF) {
+    if (drmmode_crtc_color_needs_full_commit(crtc)) {
         drmmode_crtc_update_color(crtc);
     } else if (drmmode_crtc->use_gamma_lut) {
         drmmode_set_gamma_lut(drmmode_crtc, red, green, blue, size);
@@ -3081,8 +3094,7 @@ drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
     drmmode_prop_info_update(drmmode, drmmode_crtc->props_plane,
                              DRMMODE_PLANE__COUNT, props);
     drmModeFreeObjectProperties(props);
-    if (drmmode->plane_color_pipeline)
-        drmmode_plane_color_init(crtc, overlay->plane_id, &overlay->color);
+    drmmode_plane_color_init(crtc, overlay->plane_id, &overlay->color);
     xf86DrvMsg(drmmode->scrn->scrnIndex, X_INFO,
                "Using overlay plane %u for CRTC %u\n", overlay->plane_id,
                drmmode_crtc->mode_crtc->crtc_id);
@@ -3246,7 +3258,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
         drmmode_crtc_find_overlay_plane(crtc, num);
         drmmode_crtc_find_cursor_plane(crtc, num);
     }
-    if (drmmode->plane_color_pipeline)
+    if (drmmode_crtc->plane_id)
         drmmode_plane_color_init(crtc, drmmode_crtc->plane_id,
                                  &drmmode_crtc->plane_color);
 
@@ -5732,6 +5744,21 @@ drmmode_destroy_color_blobs(drmmode_ptr drmmode,
 }
 
 static int
+drmmode_crtc_refresh_plane_degamma(drmModeAtomicReq *req, xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
+    int ret;
+
+    ret = drmmode_plane_color_refresh_degamma(req, crtc, drmmode_crtc->plane_id,
+                                              &drmmode_crtc->plane_color);
+    if (overlay->fb_id)
+        ret |= drmmode_plane_color_refresh_degamma(req, crtc, overlay->plane_id,
+                                                   &overlay->color);
+    return ret;
+}
+
+static int
 drmmode_crtc_add_hdr_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                            const drmmode_hdr_state_rec *state,
                            Bool update_connectors, drmmode_hdr_blobs *blobs)
@@ -5749,6 +5776,8 @@ drmmode_crtc_add_hdr_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
             ret |= drmmode_crtc_set_color_props(req, crtc, &blobs->color);
         else
             ret = -1;
+        if (req)
+            ret |= drmmode_crtc_refresh_plane_degamma(req, crtc);
     }
 
     if (req && drmmode_plane_color_supported(crtc))
