@@ -444,12 +444,18 @@ typedef struct {
 } drmmode_cursor_position_rec;
 
 typedef struct {
+    Bool needed;
+    int fence_fd;
+} drmmode_cursor_scanout_wait_rec;
+
+typedef struct {
     uint32_t id;
     int shown;
     int flight;
     uint32_t flight_seq;
     Bool flight_alone;
-    int scanout_busy_fd;
+    uint64_t flight_start;
+    drmmode_cursor_scanout_wait_rec scanout_wait;
 } drmmode_cursor_plane_rec;
 
 typedef struct {

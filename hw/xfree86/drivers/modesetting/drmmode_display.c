@@ -3230,7 +3230,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     drmmode_crtc->prime_scanout.commit.content.buf_idx = -1;
     drmmode_crtc->prime_scanout.commit.flight.buf_idx = -1;
     drmmode_crtc->next_msc = UINT64_MAX;
-    drmmode_crtc->cursor.plane.scanout_busy_fd = -1;
+    drmmode_crtc->cursor.plane.scanout_wait.fence_fd = -1;
 
     props = drmModeObjectGetProperties(drmmode->fd, mode_res->crtcs[num],
                                        DRM_MODE_OBJECT_CRTC);
@@ -5970,6 +5970,7 @@ drmmode_crtc_set_current_hdr(xf86CrtcPtr crtc,
         (pq && state->sdr_white_level != current->sdr_white_level);
 
     *current = *state;
+    ms_cursor_reset_scanout_wait(crtc);
     if (cursor_changed && crtc->scrn->vtSema)
         xf86CursorResetCursor(crtc->scrn->pScreen->is_output_secondary ?
                               crtc->scrn->pScreen->current_primary :

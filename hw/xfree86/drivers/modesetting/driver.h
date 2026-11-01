@@ -386,6 +386,7 @@ Bool ms_cursor_take_moved(xf86CrtcPtr crtc);
 void ms_cursor_set_moved(xf86CrtcPtr crtc);
 void ms_cursor_screen_init(ScrnInfoPtr scrn);
 void ms_cursor_close_screen(ScrnInfoPtr scrn);
+void ms_cursor_reset_scanout_wait(xf86CrtcPtr crtc);
 
 Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
 int ms_flush_drm_events(ScreenPtr screen);

@@ -443,37 +443,42 @@ ms_cursor_scanout_idle(int fd, int ready, void *data)
 
     SetNotifyFd(fd, NULL, 0, NULL);
     close(fd);
-    ms_cursor(crtc)->plane.scanout_busy_fd = -1;
+    ms_cursor(crtc)->plane.scanout_wait.fence_fd = -1;
 }
 
-/* With HDR, amdgpu commits the plane below the cursor again with a cursor
- * update, which then waits for GPU work on the buffer on screen, like another
- * client reading it, and holds up the next flip meanwhile.
+/* Some drivers commit the plane below the cursor again with a cursor update,
+ * like amdgpu with HDR. The update then waits for GPU work on the buffer on
+ * screen, like another client reading it, and holds up the next flip.
  */
 static Bool
 ms_cursor_scanout_busy(xf86CrtcPtr crtc)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
-    drmmode_cursor_plane_rec *plane = &ms_cursor(crtc)->plane;
+    drmmode_cursor_scanout_wait_rec *wait = &ms_cursor(crtc)->plane.scanout_wait;
     PixmapPtr pixmap;
 
-    if (plane->scanout_busy_fd >= 0)
+    if (wait->fence_fd >= 0)
         return TRUE;
 
-    if (!drmmode_crtc_hdr_enabled(crtc))
+    if (!wait->needed)
         return FALSE;
 
     pixmap = ms_cursor_scanout_pixmap(crtc);
     if (!pixmap || !ms->glamor.egl_pixmap_rendering_fd)
         return FALSE;
 
-    plane->scanout_busy_fd = ms->glamor.egl_pixmap_rendering_fd(pixmap);
-    if (plane->scanout_busy_fd < 0)
+    wait->fence_fd = ms->glamor.egl_pixmap_rendering_fd(pixmap);
+    if (wait->fence_fd < 0)
         return FALSE;
 
-    SetNotifyFd(plane->scanout_busy_fd, ms_cursor_scanout_idle,
-                X_NOTIFY_READ, crtc);
+    SetNotifyFd(wait->fence_fd, ms_cursor_scanout_idle, X_NOTIFY_READ, crtc);
     return TRUE;
+}
+
+void
+ms_cursor_reset_scanout_wait(xf86CrtcPtr crtc)
+{
+    ms_cursor(crtc)->plane.scanout_wait.needed = FALSE;
 }
 
 void
@@ -495,10 +500,11 @@ ms_cursor_close_screen(ScrnInfoPtr scrn)
     int i;
 
     for (i = 0; i < config->num_crtc; i++) {
-        drmmode_cursor_plane_rec *plane = &ms_cursor(config->crtc[i])->plane;
+        drmmode_cursor_scanout_wait_rec *wait =
+            &ms_cursor(config->crtc[i])->plane.scanout_wait;
 
-        if (plane->scanout_busy_fd >= 0)
-            ms_cursor_scanout_idle(plane->scanout_busy_fd, 0, config->crtc[i]);
+        if (wait->fence_fd >= 0)
+            ms_cursor_scanout_idle(wait->fence_fd, 0, config->crtc[i]);
     }
 
     if (ms->cursor_moved_fd < 0)
@@ -597,6 +603,7 @@ ms_cursor_committed(xf86CrtcPtr crtc, uint32_t seq, Bool alone)
     cursor->plane.flight = ms_cursor_wanted(cursor);
     cursor->plane.flight_seq = seq;
     cursor->plane.flight_alone = alone;
+    cursor->plane.flight_start = GetTimeInMicros();
 }
 
 /* A commit that only changes the cursor may complete before the next vblank */
@@ -620,9 +627,27 @@ ms_cursor_flip_done(xf86CrtcPtr crtc, uint32_t seq)
     plane->flight_seq = 0;
 }
 
+#define MS_CURSOR_STALL_FRAMES 2
+
 static void
 ms_cursor_handler(uint64_t msc, uint64_t usec, void *data)
 {
+    xf86CrtcPtr crtc = data;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_cursor_plane_rec *plane = &ms_cursor(crtc)->plane;
+    double refresh = xf86ModeVRefresh(&crtc->mode);
+
+    if (plane->scanout_wait.needed || refresh <= 0.0 ||
+        usec <= plane->flight_start ||
+        usec - plane->flight_start <=
+        MS_CURSOR_STALL_FRAMES * 1000000.0 / refresh)
+        return;
+
+    plane->scanout_wait.needed = TRUE;
+    xf86DrvMsg(crtc->scrn->scrnIndex, X_INFO,
+               "Cursor commits on CRTC %u wait for the buffer on screen, "
+               "holding them back while it's busy\n",
+               drmmode_crtc->mode_crtc->crtc_id);
 }
 
 static void
