@@ -32,8 +32,10 @@
 #endif
 
 #include <errno.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "dumb_bo.h"
 #include "inputstr.h"
@@ -3305,9 +3307,8 @@ drmmode_output_update_properties(xf86OutputPtr output)
 }
 
 static xf86OutputStatus
-drmmode_output_detect(xf86OutputPtr output)
+drmmode_output_probe(xf86OutputPtr output, Bool force)
 {
-    /* go to the hw and retrieve a new output struct */
     drmmode_output_private_ptr drmmode_output = output->driver_private;
     drmmode_ptr drmmode = drmmode_output->drmmode;
     xf86OutputStatus status;
@@ -3317,8 +3318,12 @@ drmmode_output_detect(xf86OutputPtr output)
 
     drmModeFreeConnector(drmmode_output->mode_output);
 
-    drmmode_output->mode_output =
-        drmModeGetConnector(drmmode->fd, drmmode_output->output_id);
+    if (force)
+        drmmode_output->mode_output =
+            drmModeGetConnector(drmmode->fd, drmmode_output->output_id);
+    else
+        drmmode_output->mode_output =
+            drmModeGetConnectorCurrent(drmmode->fd, drmmode_output->output_id);
 
     if (!drmmode_output->mode_output) {
         drmmode_output->output_id = -1;
@@ -3340,6 +3345,29 @@ drmmode_output_detect(xf86OutputPtr output)
         break;
     }
     return status;
+}
+
+static Bool
+drmmode_has_hotplug_events(drmmode_ptr drmmode)
+{
+#ifdef CONFIG_UDEV_KMS
+    return drmmode->uevent_monitor != NULL;
+#else
+    return FALSE;
+#endif
+}
+
+/* Probing a connector can block for hundreds of milliseconds (i915 Type-C
+ * ports), and some clients request the screen resources every few seconds, so
+ * connectors are only probed on hotplug events when the kernel sends them.
+ */
+static xf86OutputStatus
+drmmode_output_detect(xf86OutputPtr output)
+{
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+
+    return drmmode_output_probe(output,
+                                !drmmode_has_hotplug_events(drmmode_output->drmmode));
 }
 
 static Bool
@@ -4998,7 +5026,8 @@ drmmode_setup_colormap(ScreenPtr pScreen, ScrnInfoPtr pScrn)
 #define DRM_MODE_LINK_STATUS_BAD        1
 
 void
-drmmode_update_kms_state(drmmode_ptr drmmode)
+drmmode_update_kms_state(drmmode_ptr drmmode, Bool probe_all,
+                         uint32_t probe_connector)
 {
     ScrnInfoPtr scrn = drmmode->scrn;
     drmModeResPtr mode_res;
@@ -5020,7 +5049,8 @@ drmmode_update_kms_state(drmmode_ptr drmmode)
         xf86OutputPtr output = config->output[i];
         drmmode_output_private_ptr drmmode_output = output->driver_private;
 
-        drmmode_output_detect(output);
+        drmmode_output_probe(output, probe_all ||
+                             drmmode_output->output_id == probe_connector);
 
         /* Get an updated view of the properties for the current connector and
          * look for the link-status property
@@ -5131,21 +5161,51 @@ out:
 
 #ifdef CONFIG_UDEV_KMS
 
+static Bool
+drmmode_uevent_property_set(struct udev_device *dev, const char *name)
+{
+    const char *value = udev_device_get_property_value(dev, name);
+
+    return value && !strcmp(value, "1");
+}
+
+/* Probing a connector can block for hundreds of milliseconds, so only hotplug
+ * events of this device cause a probe, and only of the connector the kernel
+ * names when it names one.
+ */
 static void
 drmmode_handle_uevents(int fd, void *closure)
 {
     drmmode_ptr drmmode = closure;
     struct udev_device *dev;
-    Bool found = FALSE;
+    Bool found = FALSE, probe_all = FALSE;
+    uint32_t probe_connector = 0;
+    struct stat st;
+
+    if (fstat(drmmode->fd, &st))
+        st.st_rdev = 0;
 
     while ((dev = udev_monitor_receive_device(drmmode->uevent_monitor))) {
+        if (udev_device_get_devnum(dev) == st.st_rdev) {
+            if (drmmode_uevent_property_set(dev, "HOTPLUG")) {
+                const char *connector =
+                    udev_device_get_property_value(dev, "CONNECTOR");
+                uint32_t id = connector ? strtoul(connector, NULL, 10) : 0;
+
+                if (!id || (probe_connector && probe_connector != id))
+                    probe_all = TRUE;
+                probe_connector = id;
+                found = TRUE;
+            } else if (drmmode_uevent_property_set(dev, "LEASE")) {
+                found = TRUE;
+            }
+        }
         udev_device_unref(dev);
-        found = TRUE;
     }
     if (!found)
         return;
 
-    drmmode_update_kms_state(drmmode);
+    drmmode_update_kms_state(drmmode, probe_all, probe_connector);
 }
 
 #endif
