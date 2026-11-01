@@ -219,6 +219,7 @@ typedef struct _CompServerWindow {
     WindowPtr pAbove;
     RegionRec painted;
     Bool seen;
+    Bool hidden;
     CARD32 presentCount;
     CompServerHeldFrameRec held;
     CompServerFrameWaitRec wait;

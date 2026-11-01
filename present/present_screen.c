@@ -26,6 +26,7 @@
 int present_request;
 DevPrivateKeyRec present_screen_private_key;
 DevPrivateKeyRec present_window_private_key;
+DevPrivateKeyRec present_client_private_key;
 
 /*
  * Get a pointer to a present window private, creating if necessary
@@ -168,6 +169,10 @@ present_screen_register_priv_keys(void)
         return FALSE;
 
     if (!dixRegisterPrivateKey(&present_window_private_key, PRIVATE_WINDOW, 0))
+        return FALSE;
+
+    if (!dixRegisterPrivateKey(&present_client_private_key, PRIVATE_CLIENT,
+                               sizeof(uint64_t)))
         return FALSE;
 
     return TRUE;

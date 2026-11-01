@@ -82,6 +82,34 @@ CompositeServerActive(ScreenPtr pScreen)
     return compServerGet(pScreen) != NULL;
 }
 
+static Bool
+compServerWindowCaptured(WindowPtr pWin)
+{
+    CompWindowPtr cw = GetCompWindow(pWin);
+    CompClientWindowPtr ccw;
+
+    for (ccw = cw ? cw->clients : NULL; ccw; ccw = ccw->next) {
+        if (CLIENT_ID(ccw->id) != serverClient->index)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+Bool
+CompositeServerWindowHidden(WindowPtr pWin)
+{
+    CompServerWindowPtr sw;
+    WindowPtr pTop;
+
+    if (!pWin->parent || !pWin->viewable ||
+        !CompositeServerActive(pWin->drawable.pScreen))
+        return FALSE;
+
+    pTop = compServerToplevel(pWin);
+    sw = GetCompServerWindow(pTop);
+    return sw && sw->hidden && !compServerWindowCaptured(pTop);
+}
+
 Bool
 CompositeIsServerRoot(WindowPtr pWin)
 {
@@ -211,17 +239,32 @@ compServerUntrackWindow(CompServerPtr server, CompServerWindowPtr sw)
     compServerFreeWindow(sw);
 }
 
+static Bool
+compServerWindowCovered(WindowPtr pWin, WindowPtr pRoot, RegionPtr pOpaque)
+{
+    RegionRec visible;
+    Bool covered;
+
+    RegionNull(&visible);
+    RegionIntersect(&visible, &pWin->borderSize, &pRoot->winSize);
+    RegionSubtract(&visible, &visible, pOpaque);
+    covered = RegionNil(&visible);
+    RegionUninit(&visible);
+    return covered;
+}
+
 static void
 compServerUpdateWindows(CompServerPtr server, WindowPtr pRoot)
 {
     CompServerWindowPtr sw, tmp;
     WindowPtr pWin, pAbove = NULL;
-    RegionRec displayed;
+    RegionRec displayed, opaque;
 
     xorg_list_for_each_entry(sw, &server->windows, entry)
         sw->seen = FALSE;
 
     RegionNull(&displayed);
+    RegionNull(&opaque);
     for (pWin = pRoot->firstChild; pWin; pWin = pWin->nextSib) {
         if (!compServerPaintsWindow(pWin))
             continue;
@@ -229,21 +272,24 @@ compServerUpdateWindows(CompServerPtr server, WindowPtr pRoot)
         sw = compServerTrackWindow(server, pWin);
         if (!sw) {
             compServerAddDamage(server, &pWin->borderSize);
-            pAbove = pWin;
-            continue;
+        } else {
+            compServerDisplayedRegion(pWin, &displayed);
+            if (sw->pAbove != pAbove || !RegionEqual(&sw->painted, &displayed)) {
+                compServerAddDamage(server, &sw->painted);
+                compServerAddDamage(server, &displayed);
+                RegionCopy(&sw->painted, &displayed);
+                sw->pAbove = pAbove;
+            }
+            sw->hidden = compServerWindowCovered(pWin, pRoot, &opaque);
+            sw->seen = TRUE;
         }
 
-        compServerDisplayedRegion(pWin, &displayed);
-        if (sw->pAbove != pAbove || !RegionEqual(&sw->painted, &displayed)) {
-            compServerAddDamage(server, &sw->painted);
-            compServerAddDamage(server, &displayed);
-            RegionCopy(&sw->painted, &displayed);
-            sw->pAbove = pAbove;
-        }
-
-        sw->seen = TRUE;
+        if (!compServerWindowHasAlpha(pWin) &&
+            compServerWindowOpacity(server, pWin) == COMP_SERVER_OPAQUE)
+            RegionUnion(&opaque, &opaque, &pWin->borderSize);
         pAbove = pWin;
     }
+    RegionUninit(&opaque);
     RegionUninit(&displayed);
 
     xorg_list_for_each_entry_safe(sw, tmp, &server->windows, entry) {

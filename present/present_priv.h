@@ -93,6 +93,7 @@ struct present_vblank {
     PresentFlipReason   reason;         /* reason for which flip is not possible */
     Bool                has_suboptimal; /* whether client can support SuboptimalCopy mode */
     Bool                executed;
+    uint64_t            hidden_since;   /* held back while the window is hidden */
 #ifdef DRI3
     struct dri3_syncobj *acquire_syncobj;
     struct dri3_syncobj *release_syncobj;
@@ -255,6 +256,7 @@ struct present_window_priv {
 #define PresentCrtcNeverSet     ((RRCrtcPtr) 1)
 
 extern DevPrivateKeyRec present_window_private_key;
+extern DevPrivateKeyRec present_client_private_key;
 
 static inline present_window_priv_ptr
 present_window_priv(WindowPtr window)
