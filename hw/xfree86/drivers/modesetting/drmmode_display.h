@@ -249,22 +249,6 @@ typedef struct {
     int sdr_white_level;
 } drmmode_composition_rec;
 
-typedef enum {
-    DRMMODE_FLIP_SCANOUT,
-    DRMMODE_FLIP_COPY,
-    DRMMODE_FLIP_COMPOSED,
-    DRMMODE_FLIP__COUNT
-} drmmode_flip_kind;
-
-typedef struct {
-    uint64_t usec[DRMMODE_FLIP__COUNT];
-    drmmode_flip_kind kind;
-    uint64_t target_msc;
-    uint64_t target_ust;
-    uint64_t commit_ust;
-    uint8_t late_history;
-} drmmode_commit_lead_rec;
-
 typedef struct {
     int fd[8];
     int num;
@@ -274,7 +258,6 @@ typedef struct {
     uint64_t usec;
     uint64_t start;
     int fence_fd;
-    drmmode_commit_lead_rec lead;
     drmmode_render_fences_rec clients;
 } drmmode_compose_timing_rec;
 
@@ -346,12 +329,60 @@ typedef struct {
 } drmmode_prime_overlay_rec;
 
 typedef struct {
-    drmmode_shadow_fb_rec buf[2];
+    int fd;
+    uint64_t at;
+    uint64_t vblank;
+    uint64_t msc;
+    Bool on_time;
+} drmmode_prime_deadline_rec;
+
+typedef struct {
+    uint32_t seq;
+    uint32_t fb_id;
+    int buf_idx;
+    int fence_fd;
+    Bool watching_fence;
+} drmmode_prime_content_rec;
+
+typedef struct {
+    uint32_t seq;
+    int buf_idx;
+    drmmode_prime_fb_rec fb;
+    Bool overlay;
+    Bool cursor;
+} drmmode_prime_flight_rec;
+
+typedef struct {
+    drmmode_prime_content_rec content;
+    drmmode_prime_flight_rec flight;
+    uint64_t last_target;
+    uint64_t extra_margin;
+    drmmode_prime_deadline_rec deadline;
+    uint32_t tick_seq;
+} drmmode_prime_commit_rec;
+
+typedef struct {
+    int count;
+    uint64_t until;
+} drmmode_prime_presenters_rec;
+
+typedef struct {
+    PixmapPtr pixmap;
+    uint32_t seq;
+    int fence_fd;
+} drmmode_prime_source_wait_rec;
+
+typedef struct {
+    drmmode_shadow_fb_rec buf[3];
     uint32_t back_idx;
+    uint32_t front_idx;
     drmmode_composition_rec composition;
     drmmode_prime_direct_rec direct;
     drmmode_prime_direct_fbs_rec direct_fbs;
     drmmode_prime_overlay_rec overlay;
+    drmmode_prime_source_wait_rec source_wait;
+    drmmode_prime_commit_rec commit;
+    drmmode_prime_presenters_rec presenters;
     Bool kick;
 } drmmode_prime_scanout_rec;
 
@@ -373,10 +404,24 @@ typedef struct {
 } drmmode_overlay_plane_rec;
 
 typedef struct {
+    uint32_t seq;
+    uint64_t start;
+    uint64_t returned;
+    uint64_t target;
+} drmmode_vblank_emul_flip_rec;
+
+typedef struct {
+    int count;
+    uint64_t earliest;
+} drmmode_vblank_emul_relock_rec;
+
+typedef struct {
     uint64_t base_ust;
     uint64_t base_msc;
-    uint64_t period;
+    uint64_t period_ns;
     OsTimerPtr timer;
+    drmmode_vblank_emul_flip_rec flip;
+    drmmode_vblank_emul_relock_rec relock;
 } drmmode_vblank_emul_rec;
 
 typedef struct {
@@ -435,6 +480,7 @@ typedef struct {
 
     int src_x, src_y;
     drmmode_fb_layout_rec scanout_layout;
+    uint32_t async_flip_seq;
 
     /**
      * @{ MSC (vblank count) handling for the PRESENT extension.
@@ -620,6 +666,7 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
+drmmode_shadow_fb_ptr drmmode_prime_front_buffer(drmmode_prime_scanout_rec *prime_scanout);
 void drmmode_reset_vrr(ScrnInfoPtr scrn);
 Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
                                       const struct hdr_output_metadata *metadata,

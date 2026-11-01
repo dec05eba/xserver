@@ -39,6 +39,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #ifdef __linux__
 #include <linux/dma-buf.h>
 #endif
@@ -1840,6 +1841,28 @@ ms_dmabuf_add_writer(int dmabuf_fd, int fence_fd)
 #else
     return FALSE;
 #endif
+}
+
+int
+ms_dmabuf_writer_fence(int dmabuf_fd)
+{
+#ifdef DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+    struct dma_buf_export_sync_file args = {
+        .flags = DMA_BUF_SYNC_READ,
+        .fd = -1,
+    };
+    struct pollfd pfd = { .events = POLLIN };
+
+    if (dmabuf_fd < 0 ||
+        drmIoctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &args))
+        return -1;
+
+    pfd.fd = args.fd;
+    if (poll(&pfd, 1, 0) == 0)
+        return args.fd;
+    close(args.fd);
+#endif
+    return -1;
 }
 
 void

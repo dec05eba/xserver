@@ -410,6 +410,7 @@ ms_prime_queue_event(xf86CrtcPtr crtc, struct ms_flipdata *flipdata,
     if (!ms_tearfree_queue_event(crtc, flipdata, on_reference_crtc))
         return FALSE;
 
+    ms_prime_presented(crtc);
     ms_prime_kick(crtc);
     return TRUE;
 }
@@ -814,15 +815,18 @@ ms_tearfree_dri_abort(xf86CrtcPtr crtc,
     return FALSE;
 }
 
-static void
+static int
 ms_tearfree_dri_complete(struct xorg_list *flips, uint64_t msc, uint64_t usec)
 {
     struct ms_crtc_pageflip *flip, *tmp;
+    int completed = 0;
 
     xorg_list_for_each_entry_safe(flip, tmp, flips, node) {
         xorg_list_del(&flip->node);
         ms_pageflip_handler(msc, usec, flip);
+        completed++;
     }
+    return completed;
 }
 
 void
@@ -852,7 +856,7 @@ ms_tearfree_dri_abort_all(xf86CrtcPtr crtc)
     ms_tearfree_dri_complete(&flips, msc, usec);
 }
 
-static void
+static int
 ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
 {
     struct ms_crtc_pageflip *flip, *tmp;
@@ -871,15 +875,15 @@ ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
             xorg_list_append(&flip->node, &flips);
         }
     }
-    ms_tearfree_dri_complete(&flips, msc, usec);
+    return ms_tearfree_dri_complete(&flips, msc, usec);
 }
 
-void
+int
 ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-    ms_tearfree_dri_notify(&drmmode_crtc->tearfree, msc, usec);
+    return ms_tearfree_dri_notify(&drmmode_crtc->tearfree, msc, usec);
 }
 
 static Bool
@@ -924,15 +928,15 @@ ms_compose_clients_done(drmmode_render_fences_rec *fences)
     return done;
 }
 
-uint64_t
+static void
 ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 {
     uint64_t start = max(compose->start,
                          ms_compose_clients_done(&compose->clients));
-    uint64_t signaled = 0;
+    uint64_t signaled;
 
     if (compose->fence_fd < 0)
-        return 0;
+        return;
 
     if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled) &&
         compose->start)
@@ -942,7 +946,6 @@ ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
     close(compose->fence_fd);
     compose->fence_fd = -1;
     compose->start = 0;
-    return signaled;
 }
 
 static void
@@ -1025,11 +1028,12 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
 
 #define MS_TEARFREE_COMPOSE_SLACK_USEC 2000
 
-static Bool
-ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next)
+Bool
+ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next,
+                        uint64_t *next_msc)
 {
     double refresh = xf86ModeVRefresh(&crtc->mode);
-    uint64_t ust, msc, period, elapsed;
+    uint64_t ust, msc, period, elapsed, frames;
 
     if (refresh <= 0.0 || ms_get_crtc_ust_msc(crtc, &ust, &msc) != Success ||
         !ust)
@@ -1040,7 +1044,10 @@ ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next)
      */
     period = 1000000.0 / refresh;
     elapsed = now > ust ? now - ust : 0;
-    *next = ust + (elapsed / period + 1) * period;
+    frames = elapsed / period + 1;
+    *next = ust + frames * period;
+    if (next_msc)
+        *next_msc = msc + frames;
     return TRUE;
 }
 
@@ -1059,13 +1066,13 @@ Bool
 ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
-    uint64_t margin = compose->usec + compose->lead.usec[compose->lead.kind] +
+    uint64_t margin = drmmode_crtc->tearfree.compose.usec +
         MS_TEARFREE_COMPOSE_SLACK_USEC;
     uint64_t now = GetTimeInMicros();
     uint64_t next;
 
-    if (!ms_tearfree_next_vblank(crtc, now, &next) || next - now <= margin)
+    if (!ms_tearfree_next_vblank(crtc, now, &next, NULL) ||
+        next - now <= margin)
         return TRUE;
 
     AdjustWaitForDelay(timeout, (next - margin - now + 999) / 1000);
@@ -1074,7 +1081,7 @@ ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
 
 #define MS_COMPOSE_ESTIMATE_DECAY 16
 
-void
+static void
 ms_compose_timing_measured(drmmode_compose_timing_rec *compose, uint64_t usec)
 {
     compose->usec = max(usec, compose->usec -

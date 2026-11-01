@@ -261,11 +261,22 @@ ms_emulate_vblank(modesettingPtr ms, ScrnInfoPtr scrn)
 }
 
 static uint64_t
-ms_crtc_frame_period(xf86CrtcPtr crtc)
+ms_crtc_frame_period_ns(xf86CrtcPtr crtc)
 {
     double refresh = xf86ModeVRefresh(&crtc->mode);
 
-    return refresh > 0.0 ? 1000000.0 / refresh : 16667;
+    return refresh > 0.0 ? 1000000000.0 / refresh : 16666667;
+}
+
+uint64_t
+ms_crtc_vblank_usec(xf86CrtcPtr crtc)
+{
+    DisplayModePtr mode = &crtc->mode;
+
+    if (mode->Clock <= 0 || mode->VTotal <= mode->VDisplay)
+        return 0;
+    return (uint64_t) (mode->VTotal - mode->VDisplay) * mode->HTotal * 1000 /
+        mode->Clock;
 }
 
 static void
@@ -274,34 +285,138 @@ ms_vblank_emul_at(xf86CrtcPtr crtc, uint64_t now, uint64_t *msc,
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_vblank_emul_rec *emul = &drmmode_crtc->vblank_emul;
-    uint64_t period = ms_crtc_frame_period(crtc);
+    uint64_t period_ns = ms_crtc_frame_period_ns(crtc);
     uint64_t frames;
 
-    if (!emul->base_ust || emul->period != period) {
+    if (!emul->base_ust || emul->period_ns != period_ns) {
         if (emul->base_ust && now > emul->base_ust)
-            emul->base_msc += (now - emul->base_ust) / emul->period;
+            emul->base_msc += (now - emul->base_ust) * 1000 / emul->period_ns;
         emul->base_ust = now;
-        emul->period = period;
+        emul->period_ns = period_ns;
     }
 
-    frames = now > emul->base_ust ? (now - emul->base_ust) / period : 0;
+    frames = now > emul->base_ust ?
+        (now - emul->base_ust) * 1000 / period_ns : 0;
     *msc = emul->base_msc + frames;
-    *ust = emul->base_ust + frames * period;
+    *ust = emul->base_ust + frames * period_ns / 1000;
 }
 
+void
+ms_vblank_emul_committed(xf86CrtcPtr crtc, uint32_t seq, uint64_t start,
+                         uint64_t returned, uint64_t target)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    drmmode_crtc->vblank_emul.flip = (drmmode_vblank_emul_flip_rec) {
+        .seq = seq,
+        .start = start,
+        .returned = returned,
+        .target = target,
+    };
+}
+
+#define MS_VBLANK_EMUL_STALLED_COMMIT_USEC 2000
+#define MS_VBLANK_EMUL_IMMEDIATE_SLACK_USEC 50
+#define MS_VBLANK_EMUL_IMMEDIATE_EARLY_USEC 300
+#define MS_VBLANK_EMUL_RELOCK_LATE_USEC 500
+#define MS_VBLANK_EMUL_RELOCK_AGREE_USEC 300
+#define MS_VBLANK_EMUL_RELOCK_COUNT 3
+
+/* nvidia-drm sometimes completes a flip right after it was committed instead
+ * of at the next vblank, and a commit that blocked in the kernel completes at
+ * an unrelated time.
+ */
+static Bool
+ms_vblank_emul_flip_at_vblank(xf86CrtcPtr crtc, uint32_t seq, uint64_t ust)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    const drmmode_vblank_emul_flip_rec *flip = &drmmode_crtc->vblank_emul.flip;
+
+    if (flip->seq != seq)
+        return TRUE;
+    if (flip->returned - flip->start > MS_VBLANK_EMUL_STALLED_COMMIT_USEC)
+        return FALSE;
+    return ust >= flip->returned + ms_crtc_vblank_usec(crtc) +
+        MS_VBLANK_EMUL_IMMEDIATE_SLACK_USEC ||
+        ust + MS_VBLANK_EMUL_IMMEDIATE_EARLY_USEC >= flip->target;
+}
+
+static int64_t
+ms_vblank_emul_phase_offset(const drmmode_vblank_emul_rec *emul, uint64_t a,
+                            uint64_t b)
+{
+    int64_t period = emul->period_ns;
+    int64_t offset = ((int64_t) a - (int64_t) b) * 1000 % period;
+
+    if (offset > period / 2)
+        offset -= period;
+    else if (offset <= -period / 2)
+        offset += period;
+    return offset / 1000;
+}
+
+static Bool
+ms_vblank_emul_relock(drmmode_vblank_emul_rec *emul, uint64_t ust,
+                      uint64_t *base)
+{
+    drmmode_vblank_emul_relock_rec *relock = &emul->relock;
+    int64_t offset = relock->count ?
+        ms_vblank_emul_phase_offset(emul, ust, relock->earliest) : 0;
+
+    if (!relock->count || offset > MS_VBLANK_EMUL_RELOCK_AGREE_USEC ||
+        offset < -MS_VBLANK_EMUL_RELOCK_AGREE_USEC) {
+        relock->count = 1;
+        relock->earliest = ust;
+        return FALSE;
+    }
+
+    if (offset < 0)
+        relock->earliest = ust;
+    if (++relock->count < MS_VBLANK_EMUL_RELOCK_COUNT)
+        return FALSE;
+
+    relock->count = 0;
+    *base = offset > 0 ? ust - offset : ust;
+    return TRUE;
+}
+
+/* nvidia-drm timestamps flip events when it sends them, which can be a few ms
+ * after the vblank. An earlier timestamp than expected corrects the phase, a
+ * later one only nudges it unless several agree on a new phase.
+ */
 static uint64_t
-ms_vblank_emul_flipped(xf86CrtcPtr crtc, uint64_t ust)
+ms_vblank_emul_flipped(xf86CrtcPtr crtc, uint32_t seq, uint64_t ust)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_vblank_emul_rec *emul = &drmmode_crtc->vblank_emul;
-    uint64_t msc, vblank_ust;
+    uint64_t msc, vblank_ust, base;
+    int64_t err;
 
     ms_vblank_emul_at(crtc, ust, &msc, &vblank_ust);
-    if (ust > vblank_ust && ust - vblank_ust > emul->period / 2)
+    if (ust > vblank_ust && ust - vblank_ust > emul->period_ns / 2000) {
         msc++;
+        vblank_ust = emul->base_ust +
+            (msc - emul->base_msc) * emul->period_ns / 1000;
+    }
+    err = (int64_t) ust - (int64_t) vblank_ust;
 
-    emul->base_msc = msc;
-    emul->base_ust = ust;
+    if (!ms_vblank_emul_flip_at_vblank(crtc, seq, ust))
+        return msc;
+
+    if (err < 0) {
+        emul->relock.count = 0;
+        emul->base_msc = msc;
+        emul->base_ust = ust;
+    } else if (err > MS_VBLANK_EMUL_RELOCK_LATE_USEC &&
+               ms_vblank_emul_relock(emul, ust, &base)) {
+        emul->base_msc = msc;
+        emul->base_ust = base;
+    } else if (err <= emul->period_ns / 4000) {
+        if (err <= MS_VBLANK_EMUL_RELOCK_LATE_USEC)
+            emul->relock.count = 0;
+        emul->base_msc = msc;
+        emul->base_ust = vblank_ust + err / 8;
+    }
     return msc;
 }
 
@@ -327,7 +442,7 @@ ms_vblank_emul_arm(xf86CrtcPtr crtc)
     }
 
     ms_vblank_emul_at(crtc, now, &msc, &ust);
-    when = target > msc ? ust + (target - msc) * emul->period : now;
+    when = target > msc ? ust + (target - msc) * emul->period_ns / 1000 : now;
     emul->timer = TimerSet(emul->timer, 0,
                            max((when - min(when, now) + 999) / 1000, 1),
                            ms_vblank_emul_timeout, crtc);
@@ -753,9 +868,18 @@ ms_drm_abort(ScrnInfoPtr scrn, Bool (*match)(void *data, void *match_data),
  * General DRM kernel handler. Looks for the matching sequence number in the
  * drm event queue and calls the handler for it.
  */
+static Bool
+ms_event_at_vblank(xf86CrtcPtr crtc, uint32_t seq)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return !ms_cursor_only_event(crtc, seq) &&
+        seq != drmmode_crtc->async_flip_seq;
+}
+
 static uint64_t
-ms_event_msc(xf86CrtcPtr crtc, uint64_t frame, uint64_t ns, Bool is64bit,
-             Bool at_vblank)
+ms_event_msc(xf86CrtcPtr crtc, uint32_t seq, uint64_t frame, uint64_t ns,
+             Bool is64bit)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     uint64_t msc, ust;
@@ -766,8 +890,8 @@ ms_event_msc(xf86CrtcPtr crtc, uint64_t frame, uint64_t ns, Bool is64bit,
     /* With emulated vblanks only page flip events come from the kernel */
     if (is64bit)
         return frame;
-    if (at_vblank)
-        return ms_vblank_emul_flipped(crtc, ns / 1000);
+    if (ms_event_at_vblank(crtc, seq))
+        return ms_vblank_emul_flipped(crtc, seq, ns / 1000);
     ms_vblank_emul_at(crtc, ns / 1000, &msc, &ust);
     return msc;
 }
@@ -785,8 +909,7 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
     xorg_list_for_each_entry(q, &ms_drm_queue, list) {
         if (q->seq == seq) {
             crtc = q->crtc;
-            msc = ms_event_msc(crtc, frame, ns, is64bit,
-                               !ms_cursor_only_event(crtc, seq));
+            msc = ms_event_msc(crtc, seq, frame, ns, is64bit);
 
             /* Write the current MSC to this event to ensure its handler runs in
              * the loop below. This is done because we don't want to run the

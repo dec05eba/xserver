@@ -254,6 +254,9 @@ void ms_dri2_close_screen(ScreenPtr screen);
 Bool ms_vblank_screen_init(ScreenPtr screen);
 void ms_vblank_close_screen(ScreenPtr screen);
 void ms_vblank_crtc_fini(xf86CrtcPtr crtc);
+uint64_t ms_crtc_vblank_usec(xf86CrtcPtr crtc);
+void ms_vblank_emul_committed(xf86CrtcPtr crtc, uint32_t seq, uint64_t start,
+                              uint64_t returned, uint64_t target);
 
 Bool ms_present_screen_init(ScreenPtr screen);
 
@@ -299,7 +302,7 @@ Bool ms_tearfree_window_unflip(ScreenPtr screen, WindowPtr window, void *event,
                                ms_pageflip_handler_proc pageflip_handler,
                                ms_pageflip_abort_proc pageflip_abort);
 
-void ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
+int ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
 
 Bool ms_prime_window_flip(xf86CrtcPtr crtc, ScreenPtr screen, void *event,
                           ms_pageflip_handler_proc pageflip_handler,
@@ -315,11 +318,13 @@ Bool ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame);
 Bool ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix);
 void ms_prime_destroy_scanout(xf86CrtcPtr crtc);
 Bool ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq);
-void ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
-void ms_prime_flip_aborted(xf86CrtcPtr crtc);
+void ms_prime_flip_done(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
+                        uint64_t usec);
+void ms_prime_flip_aborted(xf86CrtcPtr crtc, uint32_t seq);
 xf86CrtcPtr ms_prime_crtc(PixmapPtr ppix);
 Bool ms_prime_crtc_flipping(xf86CrtcPtr crtc);
-Bool ms_prime_flip_wanted(xf86CrtcPtr crtc);
+void ms_prime_commit_pending(xf86CrtcPtr crtc);
+void ms_prime_presented(xf86CrtcPtr crtc);
 void ms_prime_kick(xf86CrtcPtr crtc);
 void ms_prime_flush_kicks(ScreenPtr screen, void *timeout);
 Bool ms_prime_update_output_mode(ScrnInfoPtr scrn);
@@ -337,6 +342,7 @@ PixmapPtr ms_offload_native_pixmap(PixmapPtr pixmap);
 #endif
 
 void ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd);
+int ms_dmabuf_writer_fence(int dmabuf_fd);
 
 void ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box);
 PixmapPtr ms_overlay_back_buffer(xf86CrtcPtr crtc);
@@ -378,11 +384,9 @@ Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
 #ifdef HAVE_GBM
+Bool ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next,
+                             uint64_t *next_msc);
 Bool ms_tearfree_flip_wanted(xf86CrtcPtr crtc);
-uint64_t ms_compose_timing_release(drmmode_compose_timing_rec *compose,
-                                   Bool flipped);
-void ms_compose_timing_measured(drmmode_compose_timing_rec *compose,
-                                uint64_t usec);
 #endif
 
 void ms_compositor_screen_init(ScrnInfoPtr scrn);

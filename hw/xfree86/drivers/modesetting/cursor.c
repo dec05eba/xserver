@@ -554,10 +554,6 @@ ms_cursor_flip_done(xf86CrtcPtr crtc, uint32_t seq)
 
     plane->shown = plane->flight;
     plane->flight_seq = 0;
-#ifdef HAVE_GBM
-    if (ms_prime_crtc_flipping(crtc))
-        ms_prime_kick(crtc);
-#endif
 }
 
 static void
@@ -631,8 +627,6 @@ ms_cursor_flip_expected(xf86CrtcPtr crtc)
     if (drmmode_crtc->tearfree.flip_seq)
         return TRUE;
 #ifdef HAVE_GBM
-    if (ms_prime_crtc_flipping(crtc))
-        return ms_prime_flip_wanted(crtc);
     return ms_tearfree_is_active_on_crtc(crtc) && ms_tearfree_flip_wanted(crtc);
 #else
     return FALSE;
@@ -659,6 +653,12 @@ ms_cursor_commit_pending(ScreenPtr screen, void *timeout)
     for (c = 0; c < xf86_config->num_crtc; c++) {
         xf86CrtcPtr crtc = xf86_config->crtc[c];
 
+#ifdef HAVE_GBM
+        if (ms_prime_crtc_flipping(crtc)) {
+            ms_prime_commit_pending(crtc);
+            continue;
+        }
+#endif
         if (ms_cursor_needs_commit(crtc) && !ms_cursor_flip_expected(crtc) &&
             ms_cursor_commit_due(crtc, timeout))
             ms_cursor_commit(crtc);

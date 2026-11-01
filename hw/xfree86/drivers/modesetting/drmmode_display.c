@@ -779,6 +779,12 @@ drmmode_crtc_can_test_mode(xf86CrtcPtr crtc)
     return ms->atomic_modeset;
 }
 
+drmmode_shadow_fb_ptr
+drmmode_prime_front_buffer(drmmode_prime_scanout_rec *prime_scanout)
+{
+    return &prime_scanout->buf[prime_scanout->front_idx];
+}
+
 Bool
 drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
 {
@@ -795,7 +801,7 @@ drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
         *x = *y = 0;
     }
     else if (prime_scanout->buf[0].px) {
-        *fb_id = prime_scanout->buf[prime_scanout->back_idx ^ 1].fb_id;
+        *fb_id = drmmode_prime_front_buffer(prime_scanout)->fb_id;
         *x = *y = 0;
     }
     else if (drmmode_crtc->prime_pixmap) {
@@ -1205,6 +1211,17 @@ drmmode_crtc_test_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y)
     return ret == 0;
 }
 
+static void
+drmmode_crtc_flip_committed(xf86CrtcPtr crtc, drmmode_fb_layout_rec layout,
+                            uint32_t flags, void *data)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    drmmode_crtc->scanout_layout = layout;
+    drmmode_crtc->async_flip_seq = flags & DRM_MODE_PAGE_FLIP_ASYNC ?
+        (uint32_t) (uintptr_t) data : 0;
+}
+
 int
 drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                   uint32_t flags, int in_fence_fd, void *data)
@@ -1282,7 +1299,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             ms_cursor_set_moved(crtc);
 
         if (ret == 0) {
-            drmmode_crtc->scanout_layout = layout;
+            drmmode_crtc_flip_committed(crtc, layout, flags, data);
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
             overlay->fb_id = overlay->next_fb_id;
@@ -1337,7 +1354,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     ret = drmModePageFlip(ms->fd, drmmode_crtc->mode_crtc->crtc_id,
                           fb_id, flags, data);
     if (ret == 0)
-        drmmode_crtc->scanout_layout = layout;
+        drmmode_crtc_flip_committed(crtc, layout, flags, data);
     return ret;
 }
 
@@ -1652,6 +1669,7 @@ struct vblank_event_args {
     PixmapPtr backTarget;
     xf86CrtcPtr crtc;
     drmmode_ptr drmmode;
+    uint32_t seq;
     Bool flip;
 };
 static void
@@ -1665,9 +1683,7 @@ drmmode_SharedPixmapVBlankEventHandler(uint64_t frame, uint64_t usec,
     if (args->flip) {
 #ifdef HAVE_GBM
         if (args->drmmode->reverse_prime_offload_mode) {
-            ms_prime_flip_done(args->crtc, frame, usec);
-            msGetPixmapPriv(args->drmmode, args->frontTarget)->wait_for_damage = TRUE;
-            ms_prime_kick(args->crtc);
+            ms_prime_flip_done(args->crtc, args->seq, frame, usec);
             free(args);
             return;
         }
@@ -1690,11 +1706,13 @@ static void
 drmmode_SharedPixmapVBlankEventAbort(void *data)
 {
     struct vblank_event_args *args = data;
+    msPixmapPrivPtr ppriv = msGetPixmapPriv(args->drmmode, args->frontTarget);
 
-    msGetPixmapPriv(args->drmmode, args->frontTarget)->flip_seq = 0;
+    if (ppriv->flip_seq == args->seq)
+        ppriv->flip_seq = 0;
 #ifdef HAVE_GBM
     if (args->flip && args->drmmode->reverse_prime_offload_mode)
-        ms_prime_flip_aborted(args->crtc);
+        ms_prime_flip_aborted(args->crtc, args->seq);
 #endif
 
     free(args);
@@ -1740,6 +1758,7 @@ drmmode_SharedPixmapPresentOnVBlank(PixmapPtr ppix, xf86CrtcPtr crtc,
         ms_drm_queue_alloc(crtc, event_args,
                            drmmode_SharedPixmapVBlankEventHandler,
                            drmmode_SharedPixmapVBlankEventAbort);
+    event_args->seq = ppriv->flip_seq;
 
     return ms_queue_vblank(crtc, MS_QUEUE_RELATIVE, 1, NULL, ppriv->flip_seq);
 }
@@ -1768,6 +1787,7 @@ drmmode_SharedPixmapFlip(PixmapPtr frontTarget, xf86CrtcPtr crtc,
         ms_drm_queue_alloc(crtc, event_args,
                            drmmode_SharedPixmapVBlankEventHandler,
                            drmmode_SharedPixmapVBlankEventAbort);
+    event_args->seq = ppriv_front->flip_seq;
 
 #ifdef HAVE_GBM
     if (drmmode->reverse_prime_offload_mode)
@@ -3206,6 +3226,10 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     xorg_list_init(&drmmode_crtc->mode_list);
     xorg_list_init(&drmmode_crtc->tearfree.dri_flip_list);
     drmmode_crtc->tearfree.compose.fence_fd = -1;
+    drmmode_crtc->prime_scanout.commit.deadline.fd = -1;
+    drmmode_crtc->prime_scanout.commit.content.fence_fd = -1;
+    drmmode_crtc->prime_scanout.commit.content.buf_idx = -1;
+    drmmode_crtc->prime_scanout.commit.flight.buf_idx = -1;
     drmmode_crtc->next_msc = UINT64_MAX;
 
     props = drmModeObjectGetProperties(drmmode->fd, mode_res->crtcs[num],

@@ -23,8 +23,11 @@
 
 #include "dix-config.h"
 
+#include <errno.h>
+#include <poll.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/timerfd.h>
 #include <xf86.h>
 #include <xf86Crtc.h>
 
@@ -41,6 +44,10 @@ ms_prime_scanout(xf86CrtcPtr crtc)
 
     return &drmmode_crtc->prime_scanout;
 }
+
+static void ms_prime_commit_cancel(xf86CrtcPtr crtc);
+static void ms_prime_source_wait_cancel(xf86CrtcPtr crtc);
+static void ms_prime_deadline_fired(int fd, int ready, void *data);
 
 static void
 ms_prime_release_import(drmmode_prime_import_rec *import)
@@ -83,7 +90,6 @@ static void
 ms_prime_overlay_prepare(xf86CrtcPtr crtc)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     PixmapPtr import = prime_scanout->overlay.import;
     BoxPtr box = &prime_scanout->direct.cover_box;
@@ -98,7 +104,6 @@ ms_prime_overlay_prepare(xf86CrtcPtr crtc)
     gc->ops->CopyArea(&import->drawable, &back->drawable, gc, 0, 0,
                       box->x2 - box->x1, box->y2 - box->y1, 0, 0);
     FreeScratchGC(gc);
-    ms->glamor.finish(screen);
 
     ms_overlay_queue(crtc, box);
 }
@@ -112,6 +117,74 @@ ms_prime_clear_direct(xf86CrtcPtr crtc)
     for (i = 0; i < ARRAY_SIZE(direct->imports); i++)
         ms_prime_release_import(&direct->imports[i]);
     memset(direct, 0, sizeof(*direct));
+}
+
+static Bool
+ms_prime_timer_create(int *fd, NotifyFdProcPtr notify, xf86CrtcPtr crtc)
+{
+    if (*fd >= 0)
+        return TRUE;
+
+    *fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (*fd < 0)
+        return FALSE;
+
+    if (SetNotifyFd(*fd, notify, X_NOTIFY_READ, crtc))
+        return TRUE;
+
+    close(*fd);
+    *fd = -1;
+    return FALSE;
+}
+
+static void
+ms_prime_timer_destroy(int *fd)
+{
+    if (*fd < 0)
+        return;
+
+    SetNotifyFd(*fd, NULL, 0, NULL);
+    close(*fd);
+    *fd = -1;
+}
+
+static void
+ms_prime_timer_set(int fd, uint64_t *armed_at, uint64_t at)
+{
+    struct itimerspec spec = {
+        .it_value = {
+            .tv_sec = at / 1000000,
+            .tv_nsec = at % 1000000 * 1000,
+        },
+    };
+
+    if (*armed_at != at &&
+        !timerfd_settime(fd, at ? TFD_TIMER_ABSTIME : 0, &spec, NULL))
+        *armed_at = at;
+}
+
+static Bool
+ms_prime_timer_expired(int fd)
+{
+    uint64_t expirations;
+
+    return read(fd, &expirations, sizeof(expirations)) == sizeof(expirations);
+}
+
+static void
+ms_prime_commit_reset(xf86CrtcPtr crtc)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_commit_rec *commit = &prime_scanout->commit;
+
+    ms_prime_timer_destroy(&commit->deadline.fd);
+    ms_prime_release_fb(crtc, &commit->flight.fb);
+    *commit = (drmmode_prime_commit_rec) {
+        .content = { .buf_idx = -1, .fence_fd = -1 },
+        .flight = { .buf_idx = -1 },
+        .deadline = { .fd = -1 },
+    };
+    prime_scanout->presenters = (drmmode_prime_presenters_rec) { 0 };
 }
 
 void
@@ -136,6 +209,9 @@ ms_prime_destroy_scanout(xf86CrtcPtr crtc)
         dixDestroyPixmap(prime_scanout->composition.intermediate, 0);
     memset(&prime_scanout->composition, 0, sizeof(prime_scanout->composition));
 
+    ms_prime_source_wait_cancel(crtc);
+    ms_prime_commit_cancel(crtc);
+    ms_prime_commit_reset(crtc);
     ms_prime_clear_direct(crtc);
     ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.pending);
     ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.front);
@@ -147,8 +223,15 @@ Bool
 ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_commit_rec *commit = &prime_scanout->commit;
     BoxRec whole = { 0, 0, ppix->drawable.width, ppix->drawable.height };
     int i;
+
+    if (!ms_prime_timer_create(&commit->deadline.fd, ms_prime_deadline_fired,
+                               crtc)) {
+        ms_prime_commit_reset(crtc);
+        return FALSE;
+    }
 
     for (i = 0; i < ARRAY_SIZE(prime_scanout->buf); i++) {
         prime_scanout->buf[i].px =
@@ -164,6 +247,8 @@ ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
         drmmode_clear_pixmap(prime_scanout->buf[i].px);
         RegionInit(&prime_scanout->buf[i].dmg, &whole, 1);
     }
+    prime_scanout->back_idx = 0;
+    prime_scanout->front_idx = ARRAY_SIZE(prime_scanout->buf) - 1;
     return TRUE;
 }
 
@@ -243,19 +328,20 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr damage,
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
-    BoxPtr box = RegionRects(damage);
-    int nbox = RegionNumRects(damage);
+    BoxPtr extents = RegionExtents(damage);
     GCPtr gc;
 
     gc = GetScratchGC(back->px->drawable.depth, screen);
     if (!gc)
         return 0;
 
-    ValidateGC(&back->px->drawable, gc);
-    for (; nbox--; box++)
+    if (RegionNotEmpty(damage)) {
+        gc->funcs->ChangeClip(gc, CT_REGION, RegionDuplicate(damage), 0);
+        ValidateGC(&back->px->drawable, gc);
         gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc,
-                          box->x1, box->y1, box->x2 - box->x1,
-                          box->y2 - box->y1, box->x1, box->y1);
+                          extents->x1, extents->y1, extents->x2 - extents->x1,
+                          extents->y2 - extents->y1, extents->x1, extents->y1);
+    }
     FreeScratchGC(gc);
     RegionEmpty(damage);
 
@@ -266,14 +352,6 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr damage,
     return back->fb_id;
 }
 
-static drmmode_flip_kind
-ms_prime_flip_kind(const drmmode_prime_direct_rec *direct)
-{
-    if (!direct->source)
-        return DRMMODE_FLIP_COMPOSED;
-    return direct->scanout_source ? DRMMODE_FLIP_SCANOUT : DRMMODE_FLIP_COPY;
-}
-
 static uint64_t
 ms_prime_frame_period(xf86CrtcPtr crtc)
 {
@@ -282,63 +360,436 @@ ms_prime_frame_period(xf86CrtcPtr crtc)
     return refresh > 0.0 ? 1000000.0 / refresh : 0;
 }
 
-static void
-ms_prime_flip_target(xf86CrtcPtr crtc, drmmode_flip_kind kind)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_commit_lead_rec *lead = &drmmode_crtc->tearfree.compose.lead;
-    uint64_t ust, msc;
+#define MS_PRIME_COMMIT_SLACK_USEC 1000
+#define MS_PRIME_COMMIT_MAX_EXTRA_USEC 3000
+#define MS_PRIME_COMMIT_RETRY_USEC 1000
+#define MS_PRIME_COMMIT_LATE_CALLBACK_USEC 1000
+#define MS_PRIME_COMMIT_STALLED_USEC 2000
+#define MS_PRIME_PRESENTERS_WAIT_USEC 1000
 
-    lead->kind = kind;
-    lead->commit_ust = GetTimeInMicros();
-    if (ms_get_crtc_ust_msc(crtc, &ust, &msc) != Success) {
-        lead->target_msc = 0;
-        return;
-    }
-    lead->target_msc = msc + 1;
-    lead->target_ust = ust + ms_prime_frame_period(crtc);
+static uint64_t
+ms_prime_base_margin(xf86CrtcPtr crtc)
+{
+    return ms_crtc_vblank_usec(crtc) + MS_PRIME_COMMIT_SLACK_USEC;
 }
 
-/* A flip that missed its vblank although it was ready a full lead ahead of it
- * needs a longer lead. Misses caused by the composition finishing late are
- * covered by the composition time estimate instead.
+static uint64_t
+ms_prime_commit_margin(xf86CrtcPtr crtc)
+{
+    return ms_prime_base_margin(crtc) +
+        ms_prime_scanout(crtc)->commit.extra_margin;
+}
+
+static void
+ms_prime_commit_adapt(xf86CrtcPtr crtc, uint64_t vblank, uint64_t done)
+{
+    drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
+    uint64_t wanted = vblank - min(vblank, ms_prime_base_margin(crtc));
+    uint64_t limit = min(MS_PRIME_COMMIT_MAX_EXTRA_USEC,
+                         ms_prime_frame_period(crtc) / 2);
+    uint64_t extra = commit->extra_margin;
+
+    if (done > wanted)
+        extra += done - wanted;
+    else
+        extra -= min(extra, (wanted - done) / 10);
+    commit->extra_margin = min(extra, limit);
+}
+
+static Bool
+ms_prime_fence_signaled(int fence_fd)
+{
+    struct pollfd pfd = { .fd = fence_fd, .events = POLLIN };
+
+    return fence_fd < 0 || poll(&pfd, 1, 0) != 0;
+}
+
+static Bool
+ms_prime_cursor_wanted(xf86CrtcPtr crtc)
+{
+    return crtc->scrn->vtSema && xf86_crtc_on(crtc) &&
+        ms_cursor_needs_commit(crtc);
+}
+
+static Bool
+ms_prime_commit_wanted(xf86CrtcPtr crtc)
+{
+    drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
+
+    return !commit->flight.seq &&
+        (commit->content.seq || ms_prime_cursor_wanted(crtc));
+}
+
+static void ms_prime_commit_now(xf86CrtcPtr crtc, int64_t late);
+static void ms_prime_tick_start(xf86CrtcPtr crtc, uint32_t seq,
+                                const drmmode_prime_deadline_rec *deadline);
+
+/* Retries never commit from here, so a deadline that keeps being missed
+ * moves on through the timer instead of recursing. A vblank gets at most one
+ * commit, also when nvidia completes a flip before that vblank.
  */
 static void
-ms_prime_flip_timing(xf86CrtcPtr crtc, uint64_t msc, uint64_t ready)
+ms_prime_commit_schedule(xf86CrtcPtr crtc, uint64_t after)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_commit_lead_rec *lead = &drmmode_crtc->tearfree.compose.lead;
-    uint64_t *usec = &lead->usec[lead->kind];
+    drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
+    drmmode_prime_deadline_rec *deadline = &commit->deadline;
+    uint64_t now = GetTimeInMicros();
     uint64_t period = ms_prime_frame_period(crtc);
-    Bool late;
+    uint64_t from = max(now, after);
+    uint64_t vblank, msc, due;
 
-    if (!lead->target_msc || !period)
+    if (commit->last_target)
+        from = max(from, commit->last_target + period / 2);
+
+    if (!ms_prime_commit_wanted(crtc)) {
+        ms_prime_timer_set(deadline->fd, &deadline->at, 0);
         return;
+    }
 
-    late = msc > lead->target_msc && ready < lead->target_ust &&
-        lead->target_ust - ready >= *usec;
-    lead->late_history = (lead->late_history << 1) | late;
-    if (__builtin_popcount(lead->late_history) < 2)
+    if (!period || !ms_tearfree_next_vblank(crtc, from, &vblank, &msc)) {
+        deadline->vblank = 0;
+        deadline->msc = 0;
+        deadline->on_time = FALSE;
+        if (after) {
+            ms_prime_timer_set(deadline->fd, &deadline->at, max(now, after));
+            return;
+        }
+        ms_prime_timer_set(deadline->fd, &deadline->at, 0);
+        ms_prime_commit_now(crtc, 0);
         return;
+    }
 
-    lead->late_history = 0;
-    *usec = min(*usec + 1000, period);
+    if (now + ms_crtc_vblank_usec(crtc) >= vblank) {
+        vblank += period;
+        msc++;
+    }
+    due = vblank - min(vblank, ms_prime_commit_margin(crtc));
+    deadline->vblank = vblank;
+    deadline->msc = msc;
+    deadline->on_time = now < due;
+    if (deadline->on_time || after) {
+        ms_prime_timer_set(deadline->fd, &deadline->at, max(now, due));
+        return;
+    }
+
+    ms_prime_timer_set(deadline->fd, &deadline->at, 0);
+    ms_prime_commit_now(crtc, 0);
 }
 
 static void
-ms_prime_flip_timing_done(xf86CrtcPtr crtc, uint64_t msc)
+ms_prime_commit_unwatch(xf86CrtcPtr crtc)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
-    Bool fenced = compose->fence_fd >= 0;
-    uint64_t signaled = ms_compose_timing_release(compose, TRUE);
+    drmmode_prime_content_rec *content = &ms_prime_scanout(crtc)->commit.content;
 
-    if (!fenced || signaled)
-        ms_prime_flip_timing(crtc, msc, max(compose->lead.commit_ust, signaled));
+    if (!content->watching_fence)
+        return;
+
+    SetNotifyFd(content->fence_fd, NULL, 0, NULL);
+    content->watching_fence = FALSE;
 }
 
-Bool
-ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
+static void
+ms_prime_commit_fence_signaled(int fd, int ready, void *data)
+{
+    xf86CrtcPtr crtc = data;
+
+    ms_prime_commit_unwatch(crtc);
+    ms_prime_commit_schedule(crtc, 0);
+}
+
+static void
+ms_prime_commit_cancel(xf86CrtcPtr crtc)
+{
+    drmmode_prime_content_rec *content = &ms_prime_scanout(crtc)->commit.content;
+
+    if (!content->seq)
+        return;
+
+    ms_prime_commit_unwatch(crtc);
+    if (content->fence_fd >= 0)
+        close(content->fence_fd);
+    content->fence_fd = -1;
+    content->seq = 0;
+}
+
+static void
+ms_prime_commit_queue(xf86CrtcPtr crtc, uint32_t seq, uint32_t fb_id,
+                      int buf_idx, int fence_fd)
+{
+    drmmode_prime_content_rec *content = &ms_prime_scanout(crtc)->commit.content;
+
+    *content = (drmmode_prime_content_rec) {
+        .seq = seq,
+        .fb_id = fb_id,
+        .buf_idx = buf_idx,
+        .fence_fd = fence_fd,
+    };
+    if (!ms_prime_fence_signaled(fence_fd))
+        content->watching_fence =
+            SetNotifyFd(fence_fd, ms_prime_commit_fence_signaled,
+                        X_NOTIFY_READ, crtc);
+    ms_prime_commit_schedule(crtc, 0);
+}
+
+static void
+ms_prime_flip_retry(xf86CrtcPtr crtc, uint32_t seq)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    ms_drm_abort_seq(crtc->scrn, seq);
+    msGetPixmapPriv(drmmode_crtc->drmmode,
+                    drmmode_crtc->prime_pixmap_back)->wait_for_damage = TRUE;
+    ms_prime_kick(crtc);
+}
+
+static void
+ms_prime_commit_failed(xf86CrtcPtr crtc, uint32_t seq, int error)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
+               "PRIME flip on CRTC %u failed: %s\n",
+               drmmode_crtc->mode_crtc->crtc_id, strerror(-error));
+    ms_overlay_flip_failed(crtc);
+    ms_prime_flip_retry(crtc, seq);
+}
+
+static void
+ms_prime_flight_start(xf86CrtcPtr crtc, uint32_t seq, int buf_idx,
+                      Bool cursor, const drmmode_prime_deadline_rec *deadline,
+                      uint64_t start, uint64_t returned)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_flight_rec *flight = &prime_scanout->commit.flight;
+    drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
+
+    *flight = (drmmode_prime_flight_rec) {
+        .seq = seq,
+        .buf_idx = buf_idx,
+        .cursor = cursor,
+    };
+    if (!cursor) {
+        flight->fb = prime_scanout->direct_fbs.pending;
+        prime_scanout->direct_fbs.pending = (drmmode_prime_fb_rec) { 0 };
+        flight->overlay = overlay->fb_id || overlay->buffers.pending;
+    }
+    if (buf_idx >= 0)
+        prime_scanout->back_idx = (buf_idx + 1) %
+            ARRAY_SIZE(prime_scanout->buf);
+    prime_scanout->commit.last_target = deadline->vblank;
+    ms_vblank_emul_committed(crtc, seq, start, returned, deadline->vblank);
+}
+
+static int
+ms_prime_commit_content(xf86CrtcPtr crtc,
+                        const drmmode_prime_deadline_rec *deadline)
+{
+    drmmode_prime_content_rec *content = &ms_prime_scanout(crtc)->commit.content;
+    uint32_t seq = content->seq;
+    uint64_t start, returned;
+    int ret;
+
+    ms_prime_commit_unwatch(crtc);
+    start = GetTimeInMicros();
+    ret = drmmode_crtc_flip(crtc, content->fb_id, 0, 0,
+                            DRM_MODE_PAGE_FLIP_EVENT, content->fence_fd,
+                            (void *) (uintptr_t) seq);
+    returned = GetTimeInMicros();
+    if (ret == -EBUSY)
+        return ret;
+
+    if (content->fence_fd >= 0)
+        close(content->fence_fd);
+    content->fence_fd = -1;
+    content->seq = 0;
+    if (ret) {
+        ms_prime_commit_failed(crtc, seq, ret);
+        return ret;
+    }
+
+    ms_prime_flight_start(crtc, seq, content->buf_idx, FALSE, deadline,
+                          start, returned);
+    ms_prime_tick_start(crtc, seq, deadline);
+    return 0;
+}
+
+static uint32_t
+ms_prime_front_fb(xf86CrtcPtr crtc)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+
+    if (prime_scanout->direct_fbs.front.fb_id)
+        return prime_scanout->direct_fbs.front.fb_id;
+    return drmmode_prime_front_buffer(prime_scanout)->fb_id;
+}
+
+static void
+ms_prime_cursor_flip_finished(void *data)
+{
+    xf86CrtcPtr crtc = data;
+    drmmode_prime_flight_rec *flight = &ms_prime_scanout(crtc)->commit.flight;
+
+    if (flight->cursor)
+        *flight = (drmmode_prime_flight_rec) { .buf_idx = -1 };
+}
+
+static void
+ms_prime_cursor_flip_done(uint64_t msc, uint64_t usec, void *data)
+{
+    xf86CrtcPtr crtc = data;
+
+    ms_prime_cursor_flip_finished(crtc);
+    ms_prime_commit_schedule(crtc, 0);
+}
+
+/* nvidia-drm only reports vblanks through flip events, so the cursor is
+ * committed with a flip of the frame on screen, which keeps the vblank
+ * estimate current while nothing else changes.
+ */
+static int
+ms_prime_commit_cursor(xf86CrtcPtr crtc,
+                       const drmmode_prime_deadline_rec *deadline)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint32_t fb_id = ms_prime_front_fb(crtc);
+    uint64_t start, returned;
+    uint32_t seq;
+    int ret;
+
+    if (!fb_id || drmmode_crtc->overlay_plane.next_fb_id ||
+        drmmode_crtc_has_pending_hdr(crtc))
+        return -EBUSY;
+
+    seq = ms_drm_queue_alloc(crtc, crtc, ms_prime_cursor_flip_done,
+                             ms_prime_cursor_flip_finished);
+    if (!seq)
+        return -ENOMEM;
+
+    start = GetTimeInMicros();
+    ret = drmmode_crtc_flip(crtc, fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT, -1,
+                            (void *) (uintptr_t) seq);
+    returned = GetTimeInMicros();
+    if (ret)
+        ms_drm_abort_seq(crtc->scrn, seq);
+    else
+        ms_prime_flight_start(crtc, seq, -1, TRUE, deadline, start, returned);
+    return ret;
+}
+
+static int
+ms_prime_commit_ready(xf86CrtcPtr crtc,
+                      const drmmode_prime_deadline_rec *deadline)
+{
+    drmmode_prime_content_rec *content = &ms_prime_scanout(crtc)->commit.content;
+
+    if (content->seq && ms_prime_fence_signaled(content->fence_fd))
+        return ms_prime_commit_content(crtc, deadline);
+    if (ms_prime_cursor_wanted(crtc))
+        return ms_prime_commit_cursor(crtc, deadline);
+    return -EAGAIN;
+}
+
+static void
+ms_prime_commit_now(xf86CrtcPtr crtc, int64_t late)
+{
+    drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
+    drmmode_prime_deadline_rec deadline = commit->deadline;
+    uint64_t start = GetTimeInMicros(), now;
+    int ret;
+
+    if (deadline.vblank &&
+        start + ms_crtc_vblank_usec(crtc) >= deadline.vblank)
+        ret = -ETIME;
+    else
+        ret = ms_prime_commit_ready(crtc, &deadline);
+    now = GetTimeInMicros();
+
+    if (ret == 0) {
+        if (deadline.on_time && late <= MS_PRIME_COMMIT_LATE_CALLBACK_USEC &&
+            now - start <= MS_PRIME_COMMIT_STALLED_USEC)
+            ms_prime_commit_adapt(crtc, deadline.vblank, now);
+        return;
+    }
+
+    ms_prime_commit_schedule(crtc, deadline.vblank ? deadline.vblank :
+                             now + MS_PRIME_COMMIT_RETRY_USEC);
+}
+
+static void
+ms_prime_deadline_fired(int fd, int ready, void *data)
+{
+    xf86CrtcPtr crtc = data;
+    drmmode_prime_deadline_rec *deadline =
+        &ms_prime_scanout(crtc)->commit.deadline;
+    uint64_t at = deadline->at;
+
+    if (!ms_prime_timer_expired(fd))
+        return;
+
+    deadline->at = 0;
+    if (ms_prime_commit_wanted(crtc))
+        ms_prime_commit_now(crtc, (int64_t) GetTimeInMicros() - (int64_t) at);
+}
+
+void
+ms_prime_commit_pending(xf86CrtcPtr crtc)
+{
+    if (!ms_prime_scanout(crtc)->commit.deadline.at)
+        ms_prime_commit_schedule(crtc, 0);
+}
+
+static void
+ms_prime_frame_tick(xf86CrtcPtr crtc, uint64_t msc, uint64_t ust)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    uint32_t *tick_seq = &prime_scanout->commit.tick_seq;
+    drmmode_prime_presenters_rec *presenters = &prime_scanout->presenters;
+
+    if (!*tick_seq)
+        return;
+
+    if (drmmode_crtc->tearfree.flip_seq == *tick_seq)
+        drmmode_crtc->tearfree.flip_seq = 0;
+    *tick_seq = 0;
+
+    *presenters = (drmmode_prime_presenters_rec) {
+        .until = GetTimeInMicros() + MS_PRIME_PRESENTERS_WAIT_USEC,
+    };
+    presenters->count += ms_tearfree_dri_flipped(crtc, msc, ust);
+
+    msGetPixmapPriv(drmmode_crtc->drmmode,
+                    drmmode_crtc->prime_pixmap_back)->wait_for_damage = TRUE;
+    ms_prime_kick(crtc);
+}
+
+/* A frame copied into a scanout buffer of our own is done with everything it
+ * read once it is committed, and the third buffer keeps the next copy away
+ * from it, so its clients can go on as soon as it is committed instead of
+ * when nvidia reports the flip. Client buffers that are scanned out directly
+ * and the overlay plane have no spare buffer, so they wait for the flip event.
+ */
+static void
+ms_prime_tick_start(xf86CrtcPtr crtc, uint32_t seq,
+                    const drmmode_prime_deadline_rec *deadline)
+{
+    drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
+
+    commit->tick_seq = seq;
+    if (deadline->vblank && commit->flight.buf_idx >= 0 &&
+        !commit->flight.overlay)
+        ms_prime_frame_tick(crtc, deadline->msc, deadline->vblank);
+}
+
+void
+ms_prime_presented(xf86CrtcPtr crtc)
+{
+    ms_prime_scanout(crtc)->presenters.count--;
+}
+
+static Bool
+ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
@@ -347,12 +798,8 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     PixmapPtr src = direct->source ? direct->source : ppix;
     drmmode_prime_fb_rec fb = { 0 };
     uint32_t fb_id;
+    int buf_idx = -1;
     int fence_fd = -1;
-    int ret;
-
-    if (direct->covered)
-        ms_prime_overlay_prepare(crtc);
-    ms_prime_discard_front_damage(crtc);
 
     if (direct->scanout_source &&
         ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout")) {
@@ -361,6 +808,7 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
         fb_id = fb.fb_id;
     } else {
         ms_prime_release_fb(crtc, &fb);
+        buf_idx = prime_scanout->back_idx;
         fb_id = ms_prime_copy_to_back(crtc, src,
                                       ms_prime_back_damage(crtc, ppix,
                                                            !direct->source),
@@ -372,53 +820,145 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     }
 
     ms_prime_set_scanout_content(crtc, TRUE);
-    drmmode_crtc->tearfree.compose.fence_fd = fence_fd >= 0 ? dup(fence_fd) : -1;
-    ret = drmmode_crtc_flip(crtc, fb_id, 0, 0, DRM_MODE_PAGE_FLIP_EVENT,
-                            fence_fd, (void *)(intptr_t) seq);
-    if (fence_fd >= 0)
-        close(fence_fd);
-    if (ret) {
-        ms_compose_timing_release(&drmmode_crtc->tearfree.compose, FALSE);
-        ms_overlay_flip_failed(crtc);
-        ms_prime_release_fb(crtc, &fb);
-        return FALSE;
-    }
 
     prime_scanout->direct_fbs.pending = fb;
     drmmode_crtc->tearfree.flip_seq = seq;
-    ms_prime_flip_target(crtc, ms_prime_flip_kind(direct));
+    ms_prime_commit_queue(crtc, seq, fb_id, buf_idx, fence_fd);
+    return TRUE;
+}
+
+static void
+ms_prime_source_wait_cancel(xf86CrtcPtr crtc)
+{
+    drmmode_prime_source_wait_rec *wait = &ms_prime_scanout(crtc)->source_wait;
+
+    if (!wait->seq)
+        return;
+
+    SetNotifyFd(wait->fence_fd, NULL, 0, NULL);
+    close(wait->fence_fd);
+    wait->seq = 0;
+}
+
+static void
+ms_prime_source_signaled(int fd, int ready, void *data)
+{
+    xf86CrtcPtr crtc = data;
+    drmmode_prime_source_wait_rec wait = ms_prime_scanout(crtc)->source_wait;
+
+    ms_prime_source_wait_cancel(crtc);
+    if (!ms_prime_flip_source_ready(wait.pixmap, crtc, wait.seq))
+        ms_prime_flip_retry(crtc, wait.seq);
+}
+
+static int
+ms_prime_source_fence(xf86CrtcPtr crtc, PixmapPtr ppix)
+{
+    drmmode_prime_direct_rec *direct = &ms_prime_scanout(crtc)->direct;
+    msPixmapPrivPtr ppriv;
+    ScrnInfoPtr scrn;
+    modesettingPtr ms;
+
+    if (!direct->source) {
+        ppriv = ms_prime_source_priv(ppix);
+        return ppriv ? ms_dmabuf_writer_fence(ppriv->dmabuf_fd) : -1;
+    }
+    if (direct->scanout_source || !direct->pixmap)
+        return -1;
+
+    scrn = xf86ScreenToScrn(direct->pixmap->drawable.pScreen);
+    if (!ms_scrn_is_modesetting(scrn))
+        return -1;
+
+    ms = modesettingPTR(scrn);
+    return ms->glamor.egl_pixmap_rendering_fd ?
+        ms->glamor.egl_pixmap_rendering_fd(direct->pixmap) : -1;
+}
+
+/* An nvidia copy from a buffer another GPU is still rendering finishes about
+ * 7 ms after that rendering, so the copy is submitted once it is done.
+ */
+Bool
+ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    int fence_fd;
+
+    if (prime_scanout->direct.covered)
+        ms_prime_overlay_prepare(crtc);
+    ms_prime_discard_front_damage(crtc);
+
+    fence_fd = ms_prime_source_fence(crtc, ppix);
+    if (fence_fd < 0)
+        return ms_prime_flip_source_ready(ppix, crtc, seq);
+
+    prime_scanout->source_wait = (drmmode_prime_source_wait_rec) {
+        .pixmap = ppix,
+        .seq = seq,
+        .fence_fd = fence_fd,
+    };
+    drmmode_crtc->tearfree.flip_seq = seq;
+    SetNotifyFd(fence_fd, ms_prime_source_signaled, X_NOTIFY_READ, crtc);
     return TRUE;
 }
 
 void
-ms_prime_flip_done(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
+ms_prime_flip_done(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
+                   uint64_t usec)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
-    drmmode_prime_direct_fbs_rec *fbs = &prime_scanout->direct_fbs;
+    drmmode_prime_commit_rec *commit = &prime_scanout->commit;
+    drmmode_prime_flight_rec *flight = &commit->flight;
 
-    ms_prime_flip_timing_done(crtc, msc);
-    if (!fbs->pending.fb_id)
-        prime_scanout->back_idx ^= 1;
-    ms_overlay_flip_done(crtc);
-    ms_prime_release_fb(crtc, &fbs->front);
-    fbs->front = fbs->pending;
-    fbs->pending = (drmmode_prime_fb_rec) { 0 };
+    if (seq == flight->seq) {
+        if (flight->buf_idx >= 0)
+            prime_scanout->front_idx = flight->buf_idx;
+        ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.front);
+        prime_scanout->direct_fbs.front = flight->fb;
+        if (flight->overlay)
+            ms_overlay_flip_done(crtc);
+        *flight = (drmmode_prime_flight_rec) { .buf_idx = -1 };
+    }
 
-    drmmode_crtc->tearfree.flip_seq = 0;
-    ms_tearfree_dri_flipped(crtc, msc, usec);
+    if (seq == commit->tick_seq)
+        ms_prime_frame_tick(crtc, msc, usec);
+    ms_prime_commit_schedule(crtc, 0);
 }
 
 void
-ms_prime_flip_aborted(xf86CrtcPtr crtc)
+ms_prime_flip_aborted(xf86CrtcPtr crtc, uint32_t seq)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_commit_rec *commit = &prime_scanout->commit;
+    Bool matched = FALSE;
 
-    ms_prime_release_fb(crtc, &ms_prime_scanout(crtc)->direct_fbs.pending);
-    ms_compose_timing_release(&drmmode_crtc->tearfree.compose, FALSE);
-    ms_overlay_flip_aborted(crtc);
-    drmmode_crtc->tearfree.flip_seq = 0;
-    ms_tearfree_dri_abort_all(crtc);
+    if (seq == commit->flight.seq) {
+        ms_prime_release_fb(crtc, &commit->flight.fb);
+        if (commit->flight.overlay)
+            ms_overlay_flip_aborted(crtc);
+        commit->flight = (drmmode_prime_flight_rec) { .buf_idx = -1 };
+        matched = TRUE;
+    }
+
+    if (seq == commit->tick_seq) {
+        commit->tick_seq = 0;
+        matched = TRUE;
+    }
+
+    if (seq == drmmode_crtc->tearfree.flip_seq) {
+        ms_prime_source_wait_cancel(crtc);
+        if (commit->content.seq == seq)
+            ms_prime_commit_cancel(crtc);
+        ms_prime_release_fb(crtc, &prime_scanout->direct_fbs.pending);
+        ms_overlay_flip_aborted(crtc);
+        drmmode_crtc->tearfree.flip_seq = 0;
+        matched = TRUE;
+    }
+
+    if (matched)
+        ms_tearfree_dri_abort_all(crtc);
 }
 
 xf86CrtcPtr
@@ -463,14 +1003,7 @@ ms_prime_idle(xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
     return msGetPixmapPriv(drmmode_crtc->drmmode,
-                           drmmode_crtc->prime_pixmap_back)->wait_for_damage &&
-        !ms_cursor_in_flight(crtc);
-}
-
-Bool
-ms_prime_flip_wanted(xf86CrtcPtr crtc)
-{
-    return ms_prime_scanout(crtc)->kick;
+                           drmmode_crtc->prime_pixmap_back)->wait_for_damage;
 }
 
 void
@@ -484,19 +1017,30 @@ static void
 ms_prime_present(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
     msPixmapPrivPtr ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
                                             drmmode_crtc->prime_pixmap_back);
-    uint64_t start = GetTimeInMicros();
 
-    compose->start = start;
     ppriv->wait_for_damage = FALSE;
     if (!drmmode_SharedPixmapPresentNow(drmmode_crtc->prime_pixmap_back, crtc,
                                         drmmode_crtc->drmmode))
         ppriv->wait_for_damage = TRUE;
+}
 
-    if (drmmode_crtc->tearfree.flip_seq)
-        ms_compose_timing_measured(compose, GetTimeInMicros() - start);
+/* Clients whose frame was just completed usually present the next one right
+ * away, so composition waits a moment for them instead of leaving them out.
+ */
+static Bool
+ms_prime_compose_ready(xf86CrtcPtr crtc, void *timeout)
+{
+    drmmode_prime_presenters_rec *presenters =
+        &ms_prime_scanout(crtc)->presenters;
+    uint64_t now = GetTimeInMicros();
+
+    if (presenters->count <= 0 || now >= presenters->until)
+        return TRUE;
+
+    AdjustWaitForDelay(timeout, (presenters->until - now + 999) / 1000);
+    return FALSE;
 }
 
 void
@@ -520,7 +1064,7 @@ ms_prime_flush_kicks(ScreenPtr screen, void *timeout)
             continue;
         }
 
-        if (!ms_tearfree_compose_due(crtc, timeout))
+        if (!ms_prime_compose_ready(crtc, timeout))
             continue;
 
         prime_scanout->kick = FALSE;
