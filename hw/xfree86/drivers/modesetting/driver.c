@@ -2526,6 +2526,7 @@ EnterVT(ScrnInfoPtr pScrn)
 
     SetMaster(pScrn);
 
+    drmmode_reset_vrr(pScrn);
     drmmode_update_kms_state(&ms->drmmode);
 
     /* allow not all modes to be set successfully since some events might have

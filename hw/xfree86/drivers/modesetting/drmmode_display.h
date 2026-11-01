@@ -607,6 +607,7 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
+void drmmode_reset_vrr(ScrnInfoPtr scrn);
 Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
                                       const struct hdr_output_metadata *metadata,
                                       Bool with_next_flip);

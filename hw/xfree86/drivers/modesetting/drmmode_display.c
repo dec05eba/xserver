@@ -1164,6 +1164,8 @@ drmmode_crtc_commit_hdr_state(xf86CrtcPtr crtc,
 static void
 drmmode_crtc_set_current_hdr(xf86CrtcPtr crtc,
                              const drmmode_hdr_state_rec *state);
+static void
+drmmode_crtc_reset_color(xf86CrtcPtr crtc);
 
 static Bool
 drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode)
@@ -3074,6 +3076,47 @@ drmmode_crtc_get_prop_id(uint32_t drm_fd,
     return prop_id;
 }
 
+/* The previous DRM master may have left VRR enabled */
+static void
+drmmode_crtc_reset_vrr(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_ptr drmmode = drmmode_crtc->drmmode;
+    drmModeObjectPropertiesPtr drm_props;
+    uint32_t i;
+
+    if (!drmmode->vrr_prop_id)
+        return;
+
+    drm_props = drmModeObjectGetProperties(drmmode->fd,
+                                           drmmode_crtc->mode_crtc->crtc_id,
+                                           DRM_MODE_OBJECT_CRTC);
+    if (!drm_props)
+        return;
+
+    for (i = 0; i < drm_props->count_props; i++) {
+        if (drm_props->props[i] == drmmode->vrr_prop_id)
+            drmmode_crtc->vrr_enabled = drm_props->prop_values[i] != 0;
+    }
+    drmModeFreeObjectProperties(drm_props);
+
+    if (drmmode_crtc->vrr_enabled)
+        xf86DrvMsg(crtc->scrn->scrnIndex, X_INFO,
+                   "Disabling VRR left enabled on CRTC %u\n",
+                   drmmode_crtc->mode_crtc->crtc_id);
+    drmmode_crtc_set_vrr(crtc, FALSE);
+}
+
+void
+drmmode_reset_vrr(ScrnInfoPtr scrn)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++)
+        drmmode_crtc_reset_vrr(config->crtc[i]);
+}
+
 static void
 drmmode_crtc_vrr_init(int drm_fd, xf86CrtcPtr crtc)
 {
@@ -3081,21 +3124,20 @@ drmmode_crtc_vrr_init(int drm_fd, xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
 
-    if (drmmode->vrr_prop_id)
-        return;
+    if (!drmmode->vrr_prop_id) {
+        drm_props = drmModeObjectGetProperties(drm_fd,
+                                               drmmode_crtc->mode_crtc->crtc_id,
+                                               DRM_MODE_OBJECT_CRTC);
+        if (!drm_props)
+            return;
 
-    drm_props = drmModeObjectGetProperties(drm_fd,
-                                           drmmode_crtc->mode_crtc->crtc_id,
-                                           DRM_MODE_OBJECT_CRTC);
+        drmmode->vrr_prop_id = drmmode_crtc_get_prop_id(drm_fd,
+                                                        drm_props,
+                                                        "VRR_ENABLED");
+        drmModeFreeObjectProperties(drm_props);
+    }
 
-    if (!drm_props)
-        return;
-
-    drmmode->vrr_prop_id = drmmode_crtc_get_prop_id(drm_fd,
-                                                    drm_props,
-                                                    "VRR_ENABLED");
-
-    drmModeFreeObjectProperties(drm_props);
+    drmmode_crtc_reset_vrr(crtc);
 }
 
 static unsigned int
@@ -4810,6 +4852,11 @@ drmmode_set_desired_modes(ScrnInfoPtr pScrn, drmmode_ptr drmmode, Bool set_hw,
         }
     }
 
+    for (c = 0; set_hw && c < config->num_crtc; c++) {
+        if (config->crtc[c]->enabled)
+            drmmode_crtc_reset_color(config->crtc[c]);
+    }
+
     /* Validate leases on VT re-entry */
     drmmode_validate_leases(pScrn);
 
@@ -5668,6 +5715,20 @@ drmmode_crtc_commit_hdr(xf86CrtcPtr crtc, const drmmode_hdr_state_rec *state,
 
     drmmode_destroy_hdr_blobs(drmmode_crtc->drmmode, &blobs);
     return ret == 0;
+}
+
+/* The previous DRM master may have left HDR signalling, a colorspace or colour
+ * pipelines enabled, and they're otherwise only committed when they change.
+ */
+static void
+drmmode_crtc_reset_color(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (!drmmode_crtc_commit_hdr(crtc, &drmmode_crtc->hdr.current, TRUE))
+        xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
+                   "Failed to reset color management on CRTC %d: %s\n",
+                   drmmode_crtc->mode_crtc->crtc_id, strerror(errno));
 }
 
 static void
