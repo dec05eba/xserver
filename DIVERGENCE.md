@@ -101,6 +101,11 @@ rate works with directly scanned out windows.
 Monitors that are composited are composed just before each vblank, so a new
 frame reaches the screen at the next vblank and frame pacing stays even.
 
+The X server runs its GPU work at high priority, so busy applications are less
+likely to make the desktop stutter. Intel GPUs only allow that when Xorg has
+the `CAP_SYS_NICE` capability, which installing it sets up. The `cap_sys_nice`
+meson option turns this off.
+
 Applications with vsync turned off never tear. Their newest frame is shown at
 each vblank and they still run uncapped. To show their frames immediately with
 async flips, which can tear, set the `AllowTearing` option to true in the

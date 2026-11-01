@@ -531,8 +531,7 @@ glamor_egl_external_context_create(ScreenPtr screen, EGLDisplay egl_display)
         epoxy_has_egl_extension(egl_display, "EGL_ANDROID_native_fence_sync");
 
     eglBindAPI(EGL_OPENGL_ES_API);
-    context->context = eglCreateContext(egl_display, EGL_NO_CONFIG_KHR,
-                                        EGL_NO_CONTEXT, attribs);
+    context->context = glamor_egl_create_context(egl_display, attribs);
     eglBindAPI(api);
     if (context->context == EGL_NO_CONTEXT) {
         free(context);

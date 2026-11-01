@@ -161,6 +161,21 @@ meson.add_install_script(
     install_tag: 'runtime',
 )
 
+if get_option('cap_sys_nice')
+    setcap = find_program('setcap', dirs: ['/usr/sbin', '/sbin'], required: false)
+    if setcap.found()
+        meson.add_install_script(
+            'sh', '-c',
+            '"@0@" cap_sys_nice+ep "${DESTDIR}@1@" || echo "Could not give @1@ CAP_SYS_NICE, its GPU work will use normal priority"'.format(
+                setcap.full_path(),
+                get_option('prefix') / xorg_install_dir / 'Xorg'),
+            install_tag: 'runtime',
+        )
+    else
+        warning('setcap not found, Xorg will not get CAP_SYS_NICE when installing')
+    endif
+endif
+
 if get_option('suid_wrapper')
     executable('Xorg.wrap',
         'xorg-wrapper.c',

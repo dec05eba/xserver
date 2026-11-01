@@ -641,6 +641,8 @@ glamor_pixmap_fbo *glamor_create_fbo(glamor_screen_private *glamor_priv,
 void glamor_destroy_fbo(glamor_screen_private *glamor_priv,
                         glamor_pixmap_fbo *fbo);
 void glamor_pixmap_destroy_fbo(PixmapPtr pixmap);
+EGLContext glamor_egl_create_context(EGLDisplay egl_display,
+                                     const EGLint *attribs);
 void glamor_external_update(PixmapPtr pixmap, const BoxRec *box);
 Bool glamor_external_copy(PixmapPtr src, PixmapPtr dst, BoxPtr box, int nbox,
                           int dst_dx, int dst_dy, int src_dx, int src_dy);

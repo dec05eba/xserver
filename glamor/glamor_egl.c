@@ -1468,6 +1468,45 @@ glamor_egl_free_screen(ScrnInfoPtr scrn)
     }
 }
 
+EGLContext
+glamor_egl_create_context(EGLDisplay egl_display, const EGLint *attribs)
+{
+    EGLint prioritized[16];
+    EGLContext context = EGL_NO_CONTEXT;
+    int n;
+
+    if (epoxy_has_egl_extension(egl_display, "EGL_IMG_context_priority")) {
+        for (n = 0; attribs[n] != EGL_NONE && n < ARRAY_SIZE(prioritized) - 3; n++)
+            prioritized[n] = attribs[n];
+        prioritized[n++] = EGL_CONTEXT_PRIORITY_LEVEL_IMG;
+        prioritized[n++] = EGL_CONTEXT_PRIORITY_HIGH_IMG;
+        prioritized[n] = EGL_NONE;
+        context = eglCreateContext(egl_display, EGL_NO_CONFIG_KHR,
+                                   EGL_NO_CONTEXT, prioritized);
+    }
+    if (context == EGL_NO_CONTEXT)
+        context = eglCreateContext(egl_display, EGL_NO_CONFIG_KHR,
+                                   EGL_NO_CONTEXT, attribs);
+    return context;
+}
+
+static void
+glamor_egl_log_priority(ScrnInfoPtr scrn,
+                        struct glamor_egl_screen_private *glamor_egl)
+{
+    EGLint priority = EGL_CONTEXT_PRIORITY_MEDIUM_IMG;
+
+    if (!epoxy_has_egl_extension(glamor_egl->display,
+                                 "EGL_IMG_context_priority"))
+        return;
+
+    eglQueryContext(glamor_egl->display, glamor_egl->context,
+                    EGL_CONTEXT_PRIORITY_LEVEL_IMG, &priority);
+    xf86DrvMsg(scrn->scrnIndex, X_INFO, "glamor: GPU context priority: %s\n",
+               priority == EGL_CONTEXT_PRIORITY_HIGH_IMG ? "high" :
+               priority == EGL_CONTEXT_PRIORITY_LOW_IMG ? "low" : "medium");
+}
+
 static Bool
 glamor_egl_try_big_gl_api(ScrnInfoPtr scrn)
 {
@@ -1488,18 +1527,16 @@ glamor_egl_try_big_gl_api(ScrnInfoPtr scrn)
             EGL_NONE
         };
 
-        glamor_egl->context = eglCreateContext(glamor_egl->display,
-                                               EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT,
-                                               config_attribs_core);
+        glamor_egl->context = glamor_egl_create_context(glamor_egl->display,
+                                                        config_attribs_core);
 
         if (glamor_egl->context == EGL_NO_CONTEXT)
-            glamor_egl->context = eglCreateContext(glamor_egl->display,
-                                                   EGL_NO_CONFIG_KHR,
-                                                   EGL_NO_CONTEXT,
-                                                   config_attribs);
+            glamor_egl->context =
+                glamor_egl_create_context(glamor_egl->display, config_attribs);
     }
 
     if (glamor_egl->context != EGL_NO_CONTEXT) {
+        glamor_egl_log_priority(scrn, glamor_egl);
         if (!eglMakeCurrent(glamor_egl->display,
                             EGL_NO_SURFACE, EGL_NO_SURFACE, glamor_egl->context)) {
             xf86DrvMsg(scrn->scrnIndex, X_ERROR,
@@ -1537,11 +1574,11 @@ glamor_egl_try_gles_api(ScrnInfoPtr scrn)
         return FALSE;
     }
 
-    glamor_egl->context = eglCreateContext(glamor_egl->display,
-                                            EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT,
-                                            config_attribs);
+    glamor_egl->context = glamor_egl_create_context(glamor_egl->display,
+                                                    config_attribs);
 
     if (glamor_egl->context != EGL_NO_CONTEXT) {
+        glamor_egl_log_priority(scrn, glamor_egl);
         if (!eglMakeCurrent(glamor_egl->display,
                             EGL_NO_SURFACE, EGL_NO_SURFACE, glamor_egl->context)) {
             xf86DrvMsg(scrn->scrnIndex, X_ERROR,
