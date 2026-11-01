@@ -497,6 +497,11 @@ typedef struct {
 } drmmode_cursor_rec;
 
 typedef struct {
+    uint16_t *ramp;
+    int size;
+} drmmode_gamma_ramp_rec;
+
+typedef struct {
     drmmode_ptr drmmode;
     drmModeCrtcPtr mode_crtc;
     uint32_t vblank_pipe;
@@ -548,6 +553,7 @@ typedef struct {
 
     Bool vrr_enabled;
     Bool use_gamma_lut;
+    drmmode_gamma_ramp_rec applied_gamma;
 
     drmmode_hdr_rec hdr;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
@@ -713,6 +719,7 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
+void drmmode_forget_applied_gamma(ScrnInfoPtr scrn);
 drmmode_shadow_fb_ptr drmmode_prime_front_buffer(drmmode_prime_scanout_rec *prime_scanout);
 void drmmode_reset_vrr(ScrnInfoPtr scrn);
 Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,

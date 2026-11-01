@@ -2528,6 +2528,7 @@ LeaveVT(ScrnInfoPtr pScrn)
     xf86_hide_cursors(pScrn);
 
     ms_hdr_disable(pScrn);
+    drmmode_forget_applied_gamma(pScrn);
 
     pScrn->vtSema = FALSE;
 

@@ -959,6 +959,70 @@ drmmode_crtc_disable(xf86CrtcPtr crtc)
 }
 
 static Bool
+drmmode_crtc_gamma_is_applied(drmmode_crtc_private_ptr drmmode_crtc,
+                              const uint16_t *red, const uint16_t *green,
+                              const uint16_t *blue, int size)
+{
+    const drmmode_gamma_ramp_rec *applied = &drmmode_crtc->applied_gamma;
+    size_t bytes = size * sizeof(uint16_t);
+
+    return applied->ramp && applied->size == size &&
+        memcmp(applied->ramp, red, bytes) == 0 &&
+        memcmp(applied->ramp + size, green, bytes) == 0 &&
+        memcmp(applied->ramp + 2 * size, blue, bytes) == 0;
+}
+
+static void
+drmmode_crtc_forget_applied_gamma(drmmode_crtc_private_ptr drmmode_crtc)
+{
+    free(drmmode_crtc->applied_gamma.ramp);
+    drmmode_crtc->applied_gamma.ramp = NULL;
+    drmmode_crtc->applied_gamma.size = 0;
+}
+
+static void
+drmmode_crtc_set_applied_gamma(drmmode_crtc_private_ptr drmmode_crtc,
+                               const uint16_t *red, const uint16_t *green,
+                               const uint16_t *blue, int size)
+{
+    drmmode_gamma_ramp_rec *applied = &drmmode_crtc->applied_gamma;
+    size_t bytes = size * sizeof(uint16_t);
+
+    if (applied->size != size) {
+        drmmode_crtc_forget_applied_gamma(drmmode_crtc);
+        applied->ramp = malloc(3 * bytes);
+        if (!applied->ramp)
+            return;
+        applied->size = size;
+    }
+
+    memcpy(applied->ramp, red, bytes);
+    memcpy(applied->ramp + size, green, bytes);
+    memcpy(applied->ramp + 2 * size, blue, bytes);
+}
+
+static void
+drmmode_crtc_color_committed(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (drmmode_crtc->use_gamma_lut)
+        drmmode_crtc_set_applied_gamma(drmmode_crtc, crtc->gamma_red,
+                                       crtc->gamma_green, crtc->gamma_blue,
+                                       crtc->gamma_size);
+}
+
+void
+drmmode_forget_applied_gamma(ScrnInfoPtr scrn)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++)
+        drmmode_crtc_forget_applied_gamma(config->crtc[i]->driver_private);
+}
+
+static Bool
 drmmode_crtc_color_needs_full_commit(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
@@ -1321,6 +1385,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             if (with_hdr) {
                 hdr->has_pending = FALSE;
                 drmmode_crtc_set_current_hdr(crtc, &hdr->pending);
+                drmmode_crtc_color_committed(crtc);
             }
         }
         else if (with_cursor && ret != -EBUSY && !ms_cursor_test(crtc)) {
@@ -2401,7 +2466,7 @@ drmmode_create_gamma_lut_blob(drmmode_ptr drmmode, const uint16_t *red,
     return blob_id;
 }
 
-static void
+static Bool
 drmmode_set_gamma_lut(drmmode_crtc_private_ptr drmmode_crtc,
                       uint16_t * red, uint16_t * green, uint16_t * blue,
                       int size)
@@ -2411,17 +2476,19 @@ drmmode_set_gamma_lut(drmmode_crtc_private_ptr drmmode_crtc,
         &drmmode_crtc->props[DRMMODE_CRTC_GAMMA_LUT];
     const uint32_t crtc_id = drmmode_crtc->mode_crtc->crtc_id;
     uint32_t blob_id;
+    int ret;
 
     assert(gamma_lut_info->prop_id != 0);
 
     blob_id = drmmode_create_gamma_lut_blob(drmmode, red, green, blue, size);
     if (!blob_id)
-        return;
+        return FALSE;
 
-    drmModeObjectSetProperty(drmmode->fd, crtc_id, DRM_MODE_OBJECT_CRTC,
-                             gamma_lut_info->prop_id, blob_id);
+    ret = drmModeObjectSetProperty(drmmode->fd, crtc_id, DRM_MODE_OBJECT_CRTC,
+                                   gamma_lut_info->prop_id, blob_id);
 
     drmModeDestroyPropertyBlob(drmmode->fd, blob_id);
+    return ret == 0;
 }
 
 static void
@@ -2431,13 +2498,19 @@ drmmode_crtc_gamma_set(xf86CrtcPtr crtc, uint16_t * red, uint16_t * green,
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
 
+    if (drmmode_crtc_gamma_is_applied(drmmode_crtc, red, green, blue, size))
+        return;
+
     if (drmmode_crtc_color_needs_full_commit(crtc)) {
         drmmode_crtc_update_color(crtc);
     } else if (drmmode_crtc->use_gamma_lut) {
-        drmmode_set_gamma_lut(drmmode_crtc, red, green, blue, size);
-    } else {
-        drmModeCrtcSetGamma(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-                            size, red, green, blue);
+        if (drmmode_set_gamma_lut(drmmode_crtc, red, green, blue, size))
+            drmmode_crtc_set_applied_gamma(drmmode_crtc, red, green, blue,
+                                           size);
+    } else if (drmModeCrtcSetGamma(drmmode->fd,
+                                   drmmode_crtc->mode_crtc->crtc_id,
+                                   size, red, green, blue) == 0) {
+        drmmode_crtc_set_applied_gamma(drmmode_crtc, red, green, blue, size);
     }
 }
 
@@ -2755,6 +2828,7 @@ drmmode_crtc_destroy(xf86CrtcPtr crtc)
     modesettingPtr ms = modesettingPTR(crtc->scrn);
 
     ms_vblank_crtc_fini(crtc);
+    drmmode_crtc_forget_applied_gamma(drmmode_crtc);
 
     if (!ms->atomic_modeset)
         return;
@@ -4713,6 +4787,7 @@ drmmode_create_lease(RRLeasePtr lease, int *fd)
         objects[i++] = drmmode_crtc->mode_crtc->crtc_id;
         if (universalplanes)
             objects[i++] = drmmode_crtc->plane_id;
+        drmmode_crtc_forget_applied_gamma(drmmode_crtc);
     }
 
     /* Add connector ids */
@@ -5858,6 +5933,8 @@ drmmode_crtc_commit_hdr(xf86CrtcPtr crtc, const drmmode_hdr_state_rec *state,
     }
 
     drmmode_destroy_hdr_blobs(drmmode_crtc->drmmode, &blobs);
+    if (ret == 0)
+        drmmode_crtc_color_committed(crtc);
     return ret == 0;
 }
 
