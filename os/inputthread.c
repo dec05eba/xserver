@@ -318,6 +318,7 @@ InputThreadDoWork(void *arg)
     sigfillset(&set);
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
+    OsSetThreadRealtime();
     ddxInputThreadInit();
 
     inputThreadInfo->running = TRUE;

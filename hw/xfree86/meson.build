@@ -166,7 +166,7 @@ if get_option('cap_sys_nice')
     if setcap.found()
         meson.add_install_script(
             'sh', '-c',
-            '"@0@" cap_sys_nice+ep "${DESTDIR}@1@" || echo "Could not give @1@ CAP_SYS_NICE, its GPU work will use normal priority"'.format(
+            '"@0@" cap_sys_nice+ep "${DESTDIR}@1@" || echo "Could not give @1@ CAP_SYS_NICE, its threads and GPU work will use normal priority"'.format(
                 setcap.full_path(),
                 get_option('prefix') / xorg_install_dir / 'Xorg'),
             install_tag: 'runtime',

@@ -291,6 +291,9 @@ _X_ATTRIBUTE_PRINTF(1, 0);
 extern _X_EXPORT void
 OsVendorInit(void);
 
+extern _X_EXPORT Bool
+OsSetThreadRealtime(void);
+
 extern _X_EXPORT void
 OsBlockSignals(void);
 

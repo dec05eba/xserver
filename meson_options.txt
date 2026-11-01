@@ -70,7 +70,7 @@ option('int10', type: 'combo', choices: ['stub', 'x86emu', 'vm86', 'auto', 'fals
 option('suid_wrapper', type: 'boolean', value: false,
        description: 'SUID wrapper for legacy driver support')
 option('cap_sys_nice', type: 'boolean', value: true,
-       description: 'Give Xorg CAP_SYS_NICE when installing, so its GPU work can use high priority')
+       description: 'Give Xorg CAP_SYS_NICE when installing, so its threads and GPU work can use high priority')
 option('pciaccess', type: 'boolean', value: true,
        description: 'Xorg pciaccess support')
 option('udev', type: 'boolean', value: true)

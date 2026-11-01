@@ -71,6 +71,13 @@ SOFTWARE.
 
 #if !defined(WIN32)
 #include <sys/resource.h>
+
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#include <sys/prctl.h>
+#include <linux/capability.h>
+#endif
 #endif
 
 #ifndef ADMPATH
@@ -160,6 +167,21 @@ OsSigHandler(int signo)
 }
 #endif /* !WIN32 || __CYGWIN__ */
 
+Bool
+OsSetThreadRealtime(void)
+{
+#if defined(__linux__) && defined(SCHED_RESET_ON_FORK)
+    struct sched_param param = {
+        .sched_priority = sched_get_priority_min(SCHED_RR),
+    };
+
+    return pthread_setschedparam(pthread_self(),
+                                 SCHED_RR | SCHED_RESET_ON_FORK, &param) == 0;
+#else
+    return FALSE;
+#endif
+}
+
 void
 OsInit(void)
 {
@@ -173,6 +195,14 @@ OsInit(void)
 #if !defined(WIN32) || defined(__CYGWIN__)
         struct sigaction act, oact;
         int i;
+#endif
+#if defined(__linux__) && defined(PR_CAP_AMBIENT)
+        prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_LOWER, CAP_SYS_NICE, 0, 0);
+#endif
+        LogMessageVerb(X_INFO, 1, "Realtime scheduling: %s\n",
+                       OsSetThreadRealtime() ? "yes" :
+                       "no (needs CAP_SYS_NICE)");
+#if !defined(WIN32) || defined(__CYGWIN__)
 
         int siglist[] = { SIGSEGV, SIGQUIT, SIGILL, SIGFPE, SIGBUS,
             SIGABRT,
