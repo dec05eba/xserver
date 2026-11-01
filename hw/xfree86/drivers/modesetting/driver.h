@@ -334,6 +334,7 @@ void ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box);
 void ms_overlay_flip_done(xf86CrtcPtr crtc);
 void ms_overlay_flip_aborted(xf86CrtcPtr crtc);
 void ms_overlay_flip_failed(xf86CrtcPtr crtc);
+void ms_overlay_clear_next(xf86CrtcPtr crtc);
 void ms_overlay_rejected(xf86CrtcPtr crtc, int error);
 void ms_overlay_destroy(xf86CrtcPtr crtc);
 

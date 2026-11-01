@@ -360,6 +360,7 @@ typedef struct {
     uint32_t plane_id;
     uint32_t fb_id;
     uint32_t next_fb_id;
+    int next_fence_fd;
     BoxRec next_box;
     drmmode_plane_color_rec color;
     drmmode_overlay_buffers_rec buffers;

@@ -24,6 +24,7 @@
 #include "dix-config.h"
 
 #include <string.h>
+#include <unistd.h>
 #include <xf86.h>
 #include <xf86Crtc.h>
 
@@ -135,10 +136,29 @@ ms_overlay_back_buffer(xf86CrtcPtr crtc)
 }
 
 void
-ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box)
+ms_overlay_clear_next(xf86CrtcPtr crtc)
 {
     drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
+
+    if (overlay->next_fence_fd >= 0)
+        close(overlay->next_fence_fd);
+    overlay->next_fence_fd = -1;
+    overlay->next_fb_id = 0;
+}
+
+void
+ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box)
+{
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
     drmmode_overlay_buffers_rec *buffers = &overlay->buffers;
+
+    ms_overlay_clear_next(crtc);
+    if (drmmode_crtc_can_fence_flip(crtc))
+        overlay->next_fence_fd = ms->glamor.egl_create_fence_fd(screen);
+    if (overlay->next_fence_fd < 0)
+        ms->glamor.finish(screen);
 
     overlay->next_fb_id = buffers->buf[buffers->back_idx].fb_id;
     overlay->next_box = *box;
@@ -167,7 +187,7 @@ ms_overlay_flip_failed(xf86CrtcPtr crtc)
     drmmode_overlay_plane_rec *overlay = ms_overlay_plane(crtc);
 
     overlay->buffers.pending = FALSE;
-    overlay->next_fb_id = 0;
+    ms_overlay_clear_next(crtc);
 }
 
 void
@@ -189,5 +209,5 @@ ms_overlay_destroy(xf86CrtcPtr crtc)
 
     ms_overlay_destroy_buffers(crtc);
     overlay->fb_id = 0;
-    overlay->next_fb_id = 0;
+    ms_overlay_clear_next(crtc);
 }

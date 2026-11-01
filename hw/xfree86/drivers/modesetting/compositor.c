@@ -873,7 +873,6 @@ ms_compositor_overlay_cover(xf86CrtcPtr crtc, WindowPtr window,
                                    &drmmode_crtc->overlay_plane.buffers.cover_sdr))
         return FALSE;
 
-    modesettingPTR(crtc->scrn)->glamor.finish(xf86ScrnToScreen(crtc->scrn));
     box.x1 -= crtc->bounds.x1;
     box.y1 -= crtc->bounds.y1;
     box.x2 -= crtc->bounds.x1;

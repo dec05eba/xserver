@@ -576,6 +576,10 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     if (!fb_id)
         return ret;
 
+    if (overlay->next_fence_fd >= 0)
+        ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                      DRMMODE_PLANE_IN_FENCE_FD,
+                                      overlay->next_fence_fd);
     if (overlay->color.pipeline_prop)
         ret |= drmmode_plane_color_add_props(req, crtc, plane_id,
                                              &overlay->color,
@@ -1042,7 +1046,7 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
         ret |= crtc_add_dpms_props(req, crtc, DPMSModeOn, &active);
         ret |= plane_add_props(req, crtc, active ? fb_id : 0, x, y);
         if (drmmode_crtc->overlay_plane.fb_id) {
-            drmmode_crtc->overlay_plane.next_fb_id = 0;
+            ms_overlay_clear_next(crtc);
             ret |= overlay_plane_add_props(req, crtc, NULL, NULL);
         }
 
@@ -1284,7 +1288,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         }
         if (ret && ret != -EBUSY && overlay->next_fb_id && !overlay->fb_id)
             ms_overlay_rejected(crtc, ret);
-        overlay->next_fb_id = 0;
+        ms_overlay_clear_next(crtc);
         return ret;
     }
 
@@ -3025,6 +3029,7 @@ drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
     drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
     drmModeObjectProperties *props = NULL;
 
+    overlay->next_fence_fd = -1;
     overlay->plane_id = drmmode_crtc_find_plane(crtc, num,
                                                 DRMMODE_PLANE_TYPE_OVERLAY,
                                                 &props);
