@@ -986,7 +986,7 @@ ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
     return ms_tearfree_dri_notify(&drmmode_crtc->tearfree, msc, usec);
 }
 
-static Bool
+Bool
 ms_fence_signal_time(int fence_fd, uint64_t *usec)
 {
 #ifdef __linux__

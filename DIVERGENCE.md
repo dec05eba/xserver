@@ -231,6 +231,11 @@ Monitors connected to a second GPU (reverse PRIME), such as the HDMI port that
 is wired to the NVIDIA GPU on many laptops, are tear-free and support HDR when
 compositing is on.
 
+When that GPU is too slow to copy frames to such a monitor in time, for example
+because it saves power while it has little else to do, the monitor shows
+frames one refresh later with triple buffering instead of dropping them. It
+switches back once the copies are fast again.
+
 Fullscreen applications that render on the GPU their monitor is connected to,
 for example a game started with `prime-run` on that HDMI monitor, are handled
 by that GPU alone. The other GPU doesn't composite or copy their frames, so

@@ -348,6 +348,7 @@ PixmapPtr ms_offload_native_pixmap(PixmapPtr pixmap);
 
 void ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd);
 int ms_dmabuf_writer_fence(int dmabuf_fd);
+Bool ms_fence_signal_time(int fence_fd, uint64_t *usec);
 
 void ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box);
 PixmapPtr ms_overlay_back_buffer(xf86CrtcPtr crtc);

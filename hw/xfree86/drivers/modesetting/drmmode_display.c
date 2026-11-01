@@ -3226,8 +3226,6 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     xorg_list_init(&drmmode_crtc->tearfree.dri_flip_list);
     drmmode_crtc->tearfree.compose.fence_fd = -1;
     drmmode_crtc->prime_scanout.commit.deadline.fd = -1;
-    drmmode_crtc->prime_scanout.commit.content.fence_fd = -1;
-    drmmode_crtc->prime_scanout.commit.content.buf_idx = -1;
     drmmode_crtc->prime_scanout.commit.flight.buf_idx = -1;
     drmmode_crtc->next_msc = UINT64_MAX;
     drmmode_crtc->cursor.plane.scanout_wait.fence_fd = -1;

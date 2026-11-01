@@ -343,7 +343,20 @@ typedef struct {
     int buf_idx;
     int fence_fd;
     Bool watching_fence;
+    Bool reads_client;
+    Bool ticked;
+    uint64_t compose_start;
 } drmmode_prime_content_rec;
+
+typedef struct {
+    drmmode_prime_content_rec content[2];
+    int count;
+} drmmode_prime_queue_rec;
+
+typedef struct {
+    Bool active;
+    uint64_t last_late;
+} drmmode_prime_triple_rec;
 
 typedef struct {
     uint32_t seq;
@@ -354,12 +367,14 @@ typedef struct {
 } drmmode_prime_flight_rec;
 
 typedef struct {
-    drmmode_prime_content_rec content;
+    drmmode_prime_queue_rec queue;
     drmmode_prime_flight_rec flight;
     uint64_t last_target;
     uint64_t extra_margin;
     drmmode_prime_deadline_rec deadline;
     uint32_t tick_seq;
+    uint64_t compose_start;
+    drmmode_prime_triple_rec triple;
 } drmmode_prime_commit_rec;
 
 typedef struct {
