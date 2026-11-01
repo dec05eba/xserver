@@ -147,6 +147,18 @@ check_timers(void)
     return -1;
 }
 
+static void
+wait_for_new_timers(int *timeout)
+{
+    OsTimerPtr timer = first_timer();
+
+    if (timer) {
+        int expires = timer->expires - GetTimeInMillis();
+
+        AdjustWaitForDelay(timeout, max(expires, 0));
+    }
+}
+
 /*****************
  * WaitForSomething:
  *     Make the server suspend until there is
@@ -199,6 +211,7 @@ WaitForSomething(Bool are_ready)
             timeout = 0;
 
         BlockHandler(&timeout);
+        wait_for_new_timers(&timeout);
         if (NewOutputPending)
             FlushAllOutput();
         /* keep this check close to select() call to minimize race */
