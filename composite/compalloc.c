@@ -46,6 +46,7 @@
 #endif
 
 #include "compint.h"
+#include "present.h"
 
 static Bool
 compScreenUpdate(ClientPtr pClient, void *closure)
@@ -227,6 +228,9 @@ compRedirectWindow(ClientPtr pClient, WindowPtr pWin, int update)
 
     if (anyMarked)
         compHandleMarkedWindows(pWin, pLayerWin);
+
+    if (status == Success && pClient != serverClient)
+        present_check_flips(pWin);
 
     return status;
 }
