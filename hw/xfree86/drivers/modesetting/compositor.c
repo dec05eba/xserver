@@ -1084,7 +1084,7 @@ ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
         if (pixmap == scanout->pixmap && scanout->fb_id && !covered &&
             !drmmode_crtc->overlay_plane.fb_id &&
             !drmmode_crtc_has_pending_hdr(crtc)) {
-            ms_tearfree_dri_abort_all(crtc);
+            ms_tearfree_dri_complete_at_vblank(crtc);
             flipped = TRUE;
         } else {
             (*scrn->pScreen->SourceValidate) (&pixmap->drawable, 0, 0,

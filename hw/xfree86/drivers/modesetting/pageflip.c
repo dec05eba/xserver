@@ -116,6 +116,7 @@ struct ms_crtc_pageflip {
     struct ms_flipdata *flipdata;
     struct xorg_list node;
     uint32_t tearfree_seq;
+    Bool at_vblank;
 };
 
 /**
@@ -854,6 +855,60 @@ ms_tearfree_dri_abort_all(xf86CrtcPtr crtc)
         xorg_list_append(&flip->node, &flips);
     }
     ms_tearfree_dri_complete(&flips, msc, usec);
+}
+
+static void
+ms_tearfree_dri_vblank(uint64_t msc, uint64_t usec, void *data)
+{
+    xf86CrtcPtr crtc = data;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    struct ms_crtc_pageflip *flip, *tmp;
+    struct xorg_list flips;
+
+    trf->dri_vblank_seq = 0;
+    xorg_list_init(&flips);
+    xorg_list_for_each_entry_safe(flip, tmp, &trf->dri_flip_list, node) {
+        if (flip->at_vblank) {
+            xorg_list_del(&flip->node);
+            xorg_list_append(&flip->node, &flips);
+        }
+    }
+    ms_tearfree_dri_complete(&flips, msc, usec);
+}
+
+static void
+ms_tearfree_dri_vblank_abort(void *data)
+{
+    xf86CrtcPtr crtc = data;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    drmmode_crtc->tearfree.dri_vblank_seq = 0;
+}
+
+void
+ms_tearfree_dri_complete_at_vblank(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    struct ms_crtc_pageflip *flip;
+    uint32_t seq;
+
+    if (trf->dri_vblank_seq || xorg_list_is_empty(&trf->dri_flip_list))
+        return;
+
+    seq = ms_drm_queue_alloc(crtc, crtc, ms_tearfree_dri_vblank,
+                             ms_tearfree_dri_vblank_abort);
+    if (!seq || !ms_queue_vblank(crtc, MS_QUEUE_RELATIVE, 1, NULL, seq)) {
+        if (seq)
+            ms_drm_abort_seq(crtc->scrn, seq);
+        ms_tearfree_dri_abort_all(crtc);
+        return;
+    }
+
+    xorg_list_for_each_entry(flip, &trf->dri_flip_list, node)
+        flip->at_vblank = TRUE;
+    trf->dri_vblank_seq = seq;
 }
 
 static int

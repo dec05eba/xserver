@@ -288,6 +288,7 @@ typedef struct {
     drmmode_composition_rec composition;
     drmmode_scanout_rec scanout;
     struct xorg_list dri_flip_list;
+    uint32_t dri_vblank_seq;
     uint32_t back_idx;
     uint32_t flip_seq;
     drmmode_compose_timing_rec compose;

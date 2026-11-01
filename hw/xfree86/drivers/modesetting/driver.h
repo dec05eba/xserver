@@ -285,6 +285,7 @@ ms_tearfree_dri_abort(xf86CrtcPtr crtc,
 
 void
 ms_tearfree_dri_abort_all(xf86CrtcPtr crtc);
+void ms_tearfree_dri_complete_at_vblank(xf86CrtcPtr crtc);
 
 Bool ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout);
 
