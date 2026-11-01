@@ -931,8 +931,8 @@ ms_compose_clients_done(drmmode_render_fences_rec *fences)
 static void
 ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 {
-    uint64_t start = max(compose->start,
-                         ms_compose_clients_done(&compose->clients));
+    uint64_t clients_done = ms_compose_clients_done(&compose->clients);
+    uint64_t start = max(compose->start, clients_done);
     uint64_t signaled;
 
     if (compose->fence_fd < 0)
