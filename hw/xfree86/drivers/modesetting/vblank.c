@@ -504,8 +504,7 @@ static Bool
 ms_get_kernel_ust_msc(xf86CrtcPtr crtc,
                       uint64_t *msc, uint64_t *ust)
 {
-    ScreenPtr screen = crtc->randr_crtc->pScreen;
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    ScrnInfoPtr scrn = crtc->scrn;
     modesettingPtr ms = modesettingPTR(scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmVBlank vbl;
@@ -604,8 +603,7 @@ Bool
 ms_queue_vblank(xf86CrtcPtr crtc, ms_queue_flag flags,
                 uint64_t msc, uint64_t *msc_queued, uint32_t seq)
 {
-    ScreenPtr screen = crtc->randr_crtc->pScreen;
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    ScrnInfoPtr scrn = crtc->scrn;
     modesettingPtr ms = modesettingPTR(scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmVBlank vbl;
@@ -678,7 +676,7 @@ ms_queue_vblank(xf86CrtcPtr crtc, ms_queue_flag flags,
             ms_drm_abort_seq(scrn, seq);
             return FALSE;
         }
-        ms_flush_drm_events(screen);
+        ms_flush_drm_events(xf86ScrnToScreen(scrn));
     }
 }
 
@@ -728,8 +726,7 @@ ms_kernel_msc_to_crtc_msc(xf86CrtcPtr crtc, uint64_t sequence, Bool is64bit)
 int
 ms_get_crtc_ust_msc(xf86CrtcPtr crtc, CARD64 *ust, CARD64 *msc)
 {
-    ScreenPtr screen = crtc->randr_crtc->pScreen;
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    ScrnInfoPtr scrn = crtc->scrn;
     modesettingPtr ms = modesettingPTR(scrn);
     uint64_t kernel_msc;
 
@@ -767,8 +764,7 @@ ms_drm_queue_alloc(xf86CrtcPtr crtc,
                    ms_drm_handler_proc handler,
                    ms_drm_abort_proc abort)
 {
-    ScreenPtr screen = crtc->randr_crtc->pScreen;
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    ScrnInfoPtr scrn = crtc->scrn;
     struct ms_drm_queue *q;
 
     q = calloc(1, sizeof(struct ms_drm_queue));
