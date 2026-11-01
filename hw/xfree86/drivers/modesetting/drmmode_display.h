@@ -256,9 +256,15 @@ typedef struct {
 
 typedef struct {
     uint64_t usec;
+    uint64_t until;
+} drmmode_compose_hold_rec;
+
+typedef struct {
+    uint64_t usec;
     uint64_t start;
     int fence_fd;
     drmmode_render_fences_rec clients;
+    drmmode_compose_hold_rec hold;
 } drmmode_compose_timing_rec;
 
 typedef struct {

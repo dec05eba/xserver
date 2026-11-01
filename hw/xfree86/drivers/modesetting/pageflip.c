@@ -1028,6 +1028,32 @@ ms_compose_clients_done(drmmode_render_fences_rec *fences)
     return done;
 }
 
+#define MS_TEARFREE_COMPOSE_SLACK_USEC 2000
+#define MS_COMPOSE_HOLD_USEC 10000000
+
+static void
+ms_compose_timing_done(drmmode_compose_timing_rec *compose, uint64_t usec)
+{
+    drmmode_compose_hold_rec *hold = &compose->hold;
+    uint64_t now = GetTimeInMicros();
+
+    if (usec > compose->usec + MS_TEARFREE_COMPOSE_SLACK_USEC) {
+        hold->usec = now < hold->until ? max(hold->usec, usec) : usec;
+        hold->until = now + MS_COMPOSE_HOLD_USEC;
+    }
+    compose->usec = max(compose->usec, usec);
+}
+
+static uint64_t
+ms_compose_margin(const drmmode_compose_timing_rec *compose, uint64_t now)
+{
+    uint64_t usec = compose->usec;
+
+    if (now < compose->hold.until)
+        usec = max(usec, compose->hold.usec);
+    return usec + MS_TEARFREE_COMPOSE_SLACK_USEC;
+}
+
 static void
 ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 {
@@ -1040,8 +1066,8 @@ ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
 
     if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled) &&
         compose->start)
-        compose->usec = max(compose->usec,
-                            signaled > start ? signaled - start : 0);
+        ms_compose_timing_done(compose,
+                               signaled > start ? signaled - start : 0);
 
     close(compose->fence_fd);
     compose->fence_fd = -1;
@@ -1126,8 +1152,6 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     return TRUE;
 }
 
-#define MS_TEARFREE_COMPOSE_SLACK_USEC 2000
-
 Bool
 ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next,
                         uint64_t *next_msc)
@@ -1166,9 +1190,8 @@ Bool
 ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint64_t margin = drmmode_crtc->tearfree.compose.usec +
-        MS_TEARFREE_COMPOSE_SLACK_USEC;
     uint64_t now = GetTimeInMicros();
+    uint64_t margin = ms_compose_margin(&drmmode_crtc->tearfree.compose, now);
     uint64_t next;
 
     if (!ms_tearfree_next_vblank(crtc, now, &next, NULL) ||
