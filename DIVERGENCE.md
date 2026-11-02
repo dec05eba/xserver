@@ -22,6 +22,11 @@ refresh rate works with them.
   is supported, so you don't need a compositor such as picom.
 - The X server owns the `_NET_WM_CM_S<screen>` selection, so picom and similar
   compositors refuse to start. This is needed for proper multimonitor support and HDR.
+  It's technically possible to add proper multimonitor support and HDR to existing compositors
+  (such as picom) but they would need to be modified to handle these cases and wouldn't be
+  able to utilize certain optimizations that only the display server (the Xorg server) can,
+  such as doing tonemapping with the display processing unit.
+
   Window managers with a built-in compositor, such as KWin and xfwm4,
   run with their compositor disabled. Mutter based window managers always composite
   and may refuse to start unless they are started with `--replace`.
