@@ -100,8 +100,7 @@ application's own buffer, without compositing or copying it. This works when:
   OpenGL applications do,
 - the GPU can scan out the buffer format the application renders into.
 
-HDR windows are scanned out directly on HDR monitors too, and variable refresh
-rate works with directly scanned out windows.
+Fullscreen HDR windows (or SDR windows when HDR is enabled) are scanned out directly too.
 
 Monitors that are composited are composed just before each vblank, so a new
 frame reaches the screen at the next vblank and frame pacing stays even.
@@ -244,18 +243,9 @@ switches back once the copies are fast again.
 Fullscreen applications that render on the GPU their monitor is connected to,
 for example a game started with `prime-run` on that HDMI monitor, are handled
 by that GPU alone. The other GPU doesn't composite or copy their frames, so
-there is practically no performance penalty compared to a monitor that doesn't
-use PRIME.
+there is practically no performance penalty compared to a system that doesn't
+use PRIME (a system with only one GPU).
 
 Applications that render on the other GPU draw into linear buffers while they
 are fullscreen on such a monitor, so the GPU the monitor is connected to can
 copy them to the screen without the window being composited.
-
-Applications started with NVIDIA's `prime-run` are shown straight from the
-NVIDIA GPU's memory when they are fullscreen on a monitor connected to that
-GPU, without being copied at all. This needs the NVIDIA GPU to have an overlay
-plane for that monitor. Windows on top of the application, such as
-notifications, are shown on that plane without slowing the application down.
-OpenGL applications started with `prime-run` are copied once by the NVIDIA
-GPU instead, because NVIDIA's OpenGL only draws into linear buffers when the
-X server runs on another GPU.
