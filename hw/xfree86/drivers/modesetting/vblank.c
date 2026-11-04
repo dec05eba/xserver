@@ -932,6 +932,8 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
         }
     }
     ms_cursor_flip_done(crtc, seq);
+    if (ms_tearfree_is_active_on_crtc(crtc))
+        SetBlockHandlerDeadline(GetTimeInMicros());
 
     /* Find this CRTC's next queued MSC and next non-queued MSC to be handled */
     msc = UINT64_MAX;

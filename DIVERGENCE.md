@@ -77,8 +77,6 @@ new size.
 - A window can only be resized as fast as its application draws. If an
   application doesn't draw the new size within 200 milliseconds the window is
   shown anyway.
-- Resizing is currently slow with window managers that put each window inside
-  a frame window of their own (reparenting window managers, such as xfwm4).
 
 The X server also sends `_NET_WM_FRAME_DRAWN` and `_NET_WM_FRAME_TIMINGS` to
 applications that use them, such as GTK, so they draw at the refresh rate of
@@ -178,7 +176,7 @@ For example:
 
     xrandr --prop
     xrandr --output DP-1 --set HDR 1
-    xrandr --output DP-1 --set "SDR white level" 250
+    xrandr --output DP-1 --set "SDR white level" 203
 
 Changes made with xrandr last until the X server exits.
 

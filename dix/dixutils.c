@@ -371,6 +371,21 @@ static int numHandlers;
 static int sizeHandlers;
 static Bool inHandler;
 static Bool handlerDeleted;
+static CARD64 blockHandlerDeadline = UINT64_MAX;
+
+void
+SetBlockHandlerDeadline(CARD64 usec)
+{
+    if (usec < blockHandlerDeadline)
+        blockHandlerDeadline = usec;
+}
+
+Bool
+BlockHandlerDeadlinePassed(void)
+{
+    return blockHandlerDeadline != UINT64_MAX &&
+        GetTimeInMicros() >= blockHandlerDeadline;
+}
 
 /**
  *
@@ -382,6 +397,7 @@ BlockHandler(void *pTimeout)
 {
     int i, j;
 
+    blockHandlerDeadline = UINT64_MAX;
     ++inHandler;
     for (i = 0; i < numHandlers; i++)
         if (!handlers[i].deleted)

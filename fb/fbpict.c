@@ -35,6 +35,178 @@
 #include "mipict.h"
 #include "fbpict.h"
 
+typedef struct {
+    FbBits *bits;
+    FbStride stride;
+    int width, height;
+} FbBitmapRec;
+
+static Bool
+fbCompositeBitmapSupported(CARD8 op, PicturePtr pSrc, PicturePtr pMask,
+                           PicturePtr pDst)
+{
+    return !pMask &&
+        (op == PictOpSrc || op == PictOpOver || op == PictOpAdd) &&
+        pSrc->pDrawable && pSrc->pDrawable != pDst->pDrawable &&
+        pSrc->pDrawable->type == DRAWABLE_PIXMAP &&
+        pDst->pDrawable->type == DRAWABLE_PIXMAP &&
+        !pSrc->pDrawable->x && !pSrc->pDrawable->y &&
+        !pDst->pDrawable->x && !pDst->pDrawable->y &&
+        pSrc->format == PICT_a1 && pDst->format == PICT_a1 &&
+        !pSrc->transform && !pDst->transform &&
+        !pSrc->alphaMap && !pDst->alphaMap &&
+        pSrc->filter != PictFilterConvolution &&
+        (pSrc->repeatType == RepeatNone || pSrc->repeatType == RepeatNormal);
+}
+
+static void
+fbGetBitmap(DrawablePtr pDrawable, FbBitmapRec *bitmap)
+{
+    int bpp;
+
+    fbPrepareAccess(pDrawable);
+    fbGetPixmapBitsData((PixmapPtr) pDrawable, bitmap->bits, bitmap->stride,
+                        bpp);
+    bitmap->width = pDrawable->width;
+    bitmap->height = pDrawable->height;
+}
+
+static void
+fbBitmapBlt(const FbBitmapRec *src, int sx, int sy, const FbBitmapRec *dst,
+            int dx, int dy, int width, int height, int alu)
+{
+    fbBlt(src->bits + sy * src->stride, src->stride, sx,
+          dst->bits + dy * dst->stride, dst->stride, dx,
+          width, height, alu, FB_ALLONES, 1, FALSE, FALSE);
+}
+
+static void
+fbExpandBitmapTile(const FbBitmapRec *src, int sx, int sy,
+                   const FbBitmapRec *tile)
+{
+    int filled = min(src->width, tile->width);
+    int row, rows, first;
+
+    for (row = 0; row < tile->height; row += rows) {
+        int srcRow = (sy + row) % src->height;
+
+        rows = min(tile->height - row, src->height - srcRow);
+        first = min(src->width - sx, filled);
+        fbBitmapBlt(src, sx, srcRow, tile, 0, row, first, rows, GXcopy);
+        if (first < filled)
+            fbBitmapBlt(src, 0, srcRow, tile, first, row, filled - first,
+                        rows, GXcopy);
+    }
+
+    while (filled < tile->width) {
+        int n = min(filled, tile->width - filled);
+
+        fbBitmapBlt(tile, 0, 0, tile, filled, 0, n, tile->height, GXcopy);
+        filled += n;
+    }
+}
+
+static void
+fbCompositeBitmapRepeat(const FbBitmapRec *src, const FbBitmapRec *dst,
+                        FbBitmapRec *tile, BoxPtr pBox, int dx, int dy,
+                        int alu)
+{
+    int width = pBox->x2 - pBox->x1;
+    int height = pBox->y2 - pBox->y1;
+    int sx, sy, y, rows;
+
+    modulus(pBox->x1 + dx, src->width, sx);
+    modulus(pBox->y1 + dy, src->height, sy);
+
+    tile->width = width;
+    tile->height = min(src->height, height);
+    fbExpandBitmapTile(src, sx, sy, tile);
+
+    for (y = 0; y < height; y += rows) {
+        rows = min(tile->height, height - y);
+        fbBitmapBlt(tile, 0, 0, dst, pBox->x1, pBox->y1 + y, width, rows,
+                    alu);
+    }
+}
+
+static void
+fbCompositeBitmapOnce(CARD8 op, const FbBitmapRec *src,
+                      const FbBitmapRec *dst, BoxPtr pBox, int dx, int dy,
+                      int alu)
+{
+    int x1 = max(pBox->x1, -dx), x2 = min(pBox->x2, src->width - dx);
+    int y1 = max(pBox->y1, -dy), y2 = min(pBox->y2, src->height - dy);
+
+    if (op == PictOpSrc)
+        fbSolid(dst->bits + pBox->y1 * dst->stride, dst->stride, pBox->x1, 1,
+                pBox->x2 - pBox->x1, pBox->y2 - pBox->y1, 0, 0);
+
+    if (x1 < x2 && y1 < y2)
+        fbBitmapBlt(src, x1 + dx, y1 + dy, dst, x1, y1, x2 - x1, y2 - y1,
+                    alu);
+}
+
+static Bool
+fbCompositeBitmap(CARD8 op, PicturePtr pSrc, PicturePtr pDst,
+                  int xSrc, int ySrc, int xDst, int yDst, int width,
+                  int height)
+{
+    DrawablePtr pSrcDraw = pSrc->pDrawable, pDstDraw = pDst->pDrawable;
+    BoxRec box = {
+        .x1 = max(xDst, 0),
+        .y1 = max(yDst, 0),
+        .x2 = min(xDst + width, pDstDraw->width),
+        .y2 = min(yDst + height, pDstDraw->height),
+    };
+    Bool repeat = pSrc->repeatType == RepeatNormal;
+    int alu = op == PictOpSrc ? GXcopy : GXor;
+    int dx = xSrc - xDst, dy = ySrc - yDst;
+    FbBitmapRec src, dst, tile = { 0 };
+    RegionRec region;
+    int i;
+    BoxPtr pBox;
+
+    if (box.x1 >= box.x2 || box.y1 >= box.y2)
+        return TRUE;
+
+    RegionInit(&region, &box, 1);
+    RegionIntersect(&region, &region, pDst->pCompositeClip);
+    if (RegionNil(&region)) {
+        RegionUninit(&region);
+        return TRUE;
+    }
+
+    if (repeat) {
+        BoxPtr pExtents = RegionExtents(&region);
+
+        tile.stride = (pExtents->x2 - pExtents->x1 + FB_MASK) >> FB_SHIFT;
+        tile.bits = xallocarray(tile.stride * min(pSrcDraw->height,
+                                                  pExtents->y2 - pExtents->y1),
+                                sizeof(FbBits));
+        if (!tile.bits) {
+            RegionUninit(&region);
+            return FALSE;
+        }
+    }
+
+    fbGetBitmap(pSrcDraw, &src);
+    fbGetBitmap(pDstDraw, &dst);
+
+    pBox = RegionRects(&region);
+    for (i = 0; i < RegionNumRects(&region); i++, pBox++) {
+        if (repeat)
+            fbCompositeBitmapRepeat(&src, &dst, &tile, pBox, dx, dy, alu);
+        else
+            fbCompositeBitmapOnce(op, &src, &dst, pBox, dx, dy, alu);
+    }
+
+    fbFinishAccess(pDstDraw);
+    fbFinishAccess(pSrcDraw);
+    free(tile.bits);
+    RegionUninit(&region);
+    return TRUE;
+}
+
 void
 fbComposite(CARD8 op,
             PicturePtr pSrc,
@@ -51,6 +223,12 @@ fbComposite(CARD8 op,
     int dst_xoff, dst_yoff;
 
     miCompositeSourceValidate(pSrc);
+
+    if (fbCompositeBitmapSupported(op, pSrc, pMask, pDst) &&
+        fbCompositeBitmap(op, pSrc, pDst, xSrc, ySrc, xDst, yDst, width,
+                          height))
+        return;
+
     if (pMask)
         miCompositeSourceValidate(pMask);
 

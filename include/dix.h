@@ -234,6 +234,10 @@ extern _X_EXPORT void DeleteWindowFromAnySaveSet(WindowPtr /*pWin */ );
 
 extern _X_EXPORT void BlockHandler(void *timeout);
 
+extern _X_EXPORT void SetBlockHandlerDeadline(CARD64 usec);
+
+extern Bool BlockHandlerDeadlinePassed(void);
+
 extern _X_EXPORT void WakeupHandler(int result);
 
 void

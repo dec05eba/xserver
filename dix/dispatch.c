@@ -520,6 +520,9 @@ Dispatch(void)
                     break;
                 }
 
+                if (BlockHandlerDeadlinePassed())
+                    break;
+
                 /* now, finally, deal with client requests */
                 result = ReadRequestFromClient(client);
                 if (result == 0)

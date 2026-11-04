@@ -1202,6 +1202,18 @@ ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
     return FALSE;
 }
 
+void
+ms_tearfree_set_compose_deadline(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint64_t now = GetTimeInMicros();
+    uint64_t margin = ms_compose_margin(&drmmode_crtc->tearfree.compose, now);
+    uint64_t next;
+
+    if (ms_tearfree_next_vblank(crtc, now + margin, &next, NULL))
+        SetBlockHandlerDeadline(next - margin);
+}
+
 #define MS_COMPOSE_ESTIMATE_DECAY 16
 
 static void

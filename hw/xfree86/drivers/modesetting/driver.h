@@ -399,6 +399,7 @@ Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
 Bool ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next,
                              uint64_t *next_msc);
 Bool ms_tearfree_flip_wanted(xf86CrtcPtr crtc);
+void ms_tearfree_set_compose_deadline(xf86CrtcPtr crtc);
 #endif
 
 void ms_compositor_screen_init(ScrnInfoPtr scrn);

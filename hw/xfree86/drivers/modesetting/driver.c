@@ -704,6 +704,8 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
             continue;
         }
 
+        ms_tearfree_set_compose_deadline(crtc);
+
         /* Skip if the last flip is still pending or a DRI client is flipping */
         if (trf->flip_seq || ms_cursor_in_flight(crtc) ||
             ms->drmmode.dri2_flipping || ms->drmmode.present_flipping)
