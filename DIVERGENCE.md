@@ -190,6 +190,10 @@ property (type CARDINAL, format 8) to a `struct hdr_output_metadata` from the
 kernel's drm_mode.h. It renders PQ content with BT.2020 primaries into a
 window with a 30-bit visual.
 
+Here's a demo that shows HDR working in this X server:
+
+[![HDR demo video](https://img.youtube.com/vi/Hb-kc35BnuM/hqdefault.jpg)](https://www.youtube.com/watch?v=Hb-kc35BnuM "HDR on Linux with X11")
+
 DPI
 ---
 
