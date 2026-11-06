@@ -264,15 +264,29 @@ ms_tearfree_composition_late(xf86CrtcPtr crtc)
         next - now <= MS_TEARFREE_LATE_USEC;
 }
 
+static Bool
+ms_tearfree_rendered_late(xf86CrtcPtr crtc, drmmode_tearfree_frame_ptr frame,
+                          uint64_t next, uint64_t next_msc)
+{
+    uint64_t signaled;
+
+    if (frame->fence_fd < 0 || !ms_fence_signal_time(frame->fence_fd, &signaled))
+        return TRUE;
+
+    return signaled > next - (next_msc - frame->target_msc) * ms_crtc_vblank_usec(crtc);
+}
+
 Bool
 ms_tearfree_compose_ahead(xf86CrtcPtr crtc)
 {
     drmmode_tearfree_ptr trf = ms_tearfree(crtc);
+    drmmode_tearfree_frame_ptr oldest = ms_tearfree_oldest_frame(trf);
     uint64_t next, next_msc;
 
     return trf->frames.count == 1 &&
         ms_tearfree_next_vblank(crtc, GetTimeInMicros(), &next, &next_msc) &&
-        next_msc > ms_tearfree_oldest_frame(trf)->target_msc;
+        next_msc > oldest->target_msc &&
+        ms_tearfree_rendered_late(crtc, oldest, next, next_msc);
 }
 
 void
