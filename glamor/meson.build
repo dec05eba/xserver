@@ -29,6 +29,7 @@ srcs_glamor = [
     'glamor_vbo.c',
     'glamor_window.c',
     'glamor_fbo.c',
+    'glamor_fbo_cache.c',
     'glamor_compositerects.c',
     'glamor_utils.c',
     'glamor_sync.c',

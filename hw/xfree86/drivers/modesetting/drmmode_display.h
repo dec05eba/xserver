@@ -250,22 +250,31 @@ typedef struct {
 } drmmode_composition_rec;
 
 typedef struct {
-    int fd[8];
-    int num;
-} drmmode_render_fences_rec;
-
-typedef struct {
     uint64_t usec;
     uint64_t until;
 } drmmode_compose_hold_rec;
 
 typedef struct {
     uint64_t usec;
-    uint64_t start;
-    int fence_fd;
-    drmmode_render_fences_rec clients;
     drmmode_compose_hold_rec hold;
 } drmmode_compose_timing_rec;
+
+#define DRMMODE_TEARFREE_BUFFERS 3
+
+typedef struct {
+    xf86CrtcPtr crtc;
+    uint32_t seq;
+    uint64_t target_msc;
+    uint64_t start;
+    int fence_fd;
+    Bool committed;
+} drmmode_tearfree_frame_rec, *drmmode_tearfree_frame_ptr;
+
+typedef struct {
+    drmmode_tearfree_frame_rec frame[DRMMODE_TEARFREE_BUFFERS];
+    uint32_t order[DRMMODE_TEARFREE_BUFFERS - 1];
+    int count;
+} drmmode_tearfree_frames_rec;
 
 typedef struct {
     uint32_t id;
@@ -297,12 +306,13 @@ typedef struct {
 } drmmode_plane_color_rec, *drmmode_plane_color_ptr;
 
 typedef struct {
-    drmmode_shadow_fb_rec buf[2];
+    drmmode_shadow_fb_rec buf[DRMMODE_TEARFREE_BUFFERS];
+    drmmode_tearfree_frames_rec frames;
     drmmode_composition_rec composition;
     drmmode_scanout_rec scanout;
     struct xorg_list dri_flip_list;
     uint32_t dri_vblank_seq;
-    uint32_t back_idx;
+    uint32_t front_idx;
     uint32_t flip_seq;
     drmmode_compose_timing_rec compose;
 } drmmode_tearfree_rec, *drmmode_tearfree_ptr;

@@ -102,11 +102,6 @@ struct ms_drm_queue {
     Bool aborted;
 };
 
-typedef struct {
-    int fd;
-    BoxRec box;
-} ms_client_render_rec;
-
 typedef struct _modesettingRec {
     int fd;
     Bool fd_passed;
@@ -163,8 +158,6 @@ typedef struct _modesettingRec {
     struct {
         xf86EnableDisableFBAccessProc *EnableDisableFBAccess;
         struct xorg_list sw_cursors;
-        ms_client_render_rec renders[16];
-        int num_renders;
     } compositor;
 
     int cursor_moved_fd;
@@ -194,6 +187,7 @@ typedef struct _modesettingRec {
         struct gbm_device *(*egl_get_gbm_device)(ScreenPtr);
         Bool (*egl_init)(ScrnInfoPtr, int);
         void (*finish)(ScreenPtr);
+        void (*set_flush_unshared_on_idle)(ScreenPtr, Bool);
         struct gbm_bo *(*gbm_bo_from_pixmap)(ScreenPtr, PixmapPtr);
         Bool (*pixmap_is_external)(PixmapPtr);
         Bool (*init)(ScreenPtr, unsigned int);
@@ -307,7 +301,18 @@ Bool ms_tearfree_window_unflip(ScreenPtr screen, WindowPtr window, void *event,
                                ms_pageflip_handler_proc pageflip_handler,
                                ms_pageflip_abort_proc pageflip_abort);
 
-int ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
+int ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
+                            uint64_t usec);
+Bool ms_tearfree_dri_waiting(drmmode_tearfree_ptr trf);
+void ms_tearfree_dri_latch(drmmode_tearfree_ptr trf);
+Bool ms_tearfree_dri_latched(ScrnInfoPtr scrn,
+                             Bool (*match)(void *data, void *match_data),
+                             void *match_data);
+int ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint32_t seq, uint64_t msc,
+                           uint64_t usec);
+Bool do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
+                           uint32_t seq, uint32_t fb_id, int x, int y,
+                           int in_fence_fd);
 
 Bool ms_prime_window_flip(xf86CrtcPtr crtc, ScreenPtr screen, void *event,
                           ms_pageflip_handler_proc pageflip_handler,
@@ -400,14 +405,15 @@ Bool ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next,
                              uint64_t *next_msc);
 Bool ms_tearfree_flip_wanted(xf86CrtcPtr crtc);
 void ms_tearfree_set_compose_deadline(xf86CrtcPtr crtc);
+Bool ms_tearfree_composition_late(xf86CrtcPtr crtc);
+Bool ms_tearfree_commit_composed(ScreenPtr screen, xf86CrtcPtr crtc);
+Bool ms_tearfree_compose_ahead(xf86CrtcPtr crtc);
+uint32_t ms_tearfree_newest_buffer(drmmode_tearfree_ptr trf);
+uint32_t ms_tearfree_pending_seq(drmmode_tearfree_ptr trf);
+Bool ms_tearfree_seq_pending(drmmode_tearfree_ptr trf, uint32_t seq);
 #endif
 
 void ms_compositor_screen_init(ScrnInfoPtr scrn);
-void ms_compositor_close_screen(ScreenPtr screen);
-void ms_compositor_client_rendering(WindowPtr window, int fd);
-void ms_compositor_take_client_rendering(ScreenPtr screen,
-                                         const BoxRec *bounds,
-                                         drmmode_compose_timing_rec *compose);
 Bool ms_compositor_create_screen_resources(ScreenPtr screen);
 void ms_compositor_update_damages(ScreenPtr screen);
 void ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region);

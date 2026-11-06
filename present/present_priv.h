@@ -92,6 +92,7 @@ struct present_vblank {
     struct present_flip_slot_rec *flip_slot; /* slot this flip is pending on */
     PresentFlipReason   reason;         /* reason for which flip is not possible */
     Bool                has_suboptimal; /* whether client can support SuboptimalCopy mode */
+    Bool                async;
     Bool                executed;
     int                 rendering_fd;   /* readable once the pixmap is rendered */
     uint64_t            hidden_since;   /* held back while the window is hidden */
@@ -253,6 +254,7 @@ struct present_window_priv {
     uint64_t               msc;         /* Last reported MSC from the current crtc */
     struct xorg_list       vblank;
     struct xorg_list       notifies;
+    uint64_t               unlatched_event_id;
 };
 
 #define PresentCrtcNeverSet     ((RRCrtcPtr) 1)

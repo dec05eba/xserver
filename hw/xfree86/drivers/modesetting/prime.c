@@ -870,19 +870,20 @@ ms_prime_frame_tick(xf86CrtcPtr crtc, uint64_t msc, uint64_t ust)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     uint32_t *tick_seq = &prime_scanout->commit.tick_seq;
+    uint32_t seq = *tick_seq;
     drmmode_prime_presenters_rec *presenters = &prime_scanout->presenters;
 
-    if (!*tick_seq)
+    if (!seq)
         return;
 
-    if (drmmode_crtc->tearfree.flip_seq == *tick_seq)
+    if (drmmode_crtc->tearfree.flip_seq == seq)
         drmmode_crtc->tearfree.flip_seq = 0;
     *tick_seq = 0;
 
     *presenters = (drmmode_prime_presenters_rec) {
         .until = GetTimeInMicros() + MS_PRIME_PRESENTERS_WAIT_USEC,
     };
-    presenters->count += ms_tearfree_dri_flipped(crtc, msc, ust);
+    presenters->count += ms_tearfree_dri_flipped(crtc, seq, msc, ust);
 
     msGetPixmapPriv(drmmode_crtc->drmmode,
                     drmmode_crtc->prime_pixmap_back)->wait_for_damage = TRUE;

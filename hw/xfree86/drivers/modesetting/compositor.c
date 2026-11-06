@@ -252,6 +252,7 @@ ms_compositor_create_screen_resources(ScreenPtr screen)
         return FALSE;
     }
 
+    modesettingPTR(scrn)->glamor.set_flush_unshared_on_idle(screen, FALSE);
     return TRUE;
 }
 
@@ -290,61 +291,6 @@ ms_compositor_damage_box(ScrnInfoPtr scrn, BoxPtr box)
         RegionUnion(DamageRegion(dirty->damage), DamageRegion(dirty->damage),
                     &region);
     RegionUninit(&region);
-}
-
-static Bool
-ms_compositor_boxes_overlap(const BoxRec *a, const BoxRec *b)
-{
-    return a->x1 < b->x2 && a->x2 > b->x1 && a->y1 < b->y2 && a->y2 > b->y1;
-}
-
-void
-ms_compositor_client_rendering(WindowPtr window, int fd)
-{
-    modesettingPtr ms =
-        modesettingPTR(xf86ScreenToScrn(window->drawable.pScreen));
-    ms_client_render_rec *renders = ms->compositor.renders;
-    int *num = &ms->compositor.num_renders;
-
-    if (*num == ARRAY_SIZE(ms->compositor.renders)) {
-        close(renders[0].fd);
-        memmove(renders, renders + 1, --(*num) * sizeof(*renders));
-    }
-    renders[*num].fd = fd;
-    renders[*num].box = *RegionExtents(&window->borderSize);
-    (*num)++;
-}
-
-void
-ms_compositor_close_screen(ScreenPtr screen)
-{
-    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
-    int i;
-
-    for (i = 0; i < ms->compositor.num_renders; i++)
-        close(ms->compositor.renders[i].fd);
-    ms->compositor.num_renders = 0;
-}
-
-void
-ms_compositor_take_client_rendering(ScreenPtr screen, const BoxRec *bounds,
-                                    drmmode_compose_timing_rec *compose)
-{
-    modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
-    drmmode_render_fences_rec *fences = &compose->clients;
-    int i, kept = 0;
-
-    for (i = 0; i < ms->compositor.num_renders; i++) {
-        ms_client_render_rec *render = &ms->compositor.renders[i];
-
-        if (!ms_compositor_boxes_overlap(&render->box, bounds))
-            ms->compositor.renders[kept++] = *render;
-        else if (fences->num < ARRAY_SIZE(fences->fd))
-            fences->fd[fences->num++] = render->fd;
-        else
-            close(render->fd);
-    }
-    ms->compositor.num_renders = kept;
 }
 
 void

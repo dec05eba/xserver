@@ -60,6 +60,9 @@ glamor_set_texture(PixmapPtr    texture,
                    GLint        offset_uniform,
                    GLint        size_uniform);
 
+void
+glamor_set_texture_scale(PixmapPtr texture, GLint scale_uniform);
+
 Bool
 glamor_set_solid(DrawablePtr    drawable,
                  GCPtr          gc,

@@ -619,6 +619,87 @@ present_flip_slot_busy(present_flip_slot_ptr slot)
 }
 
 static void
+present_frame_presented(present_vblank_ptr vblank)
+{
+    present_window_priv_ptr window_priv;
+
+    if (vblank->async)
+        return;
+
+    window_priv = present_get_window_priv(vblank->window, TRUE);
+    if (window_priv)
+        window_priv->unlatched_event_id = vblank->event_id;
+}
+
+static Bool
+present_frame_unlatched(present_vblank_ptr vblank)
+{
+    ScreenPtr screen = vblank->window ? vblank->window->drawable.pScreen : NULL;
+    present_screen_info_ptr info = screen ? present_screen_priv(screen)->info : NULL;
+    present_window_priv_ptr window_priv;
+
+    if (!info || !info->frame_latched || vblank->async || !vblank->pixmap || vblank->executed)
+        return FALSE;
+
+    window_priv = present_window_priv(vblank->window);
+    if (!window_priv || !window_priv->unlatched_event_id)
+        return FALSE;
+
+    if (info->frame_latched(screen, window_priv->unlatched_event_id)) {
+        window_priv->unlatched_event_id = 0;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static Bool
+present_flip_waits(present_flip_slot_ptr slot, present_vblank_ptr vblank)
+{
+    return present_flip_slot_busy(slot) || present_frame_unlatched(vblank);
+}
+
+static Bool present_latched_retry_queued;
+
+static Bool
+present_retry_unlatched_frames(ClientPtr client, void *closure)
+{
+    present_vblank_ptr vblank, tmp;
+    struct xorg_list ready;
+
+    present_latched_retry_queued = FALSE;
+    xorg_list_init(&ready);
+    xorg_list_for_each_entry_safe(vblank, tmp, &present_flip_queue, event_queue) {
+        present_flip_slot_ptr slot;
+
+        if (!vblank->queued || !vblank->flip_ready || !vblank->window)
+            continue;
+
+        slot = present_get_window_flip_slot(present_screen_priv(vblank->screen), vblank->window);
+        if (!present_flip_waits(slot, vblank)) {
+            xorg_list_del(&vblank->event_queue);
+            xorg_list_append(&vblank->event_queue, &ready);
+        }
+    }
+
+    xorg_list_for_each_entry_safe(vblank, tmp, &ready, event_queue)
+        present_re_execute(vblank);
+    return TRUE;
+}
+
+void
+present_frames_latched(void)
+{
+    if (!present_latched_retry_queued)
+        present_latched_retry_queued = QueueWorkProc(present_retry_unlatched_frames, serverClient, NULL);
+}
+
+Bool
+present_frames_latched_pending(void)
+{
+    return present_latched_retry_queued;
+}
+
+static void
 present_flip_try_ready(ScreenPtr screen)
 {
     present_screen_priv_ptr screen_priv = present_screen_priv(screen);
@@ -626,8 +707,7 @@ present_flip_try_ready(ScreenPtr screen)
 
     xorg_list_for_each_entry(vblank, &present_flip_queue, event_queue) {
         if (vblank->queued && vblank->window &&
-            !present_flip_slot_busy(present_get_window_flip_slot(screen_priv,
-                                                                 vblank->window))) {
+            !present_flip_waits(present_get_window_flip_slot(screen_priv, vblank->window), vblank)) {
             present_re_execute(vblank);
             return;
         }
@@ -1029,17 +1109,16 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
 
     if (vblank->flip && vblank->pixmap && vblank->window) {
         slot = present_create_window_flip_slot(screen_priv, vblank->window);
-        if (!slot) {
+        if (!slot)
             vblank->flip = FALSE;
-        } else if (present_flip_slot_busy(slot)) {
-            DebugPresent(("\tr %" PRIu64 " %p (pending %p unflip %" PRIu64 ")\n",
-                          vblank->event_id, vblank,
-                          slot->flip_pending, slot->unflip_event_id));
-            xorg_list_del(&vblank->event_queue);
-            xorg_list_append(&vblank->event_queue, &present_flip_queue);
-            vblank->flip_ready = TRUE;
-            return;
-        }
+    }
+
+    if (present_flip_waits(slot, vblank)) {
+        DebugPresent(("\tr %" PRIu64 " %p\n", vblank->event_id, vblank));
+        xorg_list_del(&vblank->event_queue);
+        xorg_list_append(&vblank->event_queue, &present_flip_queue);
+        vblank->flip_ready = TRUE;
+        return;
     }
 
     xorg_list_del(&vblank->event_queue);
@@ -1069,6 +1148,9 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
              */
             if (present_flip_slot(screen, slot, vblank)) {
                 RegionRec damage;
+
+                if (slot->window_flip)
+                    present_frame_presented(vblank);
 
                 /* Report update region as damaged
                  */
@@ -1147,7 +1229,11 @@ present_execute(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc)
                     completion_msc++;
 
             /* Try the fake flip first and then fall back to a vblank event */
-            if (present_flip(vblank->crtc, vblank->event_id, 0, NULL, TRUE) ||
+            Bool fake_flip = present_flip(vblank->crtc, vblank->event_id, 0, NULL, TRUE);
+
+            if (fake_flip)
+                present_frame_presented(vblank);
+            if (fake_flip ||
                 Success == screen_priv->queue_vblank(screen,
                                                      window,
                                                      vblank->crtc,

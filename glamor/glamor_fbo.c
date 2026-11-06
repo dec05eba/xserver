@@ -30,9 +30,10 @@
 
 #include "glamor_priv.h"
 
+#define GLAMOR_FBO_LARGE_ALIGN 64
+
 void
-glamor_destroy_fbo(glamor_screen_private *glamor_priv,
-                   glamor_pixmap_fbo *fbo)
+glamor_free_fbo(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo)
 {
     glamor_make_current(glamor_priv);
 
@@ -44,6 +45,14 @@ glamor_destroy_fbo(glamor_screen_private *glamor_priv,
         fbo->external->destroy(fbo->external);
 
     free(fbo);
+}
+
+void
+glamor_destroy_fbo(glamor_screen_private *glamor_priv,
+                   glamor_pixmap_fbo *fbo)
+{
+    if (!glamor_fbo_cache_put(glamor_priv, fbo))
+        glamor_free_fbo(glamor_priv, fbo);
 }
 
 Bool
@@ -156,6 +165,42 @@ glamor_create_fbo_from_tex(glamor_screen_private *glamor_priv,
     return fbo;
 }
 
+static void
+glamor_reset_texture_parameters(glamor_screen_private *glamor_priv, const struct glamor_format *f)
+{
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    if (!glamor_priv->has_texture_swizzle)
+        return;
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_BLUE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, f->format == GL_RED ? GL_RED : GL_ALPHA);
+}
+
+static glamor_pixmap_fbo *
+glamor_reuse_cached_fbo(glamor_screen_private *glamor_priv, const struct glamor_format *f, int w, int h, int flag)
+{
+    glamor_pixmap_fbo *fbo = glamor_fbo_cache_take(glamor_priv, f, w, h);
+
+    if (!fbo)
+        return NULL;
+
+    if (flag != GLAMOR_CREATE_FBO_NO_FBO && !fbo->fb && glamor_pixmap_ensure_fb(glamor_priv, fbo) != 0) {
+        glamor_free_fbo(glamor_priv, fbo);
+        return NULL;
+    }
+
+    glamor_make_current(glamor_priv);
+    glBindTexture(GL_TEXTURE_2D, fbo->tex);
+    glamor_reset_texture_parameters(glamor_priv, f);
+    return fbo;
+}
+
 static int
 _glamor_create_tex(glamor_screen_private *glamor_priv,
                    PixmapPtr pixmap, int w, int h)
@@ -166,10 +211,7 @@ _glamor_create_tex(glamor_screen_private *glamor_priv,
     glamor_make_current(glamor_priv);
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    if (f->format == GL_RED)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+    glamor_reset_texture_parameters(glamor_priv, f);
     glamor_priv->suppress_gl_out_of_memory_logging = true;
     glTexImage2D(GL_TEXTURE_2D, 0, f->internalformat, w, h, 0,
                  f->format, f->type, NULL);
@@ -194,13 +236,87 @@ glamor_pixmap_fbo *
 glamor_create_fbo(glamor_screen_private *glamor_priv,
                   PixmapPtr pixmap, int w, int h, int flag)
 {
-    GLint tex = _glamor_create_tex(glamor_priv, pixmap, w, h);
+    const struct glamor_format *f = glamor_format_for_pixmap(pixmap);
+    glamor_pixmap_fbo *fbo = glamor_reuse_cached_fbo(glamor_priv, f, w, h, flag);
+    GLint tex;
 
+    if (fbo)
+        return fbo;
+
+    tex = _glamor_create_tex(glamor_priv, pixmap, w, h);
     if (!tex) /* Texture creation failed due to GL_OUT_OF_MEMORY */
         return NULL;
 
-    return glamor_create_fbo_from_tex(glamor_priv, pixmap, w, h,
-                                      tex, flag);
+    fbo = glamor_create_fbo_from_tex(glamor_priv, pixmap, w, h, tex, flag);
+    if (fbo)
+        fbo->owned_format = f;
+    return fbo;
+}
+
+static void
+glamor_clear_fbo_rect(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo,
+                      const struct glamor_format *format, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return;
+
+    glamor_make_current(glamor_priv);
+    if (glamor_priv->has_clear_texture) {
+        glClearTexSubImage(fbo->tex, 0, x, y, 0, w, h, 1, format->format, format->type, NULL);
+        return;
+    }
+
+    glamor_set_destination_pixmap_fbo(glamor_priv, fbo, 0, 0, fbo->width, fbo->height);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x, y, w, h);
+    glClearColor(0.0, 0.0, 0.0, 0.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+}
+
+static void
+glamor_clear_fbo_margin(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo, int w, int h)
+{
+    glamor_clear_fbo_rect(glamor_priv, fbo, fbo->owned_format, w, 0, fbo->width - w, fbo->height);
+    glamor_clear_fbo_rect(glamor_priv, fbo, fbo->owned_format, 0, h, w, fbo->height - h);
+}
+
+static Bool
+glamor_usage_allows_margin(int usage)
+{
+    return usage == 0 || usage == CREATE_PIXMAP_USAGE_SCRATCH;
+}
+
+static int
+glamor_fbo_size_class(int size)
+{
+    int granularity = GLAMOR_FBO_LARGE_ALIGN;
+
+    while (granularity * 16 < size)
+        granularity *= 2;
+    return ALIGN(size, granularity);
+}
+
+glamor_pixmap_fbo *
+glamor_create_pixmap_fbo(glamor_screen_private *glamor_priv, PixmapPtr pixmap, int w, int h, int usage)
+{
+    int storage_w = w, storage_h = h;
+    glamor_pixmap_fbo *fbo;
+
+    if (glamor_usage_allows_margin(usage) && glamor_fbo_size_is_large(w, h) &&
+        w >= GLAMOR_FBO_LARGE_ALIGN && h >= GLAMOR_FBO_LARGE_ALIGN) {
+        storage_w = glamor_fbo_size_class(w);
+        storage_h = glamor_fbo_size_class(h);
+        if (!glamor_check_fbo_size(glamor_priv, storage_w, storage_h)) {
+            storage_w = w;
+            storage_h = h;
+        }
+    }
+
+    fbo = glamor_create_fbo(glamor_priv, pixmap, storage_w, storage_h, usage);
+    if (fbo && (storage_w != w || storage_h != h))
+        glamor_clear_fbo_margin(glamor_priv, fbo, w, h);
+    return fbo;
 }
 
 /**
@@ -282,19 +398,9 @@ void
 glamor_pixmap_clear_fbo(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo,
                         const struct glamor_format *pixmap_format)
 {
-    glamor_make_current(glamor_priv);
-
     assert(fbo->fb != 0 && fbo->tex != 0);
 
-    if (glamor_priv->has_clear_texture) {
-        glClearTexImage(fbo->tex, 0, pixmap_format->format, pixmap_format->type, NULL);
-    }
-    else {
-        glamor_set_destination_pixmap_fbo(glamor_priv, fbo, 0, 0, fbo->width, fbo->height);
-
-        glClearColor(0.0, 0.0, 0.0, 0.0);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
+    glamor_clear_fbo_rect(glamor_priv, fbo, pixmap_format, 0, 0, fbo->width, fbo->height);
 }
 
 glamor_pixmap_fbo *
@@ -325,6 +431,7 @@ glamor_pixmap_attach_fbo(PixmapPtr pixmap, glamor_pixmap_fbo *fbo)
         return;
 
     pixmap_priv->fbo = fbo;
+    fbo->shared = pixmap_priv->type == GLAMOR_TEXTURE_DRM;
 
     switch (pixmap_priv->type) {
     case GLAMOR_TEXTURE_ONLY:
@@ -403,4 +510,33 @@ glamor_pixmap_exchange_fbos(PixmapPtr front, PixmapPtr back)
     temp_fbo = front_priv->fbo;
     front_priv->fbo = back_priv->fbo;
     back_priv->fbo = temp_fbo;
+}
+
+Bool
+glamor_pixmap_trim_fbo(PixmapPtr pixmap)
+{
+    glamor_pixmap_private *priv = glamor_get_pixmap_private(pixmap);
+    BoxRec box = { 0, 0, pixmap->drawable.width, pixmap->drawable.height };
+    PixmapPtr exact;
+
+    if (!glamor_pixmap_priv_is_oversized(pixmap, priv))
+        return TRUE;
+
+    if (priv->prepared)
+        return FALSE;
+
+    exact = glamor_create_pixmap(pixmap->drawable.pScreen, box.x2, box.y2, pixmap->drawable.depth,
+                                 GLAMOR_CREATE_NO_LARGE);
+    if (!exact)
+        return FALSE;
+
+    if (!glamor_pixmap_has_fbo(exact)) {
+        glamor_destroy_pixmap(exact);
+        return FALSE;
+    }
+
+    glamor_copy(&pixmap->drawable, &exact->drawable, NULL, &box, 1, 0, 0, FALSE, FALSE, 0, NULL);
+    glamor_pixmap_exchange_fbos(pixmap, exact);
+    glamor_destroy_pixmap(exact);
+    return TRUE;
 }

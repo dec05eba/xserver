@@ -167,6 +167,8 @@ void
 glamor_bind_texture(glamor_screen_private *glamor_priv, GLenum texture,
                     glamor_pixmap_fbo *fbo, Bool destination_red)
 {
+    glamor_priv->flush.shared_pending |= fbo->shared;
+
     glActiveTexture(texture);
     glBindTexture(GL_TEXTURE_2D, fbo->tex);
 
@@ -243,7 +245,7 @@ glamor_create_pixmap(ScreenPtr screen, int w, int h, int depth,
         glamor_check_fbo_size(glamor_priv, w, h))
     {
         glamor_init_pixmap_private_small(pixmap, pixmap_priv);
-        fbo = glamor_create_fbo(glamor_priv, pixmap, w, h, usage);
+        fbo = glamor_create_pixmap_fbo(glamor_priv, pixmap, w, h, usage);
     } else {
         int tile_size = glamor_priv->max_fbo_size;
         DEBUGF("Create LARGE pixmap %p width %d height %d, tile size %d\n",
@@ -279,12 +281,19 @@ glamor_block_handler(ScreenPtr screen)
     glamor_flush(glamor_priv);
 }
 
+void
+glamor_set_flush_unshared_on_idle(ScreenPtr screen, Bool flush)
+{
+    glamor_get_screen_private(screen)->flush.unshared_on_idle = flush;
+}
+
 static void
 _glamor_block_handler(ScreenPtr screen, void *timeout)
 {
     glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
 
-    glamor_flush(glamor_priv);
+    glamor_fbo_cache_expire(glamor_priv);
+    glamor_flush_on_idle(glamor_priv);
 
     screen->BlockHandler = glamor_priv->saved_procs.block_handler;
     screen->BlockHandler(screen, timeout);
@@ -813,6 +822,8 @@ glamor_init(ScreenPtr screen, unsigned int flags)
     if (!glamor_font_init(screen))
         goto fail;
 
+    glamor_priv->flush.unshared_on_idle = TRUE;
+    glamor_fbo_cache_init(glamor_priv);
     glamor_priv->saved_procs.block_handler = screen->BlockHandler;
     screen->BlockHandler = _glamor_block_handler;
 
@@ -939,6 +950,7 @@ glamor_close_screen(ScreenPtr screen)
 
     screen_pixmap = screen->GetScreenPixmap(screen);
     glamor_pixmap_destroy_fbo(screen_pixmap);
+    glamor_fbo_cache_fini(glamor_priv);
 
     glamor_release_screen_priv(screen);
 

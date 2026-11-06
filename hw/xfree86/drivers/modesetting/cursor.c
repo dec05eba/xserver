@@ -431,7 +431,7 @@ ms_cursor_scanout_pixmap(xf86CrtcPtr crtc)
     if (trf->scanout.pixmap)
         return trf->scanout.pixmap;
     if (ms_tearfree_is_active_on_crtc(crtc))
-        return trf->buf[trf->back_idx ^ 1].px;
+        return trf->buf[trf->front_idx].px;
 #endif
     return NULL;
 }
@@ -720,6 +720,8 @@ ms_cursor_flip_expected(xf86CrtcPtr crtc)
     if (trf->flip_seq)
         return TRUE;
 #ifdef HAVE_GBM
+    if (trf->frames.count)
+        return !ms_tearfree_composition_late(crtc);
     return ms_tearfree_is_active_on_crtc(crtc) && !trf->scanout.fb_id &&
         ms_tearfree_flip_wanted(crtc);
 #else

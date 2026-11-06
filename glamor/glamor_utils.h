@@ -672,17 +672,25 @@ glamor_make_current(glamor_screen_private *glamor_priv)
         lastGLContext = glamor_priv->ctx.ctx;
         glamor_priv->ctx.make_current(&glamor_priv->ctx);
     }
-    glamor_priv->dirty = TRUE;
+    glamor_priv->flush.pending = TRUE;
 }
 
 static inline void
 glamor_flush(glamor_screen_private *glamor_priv)
 {
-    if (glamor_priv->dirty) {
+    if (glamor_priv->flush.pending) {
         glamor_make_current(glamor_priv);
         glFlush();
-        glamor_priv->dirty = FALSE;
+        glamor_priv->flush.pending = FALSE;
     }
+    glamor_priv->flush.shared_pending = FALSE;
+}
+
+static inline void
+glamor_flush_on_idle(glamor_screen_private *glamor_priv)
+{
+    if (glamor_priv->flush.unshared_on_idle || glamor_priv->flush.shared_pending)
+        glamor_flush(glamor_priv);
 }
 
 static inline BoxRec

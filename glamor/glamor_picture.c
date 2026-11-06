@@ -354,6 +354,8 @@ glamor_upload_picture_to_texture(PicturePtr picture)
     glTexImage2D(GL_TEXTURE_2D, 0, iformat,
                  pixmap->drawable.width, pixmap->drawable.height, 0,
                  format, type, bits);
+    if (iformat != f->internalformat)
+        pixmap_priv->fbo->owned_format = NULL;
 
     if (needs_swizzle) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, swizzle[0]);
@@ -372,4 +374,13 @@ fail:
         pixman_image_unref(converted_image);
 
     return ret;
+}
+
+Bool
+glamor_picture_prepare_repeat(PicturePtr picture)
+{
+    if (!picture || !picture->pDrawable || picture->repeatType == RepeatNone)
+        return TRUE;
+
+    return glamor_pixmap_trim_fbo(glamor_get_drawable_pixmap(picture->pDrawable));
 }

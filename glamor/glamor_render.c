@@ -1837,6 +1837,11 @@ glamor_composite(CARD8 op,
         goto fail;
     }
 
+    if (!glamor_picture_prepare_repeat(source) || !glamor_picture_prepare_repeat(mask)) {
+        glamor_fallback("glamor_composite(): no exact texture for a repeating picture\n");
+        goto fail;
+    }
+
     if (!miComputeCompositeRegion(&region,
                                   source, mask, dest,
                                   x_source +

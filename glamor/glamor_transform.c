@@ -203,6 +203,15 @@ glamor_set_texture(PixmapPtr    texture,
     return TRUE;
 }
 
+void
+glamor_set_texture_scale(PixmapPtr texture, GLint scale_uniform)
+{
+    glamor_pixmap_fbo *fbo = glamor_get_pixmap_private(texture)->fbo;
+
+    glUniform2f(scale_uniform, (float) texture->drawable.width / fbo->width,
+                (float) texture->drawable.height / fbo->height);
+}
+
 Bool
 glamor_set_tiled(DrawablePtr    drawable,
                  GCPtr          gc,
@@ -213,6 +222,9 @@ glamor_set_tiled(DrawablePtr    drawable,
         return FALSE;
 
     if (!glamor_set_planemask(gc->depth, gc->planemask))
+        return FALSE;
+
+    if (glamor_pixmap_priv_is_oversized(gc->tile.pixmap, glamor_get_pixmap_private(gc->tile.pixmap)))
         return FALSE;
 
     return glamor_set_texture(gc->tile.pixmap,

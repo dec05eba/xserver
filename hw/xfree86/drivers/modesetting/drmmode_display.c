@@ -819,8 +819,8 @@ drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y)
         }
         *y = 0;
     }
-    else if (trf->buf[trf->back_idx ^ 1].px) {
-        *fb_id = trf->buf[trf->back_idx ^ 1].fb_id;
+    else if (trf->buf[trf->front_idx].px) {
+        *fb_id = trf->buf[trf->front_idx].fb_id;
         *x = *y = 0;
     }
     else if (drmmode_crtc->rotate_fb_id) {
@@ -2215,6 +2215,10 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
     int i;
 
+    for (i = 0; i < ARRAY_SIZE(trf->frames.frame); i++) {
+        if (trf->frames.frame[i].seq)
+            ms_drm_abort_seq(crtc->scrn, trf->frames.frame[i].seq);
+    }
     if (trf->flip_seq)
         ms_drm_abort_seq(crtc->scrn, trf->flip_seq);
 
@@ -2310,8 +2314,8 @@ drmmode_create_tearfree_shadow(xf86CrtcPtr crtc)
     }
 
     /* Initialize the front buffer with the current scanout */
-    drmmode_compose_damage(crtc, trf->buf[trf->back_idx ^ 1].px,
-                           &trf->buf[trf->back_idx ^ 1].dmg, TRUE);
+    drmmode_compose_damage(crtc, trf->buf[trf->front_idx].px,
+                           &trf->buf[trf->front_idx].dmg, TRUE);
     return TRUE;
 }
 
@@ -3287,6 +3291,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     drmmode_crtc_private_ptr drmmode_crtc;
     modesettingEntPtr ms_ent = ms_ent_priv(pScrn);
     drmModeObjectPropertiesPtr props;
+    int i;
     static const drmmode_prop_info_rec crtc_props[] = {
         [DRMMODE_CRTC_ACTIVE] = { .name = "ACTIVE" },
         [DRMMODE_CRTC_MODE_ID] = { .name = "MODE_ID" },
@@ -3310,7 +3315,8 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     drmmode_crtc->vblank_pipe = drmmode_crtc_vblank_pipe(num);
     xorg_list_init(&drmmode_crtc->mode_list);
     xorg_list_init(&drmmode_crtc->tearfree.dri_flip_list);
-    drmmode_crtc->tearfree.compose.fence_fd = -1;
+    for (i = 0; i < ARRAY_SIZE(drmmode_crtc->tearfree.frames.frame); i++)
+        drmmode_crtc->tearfree.frames.frame[i].fence_fd = -1;
     drmmode_crtc->prime_scanout.commit.deadline.fd = -1;
     drmmode_crtc->prime_scanout.commit.flight.buf_idx = -1;
     drmmode_crtc->next_msc = UINT64_MAX;

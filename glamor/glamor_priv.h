@@ -238,6 +238,25 @@ typedef struct {
     GLint               opacity_uniform;
 } glamor_color_program;
 
+typedef struct glamor_flush_state {
+    Bool pending;
+    Bool shared_pending;
+    Bool unshared_on_idle;
+} glamor_flush_state;
+
+typedef struct glamor_fbo_pool {
+    struct xorg_list fbos;
+    int count;
+    size_t bytes;
+    int max_count;
+    size_t max_bytes;
+} glamor_fbo_pool;
+
+typedef struct glamor_fbo_cache {
+    glamor_fbo_pool small;
+    glamor_fbo_pool large;
+} glamor_fbo_cache;
+
 typedef struct glamor_screen_private {
     Bool is_gles;
     int glsl_version;
@@ -357,7 +376,8 @@ typedef struct glamor_screen_private {
     Bool suppress_gl_out_of_memory_logging;
     Bool logged_any_fbo_allocation_failure;
     Bool logged_any_pbo_allocation_failure;
-    Bool dirty;
+    glamor_flush_state flush;
+    glamor_fbo_cache fbo_cache;
 
     /* xv */
     glamor_program xv_prog;
@@ -395,7 +415,11 @@ typedef struct glamor_pixmap_fbo {
     int width; /**< width in pixels */
     int height; /**< height in pixels */
     Bool is_red;
+    Bool shared;
     glamor_external *external;
+    const struct glamor_format *owned_format;
+    struct xorg_list cache_entry;
+    CARD32 cached_time;
 } glamor_pixmap_fbo;
 
 typedef struct glamor_pixmap_clipped_regions {
@@ -515,6 +539,21 @@ glamor_pixmap_is_large(PixmapPtr pixmap)
     glamor_pixmap_private *priv = glamor_get_pixmap_private(pixmap);
 
     return glamor_pixmap_priv_is_large(priv);
+}
+
+#define GLAMOR_FBO_LARGE_AREA (256 * 256)
+
+static inline Bool
+glamor_fbo_size_is_large(int w, int h)
+{
+    return (int64_t) w * h > GLAMOR_FBO_LARGE_AREA;
+}
+
+static inline Bool
+glamor_pixmap_priv_is_oversized(PixmapPtr pixmap, glamor_pixmap_private *priv)
+{
+    return priv->fbo && glamor_pixmap_priv_is_small(priv) &&
+        (priv->fbo->width != pixmap->drawable.width || priv->fbo->height != pixmap->drawable.height);
 }
 /*
  * Returns TRUE if pixmap has an FBO
@@ -636,8 +675,17 @@ glamor_pixmap_fbo *glamor_create_fbo_from_tex(glamor_screen_private *
                                               glamor_priv, PixmapPtr pixmap,
                                               int w, int h, GLint tex,
                                               int flag);
+glamor_pixmap_fbo *glamor_create_pixmap_fbo(glamor_screen_private *glamor_priv,
+                                            PixmapPtr pixmap, int w, int h, int usage);
 glamor_pixmap_fbo *glamor_create_fbo(glamor_screen_private *glamor_priv,
                                      PixmapPtr pixmap, int w, int h, int flag);
+void glamor_fbo_cache_init(glamor_screen_private *glamor_priv);
+void glamor_fbo_cache_expire(glamor_screen_private *glamor_priv);
+void glamor_fbo_cache_fini(glamor_screen_private *glamor_priv);
+Bool glamor_fbo_cache_put(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo);
+glamor_pixmap_fbo *glamor_fbo_cache_take(glamor_screen_private *glamor_priv, const struct glamor_format *f, int w, int h);
+void glamor_free_fbo(glamor_screen_private *glamor_priv, glamor_pixmap_fbo *fbo);
+Bool glamor_pixmap_trim_fbo(PixmapPtr pixmap);
 void glamor_destroy_fbo(glamor_screen_private *glamor_priv,
                         glamor_pixmap_fbo *fbo);
 void glamor_pixmap_destroy_fbo(PixmapPtr pixmap);
@@ -817,6 +865,8 @@ Bool glamor_composite_largepixmap_region(CARD8 op,
  * glamor_upload_pixmap_to_texture. Used in rendering.
  **/
 Bool glamor_upload_picture_to_texture(PicturePtr picture);
+
+Bool glamor_picture_prepare_repeat(PicturePtr picture);
 
 void glamor_add_traps(PicturePtr pPicture,
                       INT16 x_off, INT16 y_off, int ntrap, xTrap *traps);

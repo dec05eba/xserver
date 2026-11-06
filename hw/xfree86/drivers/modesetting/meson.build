@@ -13,6 +13,7 @@ modesetting_srcs = [
     'pageflip.c',
     'present.c',
     'prime.c',
+    'tearfree.c',
     'vblank.c',
 ]
 

@@ -68,6 +68,7 @@ glamor_set_destination_pixmap_fbo(glamor_screen_private *glamor_priv,
                                   int width, int height)
 {
     glamor_make_current(glamor_priv);
+    glamor_priv->flush.shared_pending |= fbo->shared;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo->fb);
     glViewport(x0, y0, width, height);

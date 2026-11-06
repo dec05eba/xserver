@@ -1188,19 +1188,20 @@ glamor_egl_create_fence_fd(ScreenPtr screen)
 {
     struct glamor_egl_screen_private *glamor_egl =
         glamor_egl_get_screen_private(xf86ScreenToScrn(screen));
+    glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
     EGLSyncKHR sync;
     int fd;
 
     if (!glamor_egl->has_native_fence_sync)
         return -1;
 
-    glamor_make_current(glamor_get_screen_private(screen));
+    glamor_make_current(glamor_priv);
     sync = eglCreateSyncKHR(glamor_egl->display, EGL_SYNC_NATIVE_FENCE_ANDROID,
                             NULL);
     if (sync == EGL_NO_SYNC_KHR)
         return -1;
 
-    glFlush();
+    glamor_flush(glamor_priv);
     fd = eglDupNativeFenceFDANDROID(glamor_egl->display, sync);
     eglDestroySyncKHR(glamor_egl->display, sync);
     return fd;

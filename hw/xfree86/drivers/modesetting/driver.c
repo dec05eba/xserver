@@ -69,6 +69,7 @@
 #ifdef XSERVER_LIBPCIACCESS
 #include <pciaccess.h>
 #endif
+#include "present.h"
 #include "driver.h"
 
 static void AdjustFrame(ScrnInfoPtr pScrn, int x, int y);
@@ -681,6 +682,18 @@ dispatch_dirty_region(ScrnInfoPtr scrn, xf86CrtcPtr crtc,
                             pixmap, damage, fb_id, x, y);
 }
 
+#ifdef HAVE_GBM
+static void
+ms_tearfree_show_front(ScrnInfoPtr scrn, xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_shadow_fb_ptr front = &drmmode_crtc->tearfree.buf[drmmode_crtc->tearfree.front_idx];
+
+    dispatch_damages(scrn, crtc, &front->dmg, front->px, NULL, front->fb_id, 0, 0);
+    RegionEmpty(&front->dmg);
+}
+#endif
+
 static void
 ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
 {
@@ -706,6 +719,16 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
 
         ms_tearfree_set_compose_deadline(crtc);
 
+        if (ms_tearfree_commit_composed(pScreen, crtc))
+            ms_tearfree_show_front(scrn, crtc);
+
+        if (trf->frames.count) {
+            if (ms_tearfree_compose_ahead(crtc) && ms_tearfree_flip_wanted(crtc) &&
+                ms_tearfree_compose_due(crtc, timeout) && ms_do_tearfree_flip(pScreen, crtc))
+                ms_tearfree_show_front(scrn, crtc);
+            continue;
+        }
+
         /* Skip if the last flip is still pending or a DRI client is flipping */
         if (trf->flip_seq || ms_cursor_in_flight(crtc) ||
             ms->drmmode.dri2_flipping || ms->drmmode.present_flipping)
@@ -721,13 +744,12 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
             continue;
 
         /* Flip. If it fails, notify the kernel of the front buffer damages */
-        if (ms_do_tearfree_flip(pScreen, crtc)) {
-            dispatch_damages(scrn, crtc, &trf->buf[trf->back_idx ^ 1].dmg,
-                             trf->buf[trf->back_idx ^ 1].px, NULL,
-                             trf->buf[trf->back_idx ^ 1].fb_id, 0, 0);
-            RegionEmpty(&trf->buf[trf->back_idx ^ 1].dmg);
-        }
+        if (ms_do_tearfree_flip(pScreen, crtc))
+            ms_tearfree_show_front(scrn, crtc);
     }
+
+    if (present_frames_latched_pending())
+        AdjustWaitForDelay(timeout, 0);
 #endif
 }
 
@@ -1121,6 +1143,7 @@ load_glamor(ScrnInfoPtr pScrn)
     ms->glamor.egl_get_gbm_device = LoaderSymbolFromModule(mod, "glamor_egl_get_gbm_device");
     ms->glamor.egl_init = LoaderSymbolFromModule(mod, "glamor_egl_init");
     ms->glamor.finish = LoaderSymbolFromModule(mod, "glamor_finish");
+    ms->glamor.set_flush_unshared_on_idle = LoaderSymbolFromModule(mod, "glamor_set_flush_unshared_on_idle");
     ms->glamor.gbm_bo_from_pixmap = LoaderSymbolFromModule(mod, "glamor_gbm_bo_from_pixmap");
     ms->glamor.pixmap_is_external = LoaderSymbolFromModule(mod, "glamor_pixmap_is_external");
     ms->glamor.init = LoaderSymbolFromModule(mod, "glamor_init");
@@ -2638,7 +2661,6 @@ CloseScreen(ScreenPtr pScreen)
     }
 
     ms_hdr_close_screen(pScreen);
-    ms_compositor_close_screen(pScreen);
 
     pScreen->CreateScreenResources = ms->createScreenResources;
     pScreen->BlockHandler = ms->BlockHandler;

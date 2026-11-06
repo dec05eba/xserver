@@ -218,6 +218,7 @@ glamor_validate_gc(GCPtr gc, unsigned long changes, DrawablePtr drawable)
                     glamor_finish_access(&gc->tile.pixmap->drawable);
                 }
             }
+            glamor_pixmap_trim_fbo(gc->tile.pixmap);
         }
         /* Mask out the GCTile change notification, now that we've done FB's
          * job for it.

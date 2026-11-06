@@ -143,8 +143,10 @@ static glamor_location_var location_vars[] = {
                     "out vec2 fill_pos;\n"
                     "#endif\n"),
         .fs_vars = ("#ifdef GL_ES\n"
+                    "uniform highp vec2 fill_scale;\n"
                     "in highp vec2 fill_pos;\n"
                     "#else\n"
+                    "uniform vec2 fill_scale;\n"
                     "in vec2 fill_pos;\n"
                     "#endif\n")
     },
@@ -408,6 +410,7 @@ glamor_build_program(ScreenPtr          screen,
     prog->bg_uniform = glamor_get_uniform(prog, glamor_program_location_bg, "bg");
     prog->fill_offset_uniform = glamor_get_uniform(prog, glamor_program_location_fillpos, "fill_offset");
     prog->fill_size_inv_uniform = glamor_get_uniform(prog, glamor_program_location_fillpos, "fill_size_inv");
+    prog->fill_scale_uniform = glamor_get_uniform(prog, glamor_program_location_fillpos, "fill_scale");
     prog->font_uniform = glamor_get_uniform(prog, glamor_program_location_font, "font");
     prog->bitplane_uniform = glamor_get_uniform(prog, glamor_program_location_bitplane, "bitplane");
     prog->bitmul_uniform = glamor_get_uniform(prog, glamor_program_location_bitplane, "bitmul");
@@ -588,17 +591,21 @@ use_source_picture(CARD8 op, PicturePtr src, PicturePtr dst, glamor_program *pro
 {
     glamor_set_blend(op, prog->alpha, dst);
 
-    return glamor_set_texture((PixmapPtr) src->pDrawable,
-                              glamor_picture_red_is_alpha(dst),
-                              0, 0,
-                              prog->fill_offset_uniform,
-                              prog->fill_size_inv_uniform);
+    if (!glamor_set_texture((PixmapPtr) src->pDrawable,
+                            glamor_picture_red_is_alpha(dst),
+                            0, 0,
+                            prog->fill_offset_uniform,
+                            prog->fill_size_inv_uniform))
+        return FALSE;
+
+    glamor_set_texture_scale((PixmapPtr) src->pDrawable, prog->fill_scale_uniform);
+    return TRUE;
 }
 
 static const glamor_facet glamor_source_picture = {
     .name = "render_picture",
     .vs_exec =  "       fill_pos = (fill_offset + primitive.xy + pos) * fill_size_inv;\n",
-    .fs_exec =  "       vec4 source = texture(sampler, fill_pos);\n",
+    .fs_exec =  "       vec4 source = texture(sampler, fill_pos * fill_scale);\n",
     .locations = glamor_program_location_fillsamp | glamor_program_location_fillpos,
     .use_render = use_source_picture,
 };
@@ -697,6 +704,9 @@ glamor_setup_program_render(CARD8                 op,
 
         /* Can't do transforms, alphamaps or sourcing from non-pixmaps yet */
         if (src->transform || src->alphaMap || src->pDrawable->type != DRAWABLE_PIXMAP)
+            return NULL;
+
+        if (!glamor_picture_prepare_repeat(src))
             return NULL;
 
         if (src->pDrawable->width == 1 && src->pDrawable->height == 1 && src->repeat)

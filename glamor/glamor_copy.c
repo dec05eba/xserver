@@ -492,6 +492,22 @@ bail_ctx:
     return ret;
 }
 
+#define GLAMOR_COPY_TEMP_ALIGN 256
+
+static PixmapPtr
+glamor_create_copy_temp(ScreenPtr screen, const BoxRec *bounds, int depth)
+{
+    glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
+    int w = bounds->x2 - bounds->x1;
+    int h = bounds->y2 - bounds->y1;
+    int aligned_w = ALIGN(w, GLAMOR_COPY_TEMP_ALIGN);
+    int aligned_h = ALIGN(h, GLAMOR_COPY_TEMP_ALIGN);
+
+    if (glamor_check_fbo_size(glamor_priv, aligned_w, aligned_h))
+        return glamor_create_pixmap(screen, aligned_w, aligned_h, depth, GLAMOR_CREATE_NO_LARGE);
+    return glamor_create_pixmap(screen, w, h, depth, 0);
+}
+
 /**
  * Copies from the GPU to the GPU using a temporary pixmap in between,
  * to correctly handle overlapping copies.
@@ -544,10 +560,7 @@ glamor_copy_fbo_fbo_temp(DrawablePtr src,
 
     /* Allocate a suitable temporary pixmap
      */
-    tmp_pixmap = glamor_create_pixmap(screen,
-                                      bounds.x2 - bounds.x1,
-                                      bounds.y2 - bounds.y1,
-                                      glamor_drawable_effective_depth(src), 0);
+    tmp_pixmap = glamor_create_copy_temp(screen, &bounds, glamor_drawable_effective_depth(src));
     if (!tmp_pixmap)
         goto bail;
 

@@ -36,6 +36,7 @@
 #include <xf86drm.h>
 
 #include "driver.h"
+#include "present.h"
 
 /*
  * Flush the DRM event queue when full; makes space for new events.
@@ -117,6 +118,7 @@ struct ms_crtc_pageflip {
     struct xorg_list node;
     uint32_t tearfree_seq;
     Bool at_vblank;
+    Bool latched;
 };
 
 /**
@@ -184,7 +186,7 @@ ms_pageflip_abort(void *data)
     ms_pageflip_free(flip);
 }
 
-static Bool
+Bool
 do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
                       uint32_t seq, uint32_t fb_id, int x, int y,
                       int in_fence_fd)
@@ -359,7 +361,7 @@ ms_tearfree_flipdata(ScreenPtr screen, void *event,
     return flipdata;
 }
 
-static Bool
+static struct ms_crtc_pageflip *
 ms_tearfree_queue_event(xf86CrtcPtr crtc, struct ms_flipdata *flipdata,
                         Bool on_reference_crtc)
 {
@@ -369,16 +371,16 @@ ms_tearfree_queue_event(xf86CrtcPtr crtc, struct ms_flipdata *flipdata,
 
     flip = calloc(1, sizeof(*flip));
     if (!flip)
-        return FALSE;
+        return NULL;
 
     flip->on_reference_crtc = on_reference_crtc;
     flip->flipdata = flipdata;
-    flip->tearfree_seq = trf->flip_seq;
+    flip->tearfree_seq = ms_tearfree_pending_seq(trf);
     flipdata->flip_count++;
 
     /* Keep the list in FIFO order so that clients are notified in order */
     xorg_list_append(&flip->node, &trf->dri_flip_list);
-    return TRUE;
+    return flip;
 }
 
 static Bool
@@ -408,8 +410,12 @@ static Bool
 ms_prime_queue_event(xf86CrtcPtr crtc, struct ms_flipdata *flipdata,
                      Bool on_reference_crtc)
 {
-    if (!ms_tearfree_queue_event(crtc, flipdata, on_reference_crtc))
+    struct ms_crtc_pageflip *flip = ms_tearfree_queue_event(crtc, flipdata, on_reference_crtc);
+
+    if (!flip)
         return FALSE;
+
+    flip->latched = TRUE;
 
     ms_prime_presented(crtc);
     ms_prime_kick(crtc);
@@ -461,7 +467,7 @@ ms_tearfree_dri_flip(xf86CrtcPtr crtc, void *event,
      * possibly because its window is fully occluded by another window.
      */
     ms_compositor_update_damages(xf86ScrnToScreen(crtc->scrn));
-    if (RegionNil(&trf->buf[trf->back_idx ^ 1].dmg))
+    if (RegionNil(&trf->buf[ms_tearfree_newest_buffer(trf)].dmg))
         return FALSE;
 
     return ms_tearfree_queue_crtc_event(crtc, event, pageflip_handler,
@@ -820,7 +826,56 @@ static Bool
 ms_tearfree_dri_committed(drmmode_tearfree_ptr trf,
                           const struct ms_crtc_pageflip *flip)
 {
-    return trf->flip_seq && !flip->tearfree_seq;
+    uint32_t pending = ms_tearfree_pending_seq(trf);
+
+    return pending && pending != flip->tearfree_seq;
+}
+
+void
+ms_tearfree_dri_latch(drmmode_tearfree_ptr trf)
+{
+    struct ms_crtc_pageflip *flip;
+    Bool latched = FALSE;
+
+    xorg_list_for_each_entry(flip, &trf->dri_flip_list, node) {
+        latched |= !flip->latched;
+        flip->latched = TRUE;
+    }
+
+    if (latched)
+        present_frames_latched();
+}
+
+Bool
+ms_tearfree_dri_latched(ScrnInfoPtr scrn,
+                        Bool (*match)(void *data, void *match_data),
+                        void *match_data)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    struct ms_crtc_pageflip *flip;
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++) {
+        drmmode_crtc_private_ptr drmmode_crtc = config->crtc[i]->driver_private;
+
+        xorg_list_for_each_entry(flip, &drmmode_crtc->tearfree.dri_flip_list, node) {
+            if (!flip->latched && match(flip->flipdata->event, match_data))
+                return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+Bool
+ms_tearfree_dri_waiting(drmmode_tearfree_ptr trf)
+{
+    struct ms_crtc_pageflip *flip;
+
+    xorg_list_for_each_entry(flip, &trf->dri_flip_list, node) {
+        if (!ms_tearfree_dri_committed(trf, flip))
+            return TRUE;
+    }
+    return FALSE;
 }
 
 Bool
@@ -872,6 +927,9 @@ ms_tearfree_dri_complete(struct xorg_list *flips, uint64_t msc, uint64_t usec)
         ms_pageflip_handler(msc, usec, flip);
         completed++;
     }
+
+    if (completed)
+        present_frames_latched();
     return completed;
 }
 
@@ -956,21 +1014,24 @@ ms_tearfree_dri_complete_at_vblank(xf86CrtcPtr crtc)
     trf->dri_vblank_seq = seq;
 }
 
-static int
-ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
+int
+ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint32_t seq, uint64_t msc,
+                       uint64_t usec)
 {
     struct ms_crtc_pageflip *flip, *tmp;
     struct xorg_list flips;
 
     xorg_list_init(&flips);
     xorg_list_for_each_entry_safe(flip, tmp, &trf->dri_flip_list, node) {
-        /* If a TearFree flip was already pending at the time this DRI client's
-         * pixmap was copied, then the pixmap isn't contained in this TearFree
-         * flip, but will be part of the next TearFree flip instead.
+        /* A DRI client's pixmap that was copied while TearFree flips were
+         * pending isn't contained in those flips, but in the first flip after
+         * the newest of them.
          */
-        if (flip->tearfree_seq) {
+        if (flip->tearfree_seq &&
+            (flip->tearfree_seq == seq ||
+             !ms_tearfree_seq_pending(trf, flip->tearfree_seq))) {
             flip->tearfree_seq = 0;
-        } else {
+        } else if (!flip->tearfree_seq) {
             xorg_list_del(&flip->node);
             xorg_list_append(&flip->node, &flips);
         }
@@ -979,11 +1040,12 @@ ms_tearfree_dri_notify(drmmode_tearfree_ptr trf, uint64_t msc, uint64_t usec)
 }
 
 int
-ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
+ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
+                        uint64_t usec)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-    return ms_tearfree_dri_notify(&drmmode_crtc->tearfree, msc, usec);
+    return ms_tearfree_dri_notify(&drmmode_crtc->tearfree, seq, msc, usec);
 }
 
 Bool
@@ -1007,75 +1069,8 @@ ms_fence_signal_time(int fence_fd, uint64_t *usec)
 #endif
 }
 
-static uint64_t
-ms_compose_elapsed(drmmode_compose_timing_rec *compose, uint64_t end)
-{
-    return end > compose->start ? end - compose->start : 0;
-}
-
-static uint64_t
-ms_compose_clients_done(drmmode_render_fences_rec *fences)
-{
-    uint64_t done = 0, signaled;
-    int i;
-
-    for (i = 0; i < fences->num; i++) {
-        if (ms_fence_signal_time(fences->fd[i], &signaled))
-            done = max(done, signaled);
-        close(fences->fd[i]);
-    }
-    fences->num = 0;
-    return done;
-}
-
-#define MS_TEARFREE_COMPOSE_SLACK_USEC 2000
-#define MS_COMPOSE_HOLD_USEC 10000000
-
 static void
-ms_compose_timing_done(drmmode_compose_timing_rec *compose, uint64_t usec)
-{
-    drmmode_compose_hold_rec *hold = &compose->hold;
-    uint64_t now = GetTimeInMicros();
-
-    if (usec > compose->usec + MS_TEARFREE_COMPOSE_SLACK_USEC) {
-        hold->usec = now < hold->until ? max(hold->usec, usec) : usec;
-        hold->until = now + MS_COMPOSE_HOLD_USEC;
-    }
-    compose->usec = max(compose->usec, usec);
-}
-
-static uint64_t
-ms_compose_margin(const drmmode_compose_timing_rec *compose, uint64_t now)
-{
-    uint64_t usec = compose->usec;
-
-    if (now < compose->hold.until)
-        usec = max(usec, compose->hold.usec);
-    return usec + MS_TEARFREE_COMPOSE_SLACK_USEC;
-}
-
-static void
-ms_compose_timing_release(drmmode_compose_timing_rec *compose, Bool flipped)
-{
-    uint64_t clients_done = ms_compose_clients_done(&compose->clients);
-    uint64_t start = max(compose->start, clients_done);
-    uint64_t signaled;
-
-    if (compose->fence_fd < 0)
-        return;
-
-    if (flipped && ms_fence_signal_time(compose->fence_fd, &signaled) &&
-        compose->start)
-        ms_compose_timing_done(compose,
-                               signaled > start ? signaled - start : 0);
-
-    close(compose->fence_fd);
-    compose->fence_fd = -1;
-    compose->start = 0;
-}
-
-static void
-ms_tearfree_flip_abort(void *data)
+ms_tearfree_direct_flip_abort(void *data)
 {
     xf86CrtcPtr crtc = data;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
@@ -1086,33 +1081,28 @@ ms_tearfree_flip_abort(void *data)
         trf->scanout.flip_fb_id = 0;
     }
     trf->flip_seq = 0;
-    ms_compose_timing_release(&trf->compose, FALSE);
     ms_overlay_flip_aborted(crtc);
     ms_tearfree_dri_abort_all(crtc);
 }
 
 static void
-ms_tearfree_flip_handler(uint64_t msc, uint64_t usec, void *data)
+ms_tearfree_direct_flip_handler(uint64_t msc, uint64_t usec, void *data)
 {
     xf86CrtcPtr crtc = data;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-    uint32_t old_fb_id = trf->scanout.fb_id;
+    uint32_t old_fb_id = trf->scanout.fb_id, seq = trf->flip_seq;
 
-    /* Swap the buffers and complete the flip */
-    if (!trf->scanout.flip_fb_id)
-        trf->back_idx ^= 1;
     trf->scanout.fb_id = trf->scanout.flip_fb_id;
     trf->scanout.flip_fb_id = 0;
     trf->flip_seq = 0;
-    ms_compose_timing_release(&trf->compose, TRUE);
     ms_overlay_flip_done(crtc);
 
     if (old_fb_id)
         drmModeRmFB(drmmode_crtc->drmmode->fd, old_fb_id);
 
     /* Notify DRI clients that their pixmaps are now visible on the display */
-    ms_tearfree_dri_notify(trf, msc, usec);
+    ms_tearfree_dri_notify(trf, seq, msc, usec);
 }
 
 Bool
@@ -1130,8 +1120,8 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     if (!ms_import_flip_fb(screen, pixmap, &fb_id, "Direct-scanout"))
         return FALSE;
 
-    seq = ms_drm_queue_alloc(crtc, crtc, ms_tearfree_flip_handler,
-                             ms_tearfree_flip_abort);
+    seq = ms_drm_queue_alloc(crtc, crtc, ms_tearfree_direct_flip_handler,
+                             ms_tearfree_direct_flip_abort);
     if (!seq) {
         drmModeRmFB(ms->fd, fb_id);
         return FALSE;
@@ -1149,135 +1139,10 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     trf->scanout.flip_fb_id = fb_id;
     trf->scanout.window = window;
     trf->scanout.pixmap = pixmap;
+    ms_tearfree_dri_latch(trf);
     return TRUE;
 }
 
-Bool
-ms_tearfree_next_vblank(xf86CrtcPtr crtc, uint64_t now, uint64_t *next,
-                        uint64_t *next_msc)
-{
-    double refresh = xf86ModeVRefresh(&crtc->mode);
-    uint64_t ust, msc, period, elapsed, frames;
-
-    if (refresh <= 0.0 || ms_get_crtc_ust_msc(crtc, &ust, &msc) != Success ||
-        !ust)
-        return FALSE;
-
-    /* The vblank timestamp is the end of vblank, so it's slightly in the future
-     * while the vblank is being handled.
-     */
-    period = 1000000.0 / refresh;
-    elapsed = now > ust ? now - ust : 0;
-    frames = elapsed / period + 1;
-    *next = ust + frames * period;
-    if (next_msc)
-        *next_msc = msc + frames;
-    return TRUE;
-}
-
-Bool
-ms_tearfree_flip_wanted(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-
-    return RegionNotEmpty(&trf->buf[trf->back_idx ^ 1].dmg) ||
-        trf->scanout.fb_id || drmmode_crtc_has_pending_hdr(crtc) ||
-        !xorg_list_is_empty(&trf->dri_flip_list);
-}
-
-Bool
-ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint64_t now = GetTimeInMicros();
-    uint64_t margin = ms_compose_margin(&drmmode_crtc->tearfree.compose, now);
-    uint64_t next;
-
-    if (!ms_tearfree_next_vblank(crtc, now, &next, NULL) ||
-        next - now <= margin)
-        return TRUE;
-
-    AdjustWaitForDelay(timeout, (next - margin - now + 999) / 1000);
-    return FALSE;
-}
-
-void
-ms_tearfree_set_compose_deadline(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    uint64_t now = GetTimeInMicros();
-    uint64_t margin = ms_compose_margin(&drmmode_crtc->tearfree.compose, now);
-    uint64_t next;
-
-    if (ms_tearfree_next_vblank(crtc, now + margin, &next, NULL))
-        SetBlockHandlerDeadline(next - margin);
-}
-
-#define MS_COMPOSE_ESTIMATE_DECAY 16
-
-static void
-ms_compose_timing_measured(drmmode_compose_timing_rec *compose, uint64_t usec)
-{
-    compose->usec = max(usec, compose->usec -
-                        compose->usec / MS_COMPOSE_ESTIMATE_DECAY);
-}
-
-static int
-ms_tearfree_compose(xf86CrtcPtr crtc, drmmode_shadow_fb_ptr buf)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_compose_timing_rec *compose = &drmmode_crtc->tearfree.compose;
-
-    ms_compositor_take_client_rendering(crtc->scrn->pScreen, &crtc->bounds,
-                                        compose);
-    compose->start = GetTimeInMicros();
-    compose->fence_fd = drmmode_compose_damage_fenced(crtc, buf->px,
-                                                      &buf->dmg);
-    ms_compose_timing_measured(compose,
-                               ms_compose_elapsed(compose, GetTimeInMicros()));
-    return compose->fence_fd;
-}
-
-Bool
-ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
-    uint32_t idx = trf->back_idx, seq;
-    int fence_fd;
-
-    seq = ms_drm_queue_alloc(crtc, crtc, ms_tearfree_flip_handler,
-                             ms_tearfree_flip_abort);
-    if (!seq) {
-        /* Need to notify the DRI clients if a sequence wasn't allocated. Once a
-         * sequence is allocated, explicitly performing this cleanup isn't
-         * necessary since it's already done as part of aborting the sequence.
-         */
-        ms_tearfree_dri_abort_all(crtc);
-        goto no_flip;
-    }
-
-    /* Copy the damage to the back buffer and then flip it at the vblank */
-    fence_fd = ms_tearfree_compose(crtc, &trf->buf[idx]);
-    if (do_queue_flip_on_crtc(screen, crtc, DRM_MODE_PAGE_FLIP_EVENT,
-                              seq, trf->buf[idx].fb_id, 0, 0, fence_fd)) {
-        ms_compose_timing_release(&trf->compose, FALSE);
-        goto no_flip;
-    }
-
-    trf->flip_seq = seq;
-    trf->scanout.window = NULL;
-    trf->scanout.pixmap = NULL;
-    return FALSE;
-
-no_flip:
-    xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
-               "TearFree flip failed, rendering frame without TearFree\n");
-    drmmode_compose_damage(crtc, trf->buf[idx ^ 1].px,
-                           &trf->buf[idx ^ 1].dmg, FALSE);
-    return TRUE;
-}
 #endif
 
 Bool

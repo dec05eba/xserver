@@ -401,7 +401,7 @@ no_flip:
         drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
 
         if (ms_tearfree_is_active_on_crtc(xf86_crtc)) {
-            if (trf->flip_seq)
+            if (trf->flip_seq || trf->frames.count)
                 /* The driver has a TearFree flip pending */
                 *reason = PRESENT_FLIP_REASON_DRIVER_TEARFREE_FLIPPING;
             else
@@ -573,25 +573,20 @@ ms_present_flip_suboptimal(WindowPtr window, PixmapPtr pixmap)
 }
 
 static Bool
-ms_present_window_on_tearfree_crtc(WindowPtr window, Bool *covers)
+ms_present_window_on_tearfree_crtc(WindowPtr window)
 {
     xf86CrtcConfigPtr config =
         XF86_CRTC_CONFIG_PTR(xf86ScreenToScrn(window->drawable.pScreen));
-    Bool shown = FALSE;
     int i;
 
-    *covers = FALSE;
     for (i = 0; i < config->num_crtc; i++) {
         xf86CrtcPtr crtc = config->crtc[i];
 
-        if (!ms_tearfree_is_active_on_crtc(crtc) ||
-            RegionContainsRect(&window->borderSize, &crtc->bounds) == rgnOUT)
-            continue;
-
-        shown = TRUE;
-        *covers |= ms_present_window_covers_crtc(window, crtc);
+        if (ms_tearfree_is_active_on_crtc(crtc) &&
+            RegionContainsRect(&window->borderSize, &crtc->bounds) != rgnOUT)
+            return TRUE;
     }
-    return shown;
+    return FALSE;
 }
 
 static Bool
@@ -604,25 +599,24 @@ ms_present_cancel_window_flip(RRCrtcPtr crtc, uint64_t event_id)
                                &event_id);
 }
 
+static Bool
+ms_present_frame_latched(ScreenPtr screen, uint64_t event_id)
+{
+    return ms_tearfree_dri_latched(xf86ScreenToScrn(screen), ms_present_event_match, &event_id);
+}
+
 static int
 ms_present_pixmap_rendering_fd(WindowPtr window, PixmapPtr pixmap)
 {
     modesettingPtr ms =
         modesettingPTR(xf86ScreenToScrn(pixmap->drawable.pScreen));
-    Bool covers;
-    int fd;
 
     if (!ms->drmmode.glamor || !ms->drmmode.tearfree_enable ||
         !ms->glamor.egl_pixmap_rendering_fd ||
-        !ms_present_window_on_tearfree_crtc(window, &covers))
+        !ms_present_window_on_tearfree_crtc(window))
         return -1;
 
-    fd = ms->glamor.egl_pixmap_rendering_fd(pixmap);
-    if (fd < 0 || covers)
-        return fd;
-
-    ms_compositor_client_rendering(window, fd);
-    return -1;
+    return ms->glamor.egl_pixmap_rendering_fd(pixmap);
 }
 #endif
 
@@ -645,6 +639,7 @@ static present_screen_info_rec ms_present_screen_info = {
     .window_unflip = ms_present_window_unflip,
     .flip_suboptimal = ms_present_flip_suboptimal,
     .pixmap_rendering_fd = ms_present_pixmap_rendering_fd,
+    .frame_latched = ms_present_frame_latched,
     .cancel_window_flip = ms_present_cancel_window_flip,
 #endif
 };

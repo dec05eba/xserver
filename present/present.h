@@ -144,6 +144,8 @@ typedef int (*present_pixmap_rendering_fd_ptr) (WindowPtr window,
 typedef Bool (*present_cancel_window_flip_ptr) (RRCrtcPtr crtc,
                                                 uint64_t event_id);
 
+typedef Bool (*present_frame_latched_ptr) (ScreenPtr screen, uint64_t event_id);
+
 /* Doing flips has been discontinued.
  *
  * Inform driver for potential cleanup on its side.
@@ -170,6 +172,7 @@ typedef struct present_screen_info {
     present_flip_suboptimal_ptr         flip_suboptimal;
     present_pixmap_rendering_fd_ptr     pixmap_rendering_fd;
     present_cancel_window_flip_ptr      cancel_window_flip;
+    present_frame_latched_ptr           frame_latched;
 } present_screen_info_rec, *present_screen_info_ptr;
 
 /*
@@ -190,6 +193,12 @@ present_check_flips(WindowPtr window);
 
 extern _X_EXPORT PixmapPtr
 present_window_flip_pixmap(WindowPtr window);
+
+extern _X_EXPORT void
+present_frames_latched(void);
+
+extern _X_EXPORT Bool
+present_frames_latched_pending(void);
 
 typedef void (*present_complete_notify_proc)(WindowPtr window,
                                              CARD8 kind,
