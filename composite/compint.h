@@ -221,6 +221,7 @@ typedef struct _CompServerWindow {
     Bool seen;
     Bool hidden;
     uint64_t damageSerial;
+    CARD64 movedAt;
     CARD32 presentCount;
     CompServerHeldFrameRec held;
     CompServerFrameWaitRec wait;
@@ -267,6 +268,8 @@ typedef struct _CompServer {
     uint64_t layoutSerial;
     struct xorg_list windows;
     struct xorg_list directWindows;
+    WindowPtr planeWindow;
+    WindowPtr presentPlaneWindow;
     CompositeServerPaintHdrProcPtr PaintHdr;
     Atom opacityAtom;
     Bool cmSelectionClaimed;
@@ -458,6 +461,24 @@ void
 
 WindowPtr
  compServerToplevel(WindowPtr pWin);
+
+Bool
+ compServerPaintsWindow(WindowPtr pWin);
+
+Bool
+ compServerIsPlaneWindow(WindowPtr pWin);
+
+Bool
+ compServerIsPresentPlaneWindow(WindowPtr pWin);
+
+#define COMP_SERVER_OPAQUE 0xffff
+
+CARD16
+ compServerWindowOpacity(CompServerPtr server, WindowPtr pWin);
+
+void
+ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
+                      PicturePtr pDst, int x, int y, void *closure);
 
 Bool
  compServerBuildWindowLayers(CompServerPtr server, WindowPtr pWin,

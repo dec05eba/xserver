@@ -565,7 +565,8 @@ compCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
         RegionTranslate(prgnSrc,
                         pWin->drawable.x - ptOldOrg.x,
                         pWin->drawable.y - ptOldOrg.y);
-        DamageDamageRegion(&pWin->drawable, prgnSrc);
+        if (!compServerIsPlaneWindow(pWin))
+            DamageDamageRegion(&pWin->drawable, prgnSrc);
     }
     cs->CopyWindow = pScreen->CopyWindow;
     pScreen->CopyWindow = compCopyWindow;

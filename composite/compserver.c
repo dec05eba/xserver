@@ -34,8 +34,6 @@
 #include "propertyst.h"
 #include "selection.h"
 
-#define COMP_SERVER_OPAQUE 0xffff
-
 DevPrivateKeyRec CompServerWindowPrivateKeyRec;
 
 Atom
@@ -155,7 +153,7 @@ compServerToplevel(WindowPtr pWin)
     return pWin;
 }
 
-static Bool
+Bool
 compServerPaintsWindow(WindowPtr pWin)
 {
     return pWin->viewable && pWin->redirectDraw == RedirectDrawAutomatic;
@@ -170,7 +168,7 @@ compServerWindowHasAlpha(WindowPtr pWin)
         pFormat->direct.alphaMask;
 }
 
-static CARD16
+CARD16
 compServerWindowOpacity(CompServerPtr server, WindowPtr pWin)
 {
     PropertyPtr pProp;
@@ -200,7 +198,8 @@ compServerCollectDamage(WindowPtr pWin)
 
     RegionTranslate(pRegion, pWin->drawable.x, pWin->drawable.y);
     if (sw) {
-        RegionUnion(&server->damage, &server->damage, pRegion);
+        if (pWin != server->planeWindow && pWin != server->presentPlaneWindow)
+            RegionUnion(&server->damage, &server->damage, pRegion);
         sw->damageSerial = ++server->damageSerial;
     } else {
         compServerAddDamage(server, pRegion);
@@ -264,6 +263,10 @@ static void
 compServerUntrackWindow(CompServerPtr server, CompServerWindowPtr sw)
 {
     compServerAddDamage(server, &sw->painted);
+    if (server->planeWindow == sw->pWin) {
+        compServerAddDamage(server, &sw->pWin->borderSize);
+        server->planeWindow = NULL;
+    }
     dixSetPrivate(&sw->pWin->devPrivates, CompServerWindowPrivateKey, NULL);
     compServerFreeWindow(sw);
 }
@@ -302,7 +305,10 @@ compServerUpdateWindows(CompServerPtr server, WindowPtr pRoot)
         if (!sw) {
             compServerAddDamage(server, &pWin->borderSize);
         } else {
-            compServerDisplayedRegion(pWin, &displayed);
+            if (pWin == server->planeWindow)
+                RegionEmpty(&displayed);
+            else
+                compServerDisplayedRegion(pWin, &displayed);
             if (sw->pAbove != pAbove || !RegionEqual(&sw->painted, &displayed)) {
                 compServerAddDamage(server, &sw->painted);
                 compServerAddDamage(server, &displayed);
@@ -355,6 +361,10 @@ compServerDestroyWindow(WindowPtr pWin)
 
     if (sw)
         compServerUntrackWindow(server, sw);
+    if (server->presentPlaneWindow == pWin) {
+        compServerAddDamage(server, &pWin->borderSize);
+        server->presentPlaneWindow = NULL;
+    }
     compServerReleaseHeldWindow(server, pWin);
     compServerDestroyDirectWindow(server, pWin);
 }
@@ -468,7 +478,7 @@ compServerPaintBackground(WindowPtr pRoot, PicturePtr pDst, int x, int y,
     }
 }
 
-static void
+void
 compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
                      PicturePtr pDst, int x, int y, void *closure)
 {
@@ -695,7 +705,8 @@ compServerInitLayers(CompServerPtr server, CompServerLayersPtr pLayers,
 
 static Bool
 compServerBuildLayers(CompServerPtr server, WindowPtr pFirst, WindowPtr pStop,
-                      RegionPtr pRegion, CompServerLayersPtr pLayers)
+                      WindowPtr pSkip, RegionPtr pRegion,
+                      CompServerLayersPtr pLayers)
 {
     WindowPtr pWin;
     int count = 0;
@@ -707,7 +718,7 @@ compServerBuildLayers(CompServerPtr server, WindowPtr pFirst, WindowPtr pStop,
         return FALSE;
 
     for (pWin = pFirst; pWin != pStop; pWin = pWin->nextSib) {
-        if (compServerPaintsWindow(pWin))
+        if (pWin != pSkip && compServerPaintsWindow(pWin))
             compServerAddWindowLayers(server, pLayers, pWin, pRegion);
     }
     return TRUE;
@@ -742,7 +753,8 @@ compServerFreeLayers(CompServerLayersPtr pLayers)
 
 static void
 compServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
-                RegionPtr pRegion, WindowPtr pAbove, void *closure)
+                RegionPtr pRegion, WindowPtr pAbove, WindowPtr pSkip,
+                void *closure)
 {
     CompServerPtr server = compServerGet(pScreen);
     WindowPtr pRoot = pScreen->root;
@@ -753,8 +765,7 @@ compServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
     if (!pRoot || RegionNil(pRegion) ||
         !compServerBuildLayers(server,
                                pAbove ? pAbove->nextSib : pRoot->firstChild,
-                               NULL,
-                               pRegion, &layers))
+                               NULL, pSkip, pRegion, &layers))
         return;
 
     RegionNull(&background);
@@ -774,7 +785,8 @@ void
 CompositeServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
                      RegionPtr pRegion, void *closure)
 {
-    compServerPaint(pScreen, pDst, x, y, pRegion, NULL, closure);
+    compServerPaint(pScreen, pDst, x, y, pRegion, NULL,
+                    compServerGet(pScreen)->planeWindow, closure);
 }
 
 void
@@ -787,7 +799,7 @@ CompositeServerPaintCover(PicturePtr pDst, int x, int y, RegionPtr pRegion,
     int i;
 
     if (!compServerBuildLayers(server, pScreen->root->firstChild,
-                               compServerToplevel(pWin), pRegion, &layers))
+                               compServerToplevel(pWin), NULL, pRegion, &layers))
         return;
 
     for (i = layers.count - 1; i >= 0; i--)
@@ -853,7 +865,7 @@ compServerInitPixmap(WindowPtr pWin, PixmapPtr pPixmap)
 
     if (RegionNotEmpty(&region))
         compServerPaint(pWin->drawable.pScreen, pDst, box.x1, box.y1, &region,
-                        pWin, NULL);
+                        pWin, NULL, NULL);
 
     RegionUninit(&copied);
     RegionUninit(&region);
@@ -885,8 +897,8 @@ CompositeServerHdrWindow(ScreenPtr pScreen, BoxPtr pBox)
         return NULL;
 
     RegionInit(&region, pBox, 1);
-    if (compServerBuildLayers(server, pScreen->root->firstChild, NULL, &region,
-                              &layers)) {
+    if (compServerBuildLayers(server, pScreen->root->firstChild, NULL, NULL,
+                              &region, &layers)) {
         for (i = 0; i < layers.count && !pHdr; i++) {
             if (layers.layers[i].src.hdr)
                 pHdr = layers.layers[i].src.pWin;
@@ -1063,7 +1075,7 @@ compServerComposeImage(ScreenPtr pScreen, int x, int y, int w, int h)
     }
 
     RegionInit(&region, &box, 1);
-    compServerPaint(pScreen, pDst, x, y, &region, NULL, NULL);
+    compServerPaint(pScreen, pDst, x, y, &region, NULL, NULL, NULL);
     RegionUninit(&region);
     FreePicture(pDst, 0);
     return pPixmap;

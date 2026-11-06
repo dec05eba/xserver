@@ -7,6 +7,7 @@ srcs_composite = [
 	'comphold.c',
 	'compinit.c',
 	'compoverlay.c',
+	'compplane.c',
 	'compserver.c',
 	'compsync.c',
 	'compwindow.c',

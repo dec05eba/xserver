@@ -819,6 +819,14 @@ ms_tearfree_dri_abort(xf86CrtcPtr crtc,
         }
     }
 
+    xorg_list_for_each_entry(flip, &trf->plane_flip_list, node) {
+        if (match(flip->flipdata->event, match_data)) {
+            xorg_list_del(&flip->node);
+            ms_pageflip_abort(flip);
+            return TRUE;
+        }
+    }
+
     return FALSE;
 }
 
@@ -862,6 +870,10 @@ ms_tearfree_dri_latched(ScrnInfoPtr scrn,
             if (!flip->latched && match(flip->flipdata->event, match_data))
                 return FALSE;
         }
+        xorg_list_for_each_entry(flip, &drmmode_crtc->tearfree.plane_flip_list, node) {
+            if (!flip->latched && match(flip->flipdata->event, match_data))
+                return FALSE;
+        }
     }
     return TRUE;
 }
@@ -899,6 +911,13 @@ ms_tearfree_dri_cancel(ScrnInfoPtr scrn,
                 return FALSE;
             found = TRUE;
         }
+        xorg_list_for_each_entry(flip, &trf->plane_flip_list, node) {
+            if (!match(flip->flipdata->event, match_data))
+                continue;
+            if (flip->latched)
+                return FALSE;
+            found = TRUE;
+        }
     }
 
     for (i = 0; found && i < config->num_crtc; i++) {
@@ -906,6 +925,14 @@ ms_tearfree_dri_cancel(ScrnInfoPtr scrn,
 
         xorg_list_for_each_entry_safe(flip, tmp,
                                       &drmmode_crtc->tearfree.dri_flip_list,
+                                      node) {
+            if (match(flip->flipdata->event, match_data)) {
+                xorg_list_del(&flip->node);
+                ms_pageflip_abort(flip);
+            }
+        }
+        xorg_list_for_each_entry_safe(flip, tmp,
+                                      &drmmode_crtc->tearfree.plane_flip_list,
                                       node) {
             if (match(flip->flipdata->event, match_data)) {
                 xorg_list_del(&flip->node);
@@ -943,7 +970,8 @@ ms_tearfree_dri_abort_all(xf86CrtcPtr crtc)
     uint64_t usec = 0, msc = 0;
 
     /* Nothing to abort if there aren't any DRI clients waiting for a flip */
-    if (xorg_list_is_empty(&trf->dri_flip_list))
+    if (xorg_list_is_empty(&trf->dri_flip_list) &&
+        xorg_list_is_empty(&trf->plane_flip_list))
         return;
 
     /* Even though we're aborting, these clients' pixmaps were actually blitted,
@@ -957,7 +985,85 @@ ms_tearfree_dri_abort_all(xf86CrtcPtr crtc)
         xorg_list_del(&flip->node);
         xorg_list_append(&flip->node, &flips);
     }
+    xorg_list_for_each_entry_safe(flip, tmp, &trf->plane_flip_list, node) {
+        xorg_list_del(&flip->node);
+        xorg_list_append(&flip->node, &flips);
+    }
     ms_tearfree_dri_complete(&flips, msc, usec);
+}
+
+Bool
+ms_tearfree_plane_window_flip(xf86CrtcPtr crtc, void *event,
+                              ms_pageflip_handler_proc pageflip_handler,
+                              ms_pageflip_abort_proc pageflip_abort)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    struct ms_flipdata *flipdata;
+    struct ms_crtc_pageflip *flip;
+
+    flipdata = ms_tearfree_flipdata(xf86ScrnToScreen(crtc->scrn), event,
+                                    pageflip_handler, pageflip_abort);
+    flip = flipdata ? calloc(1, sizeof(*flip)) : NULL;
+    if (!flip) {
+        free(flipdata);
+        free(event);
+        return FALSE;
+    }
+
+    flip->on_reference_crtc = TRUE;
+    flip->flipdata = flipdata;
+    flipdata->flip_count++;
+    xorg_list_append(&flip->node, &drmmode_crtc->tearfree.plane_flip_list);
+    return TRUE;
+}
+
+void
+ms_tearfree_plane_flips_committed(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    struct ms_crtc_pageflip *flip;
+    Bool latched = FALSE;
+
+    xorg_list_for_each_entry(flip, &drmmode_crtc->tearfree.plane_flip_list, node) {
+        latched |= !flip->latched;
+        flip->latched = TRUE;
+    }
+
+    if (latched)
+        present_frames_latched();
+}
+
+void
+ms_tearfree_plane_flips_shown(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    struct ms_crtc_pageflip *flip, *tmp;
+    struct xorg_list flips;
+
+    xorg_list_init(&flips);
+    xorg_list_for_each_entry_safe(flip, tmp, &drmmode_crtc->tearfree.plane_flip_list, node) {
+        if (flip->latched) {
+            xorg_list_del(&flip->node);
+            xorg_list_append(&flip->node, &flips);
+        }
+    }
+    ms_tearfree_dri_complete(&flips, msc, usec);
+}
+
+void
+ms_tearfree_plane_flips_requeue(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    struct ms_crtc_pageflip *flip, *tmp;
+
+    xorg_list_for_each_entry_safe(flip, tmp, &trf->plane_flip_list, node) {
+        if (flip->latched)
+            continue;
+        xorg_list_del(&flip->node);
+        flip->tearfree_seq = ms_tearfree_pending_seq(trf);
+        xorg_list_append(&flip->node, &trf->dri_flip_list);
+    }
 }
 
 static void
@@ -1046,6 +1152,14 @@ ms_tearfree_dri_flipped(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
     return ms_tearfree_dri_notify(&drmmode_crtc->tearfree, seq, msc, usec);
+}
+
+Bool
+ms_fence_signaled(int fence_fd)
+{
+    struct pollfd pfd = { .fd = fence_fd, .events = POLLIN };
+
+    return xserver_poll(&pfd, 1, 0) == 1;
 }
 
 Bool

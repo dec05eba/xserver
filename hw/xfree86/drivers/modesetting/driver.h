@@ -354,6 +354,7 @@ PixmapPtr ms_offload_native_pixmap(PixmapPtr pixmap);
 
 void ms_fence_dmabuf(ScreenPtr screen, int dmabuf_fd);
 int ms_dmabuf_writer_fence(int dmabuf_fd);
+Bool ms_fence_signaled(int fence_fd);
 Bool ms_fence_signal_time(int fence_fd, uint64_t *usec);
 
 void ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box);
@@ -370,6 +371,64 @@ void ms_overlay_flip_failed(xf86CrtcPtr crtc);
 void ms_overlay_clear_next(xf86CrtcPtr crtc);
 void ms_overlay_rejected(xf86CrtcPtr crtc, int error);
 void ms_overlay_destroy(xf86CrtcPtr crtc);
+Bool ms_overlay_create_buffers(xf86CrtcPtr crtc);
+Bool ms_overlay_size_supported(int width, int height);
+Bool ms_overlay_position_equal(const drmmode_overlay_position_rec *a,
+                               const drmmode_overlay_position_rec *b);
+
+Bool ms_overlay_commit_in_flight(xf86CrtcPtr crtc);
+Bool ms_overlay_crtc_usable(xf86CrtcPtr crtc, Bool *pq);
+Bool ms_overlay_window_position(xf86CrtcPtr crtc, const BoxRec *win,
+                                drmmode_overlay_position_rec *position);
+Bool ms_overlay_owner_settled(xf86CrtcPtr crtc, drmmode_overlay_owner owner);
+void ms_overlay_update(ScreenPtr screen);
+Bool ms_overlay_active(xf86CrtcPtr crtc);
+drmmode_overlay_owner ms_overlay_frame_owner(xf86CrtcPtr crtc);
+Bool ms_overlay_owner_ready(xf86CrtcPtr crtc, drmmode_overlay_owner owner);
+void ms_overlay_begin_commit(xf86CrtcPtr crtc, drmmode_overlay_owner owner);
+void ms_overlay_prepare_commit(xf86CrtcPtr crtc);
+void ms_overlay_end_commit(xf86CrtcPtr crtc, Bool committed, uint32_t seq);
+void ms_overlay_shown(xf86CrtcPtr crtc);
+Bool ms_overlay_pending(xf86CrtcPtr crtc, uint32_t *fb_id,
+                       drmmode_overlay_position_rec *position);
+void ms_overlay_committed_alone(xf86CrtcPtr crtc, uint32_t fb_id,
+                                const drmmode_overlay_position_rec *position,
+                                uint32_t seq);
+void ms_overlay_commit_rejected(xf86CrtcPtr crtc, int error);
+void ms_overlay_event_done(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
+                           uint64_t usec);
+void ms_overlay_event_aborted(xf86CrtcPtr crtc, uint32_t seq);
+
+void ms_overlay_moving_update(xf86CrtcPtr crtc);
+Bool ms_overlay_moving_active(xf86CrtcPtr crtc);
+Bool ms_overlay_moving_ready(xf86CrtcPtr crtc);
+void ms_overlay_moving_fill(xf86CrtcPtr crtc);
+Bool ms_overlay_moving_pending(xf86CrtcPtr crtc, uint32_t *fb_id,
+                               drmmode_overlay_position_rec *position);
+void ms_overlay_moving_destroy(xf86CrtcPtr crtc);
+
+void ms_overlay_presented_update(xf86CrtcPtr crtc);
+void ms_overlay_presented_window_flipped(xf86CrtcPtr crtc, WindowPtr window);
+Bool ms_overlay_presented_wants_scanout(WindowPtr window);
+Bool ms_overlay_presented_suboptimal(WindowPtr window, PixmapPtr pixmap);
+Bool ms_overlay_presented_shows(xf86CrtcPtr crtc, WindowPtr window);
+Bool ms_overlay_presented_active(xf86CrtcPtr crtc);
+Bool ms_overlay_presented_ready(xf86CrtcPtr crtc);
+void ms_overlay_presented_fill(xf86CrtcPtr crtc);
+Bool ms_overlay_presented_pending(xf86CrtcPtr crtc, uint32_t *fb_id,
+                                  drmmode_overlay_position_rec *position);
+void ms_overlay_presented_committed(xf86CrtcPtr crtc, uint32_t seq);
+void ms_overlay_presented_flip_done(xf86CrtcPtr crtc, uint32_t seq, uint64_t msc,
+                                    uint64_t usec);
+void ms_overlay_presented_rejected(xf86CrtcPtr crtc);
+void ms_overlay_presented_destroy(xf86CrtcPtr crtc);
+
+Bool ms_tearfree_plane_window_flip(xf86CrtcPtr crtc, void *event,
+                                   ms_pageflip_handler_proc pageflip_handler,
+                                   ms_pageflip_abort_proc pageflip_abort);
+void ms_tearfree_plane_flips_committed(xf86CrtcPtr crtc);
+void ms_tearfree_plane_flips_shown(xf86CrtcPtr crtc, uint64_t msc, uint64_t usec);
+void ms_tearfree_plane_flips_requeue(xf86CrtcPtr crtc);
 
 Bool ms_cursor_create_buffers(xf86CrtcPtr crtc);
 Bool ms_cursor_map_buffers(ScrnInfoPtr scrn);
@@ -418,6 +477,9 @@ void ms_compositor_screen_init(ScrnInfoPtr scrn);
 Bool ms_compositor_create_screen_resources(ScreenPtr screen);
 void ms_compositor_update_damages(ScreenPtr screen);
 void ms_compositor_paint(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr region);
+Bool ms_compositor_cursor_in_box(ScrnInfoPtr scrn, const BoxRec *bounds);
+Bool ms_compositor_paint_window(xf86CrtcPtr crtc, PixmapPtr dst, WindowPtr window,
+                                Bool pq, PixmapPtr *sdr);
 Bool ms_compositor_sync_dirty(PixmapDirtyUpdatePtr dirty);
 #ifdef HAVE_GBM
 void ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty);

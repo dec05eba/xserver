@@ -734,7 +734,7 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
             ms->drmmode.dri2_flipping || ms->drmmode.present_flipping)
             continue;
 
-        if (ms_compositor_direct_flip(crtc))
+        if (!ms_overlay_active(crtc) && ms_compositor_direct_flip(crtc))
             continue;
 
         if (!ms_tearfree_flip_wanted(crtc))
@@ -930,8 +930,10 @@ msBlockHandler(ScreenPtr pScreen, void *timeout)
     pScreen->BlockHandler = msBlockHandler;
     if (pScreen->isGPU && !ms->drmmode.reverse_prime_offload_mode)
         dispatch_secondary_dirty(pScreen);
-    else if (ms->drmmode.tearfree_enable)
+    else if (ms->drmmode.tearfree_enable) {
+        ms_overlay_update(pScreen);
         ms_compositor_update_damages(pScreen);
+    }
     else if (ms->dirty_enabled)
         dispatch_dirty(pScreen);
 

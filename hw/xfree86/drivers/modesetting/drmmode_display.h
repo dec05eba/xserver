@@ -185,6 +185,7 @@ typedef struct {
     uint32_t vrr_prop_id;
     Bool use_ctm;
     Bool identity_color_tables;
+    Bool overlay_src_offsets;
     Bool plane_color_pipeline;
 
     Bool hdr_default;
@@ -259,6 +260,12 @@ typedef struct {
     drmmode_compose_hold_rec hold;
 } drmmode_compose_timing_rec;
 
+typedef enum {
+    DRMMODE_OVERLAY_NONE,
+    DRMMODE_OVERLAY_MOVING,
+    DRMMODE_OVERLAY_PRESENTED,
+} drmmode_overlay_owner;
+
 #define DRMMODE_TEARFREE_BUFFERS 3
 
 typedef struct {
@@ -268,6 +275,7 @@ typedef struct {
     uint64_t start;
     int fence_fd;
     Bool committed;
+    drmmode_overlay_owner overlay_owner;
 } drmmode_tearfree_frame_rec, *drmmode_tearfree_frame_ptr;
 
 typedef struct {
@@ -311,6 +319,7 @@ typedef struct {
     drmmode_composition_rec composition;
     drmmode_scanout_rec scanout;
     struct xorg_list dri_flip_list;
+    struct xorg_list plane_flip_list;
     uint32_t dri_vblank_seq;
     uint32_t front_idx;
     uint32_t flip_seq;
@@ -440,14 +449,71 @@ typedef struct {
 } drmmode_overlay_cover_rec;
 
 typedef struct {
+    BoxRec box;
+    int src_x;
+    int src_y;
+} drmmode_overlay_position_rec;
+
+typedef struct {
+    WindowPtr window;
+    uint64_t serial;
+    int buffer;
+    int fence_fd;
+    Bool pq;
+    drmmode_overlay_position_rec position;
+} drmmode_overlay_moving_rec;
+
+typedef struct {
+    XID window_id;
+    uint32_t flips;
+    uint64_t first_flip;
+    uint64_t last_flip;
+} drmmode_overlay_flip_rate_rec;
+
+typedef struct {
+    uint32_t pending;
+    uint32_t shown;
+    uint32_t retired;
+    uint32_t flight_seq;
+    PixmapPtr pixmap;
+    XID pixmap_id;
+} drmmode_overlay_fbs_rec;
+
+typedef struct {
+    XID window_id;
+    uint64_t since;
+} drmmode_overlay_realloc_rec;
+
+typedef struct {
+    XID window_id;
+    uint64_t until;
+} drmmode_overlay_recent_rec;
+
+typedef struct {
+    WindowPtr window;
+    XID rejected_id;
+    drmmode_overlay_flip_rate_rec rate;
+    drmmode_overlay_realloc_rec realloc;
+    drmmode_overlay_recent_rec recent;
+    drmmode_overlay_fbs_rec fbs;
+    drmmode_overlay_position_rec position;
+} drmmode_overlay_presented_rec;
+
+typedef struct {
     uint32_t plane_id;
     uint32_t fb_id;
     uint32_t next_fb_id;
     int next_fence_fd;
-    BoxRec next_box;
+    drmmode_overlay_position_rec position;
+    drmmode_overlay_position_rec next_position;
+    Bool next_convert_sdr;
+    drmmode_overlay_owner queued_owner;
+    drmmode_overlay_owner shown_owner;
     drmmode_plane_color_rec color;
     drmmode_overlay_buffers_rec buffers;
     drmmode_overlay_cover_rec cover;
+    drmmode_overlay_moving_rec moving;
+    drmmode_overlay_presented_rec presented;
 } drmmode_overlay_plane_rec;
 
 typedef struct {
@@ -685,6 +751,7 @@ int drmmode_plane_color_refresh_degamma(drmModeAtomicReq *req,
                                         xf86CrtcPtr crtc, uint32_t plane_id,
                                         const drmmode_plane_color_rec *color);
 Bool drmmode_crtc_overlay_content(xf86CrtcPtr crtc, Bool *pq);
+Bool drmmode_crtc_output_expects_pq(xf86CrtcPtr crtc);
 PixmapPtr drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width,
                                    int height, int depth, drmmode_bo *bo,
                                    uint32_t *fb_id);
@@ -707,6 +774,10 @@ extern void drmmode_uevent_fini(ScrnInfoPtr scrn, drmmode_ptr drmmode);
 
 Bool drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode);
 void *drmmode_map_front_bo(drmmode_ptr drmmode);
+Bool drmmode_overlay_test(xf86CrtcPtr crtc);
+int drmmode_overlay_add_moved_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                                    uint32_t fb_id,
+                                    const drmmode_overlay_position_rec *position);
 int drmmode_plane_add_prop(drmModeAtomicReq *req,
                            drmmode_crtc_private_ptr drmmode_crtc,
                            uint32_t plane_id, enum drmmode_plane_property prop,

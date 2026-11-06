@@ -24,7 +24,6 @@
 #include "dix-config.h"
 #endif
 
-#include <poll.h>
 #include <unistd.h>
 #include <xf86drm.h>
 #include "driver.h"
@@ -195,14 +194,6 @@ ms_tearfree_frame_shown(uint64_t msc, uint64_t usec, void *data)
 }
 
 static Bool
-ms_fence_signaled(int fence_fd)
-{
-    struct pollfd pfd = { .fd = fence_fd, .events = POLLIN };
-
-    return poll(&pfd, 1, 0) == 1;
-}
-
-static Bool
 ms_tearfree_frame_finished(drmmode_tearfree_frame_ptr frame)
 {
     return frame->fence_fd < 0 || ms_fence_signaled(frame->fence_fd);
@@ -345,14 +336,19 @@ ms_tearfree_commit_composed(ScreenPtr screen, xf86CrtcPtr crtc)
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_tearfree_ptr trf = ms_tearfree(crtc);
     drmmode_tearfree_frame_ptr oldest = ms_tearfree_oldest_frame(trf);
+    Bool failed;
 
     if (!oldest || oldest->committed || trf->flip_seq || ms_cursor_in_flight(crtc) ||
         ms->drmmode.dri2_flipping || ms->drmmode.present_flipping ||
-        !ms_tearfree_frame_finished(oldest))
+        !ms_tearfree_frame_finished(oldest) ||
+        !ms_overlay_owner_ready(crtc, oldest->overlay_owner))
         return FALSE;
 
-    if (do_queue_flip_on_crtc(screen, crtc, DRM_MODE_PAGE_FLIP_EVENT, oldest->seq,
-                              trf->buf[ms_tearfree_frame_buffer(trf, oldest)].fb_id, 0, 0, -1))
+    ms_overlay_begin_commit(crtc, oldest->overlay_owner);
+    failed = do_queue_flip_on_crtc(screen, crtc, DRM_MODE_PAGE_FLIP_EVENT, oldest->seq,
+                                   trf->buf[ms_tearfree_frame_buffer(trf, oldest)].fb_id, 0, 0, -1);
+    ms_overlay_end_commit(crtc, !failed, oldest->seq);
+    if (failed)
         return ms_tearfree_flip_failed(crtc);
 
     oldest->committed = TRUE;
@@ -389,6 +385,7 @@ ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
 
     frame->crtc = crtc;
     frame->committed = FALSE;
+    frame->overlay_owner = ms_overlay_frame_owner(crtc);
     if (!ms_tearfree_next_vblank(crtc, GetTimeInMicros(), &next, &frame->target_msc))
         frame->target_msc = 0;
     frames->order[frames->count++] = buffer;

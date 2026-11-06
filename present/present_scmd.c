@@ -1322,6 +1322,12 @@ present_scmd_pixmap(WindowPtr window,
     if (!window_priv)
         return BadAlloc;
 
+    if (pixmap && !valid && !x_off && !y_off && present_window_flips(screen) &&
+        pixmap->drawable.width == window->drawable.width &&
+        pixmap->drawable.height == window->drawable.height &&
+        pixmap->drawable.depth == window->drawable.depth)
+        CompositeServerRedirectPresentWindow(window);
+
     if (!screen_priv || !screen_priv->info)
         target_crtc = NULL;
     else if (!target_crtc) {

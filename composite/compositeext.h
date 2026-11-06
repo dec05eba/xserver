@@ -100,4 +100,28 @@ extern _X_EXPORT WindowPtr CompositeServerHdrWindow(ScreenPtr pScreen,
 extern _X_EXPORT void CompositeServerPresented(WindowPtr pWin,
                                                PixmapPtr pPixmap);
 
+extern _X_EXPORT Bool CompositeServerRedirectPresentWindow(WindowPtr pWin);
+
+extern _X_EXPORT WindowPtr CompositeServerMovingWindow(ScreenPtr pScreen,
+                                                       CARD64 since);
+
+extern _X_EXPORT void CompositeServerSetPlaneWindow(ScreenPtr pScreen,
+                                                    WindowPtr pWin);
+
+extern _X_EXPORT WindowPtr CompositeServerPlaneWindow(ScreenPtr pScreen);
+
+extern _X_EXPORT void CompositeServerSetPresentPlaneWindow(ScreenPtr pScreen,
+                                                           WindowPtr pWin);
+
+extern _X_EXPORT WindowPtr CompositeServerPresentPlaneWindow(ScreenPtr pScreen);
+
+extern _X_EXPORT Bool CompositeServerWindowUnobscured(WindowPtr pWin);
+
+extern _X_EXPORT Bool CompositeServerWindowTranslucent(WindowPtr pWin);
+
+extern _X_EXPORT uint64_t CompositeServerWindowSerial(WindowPtr pWin);
+
+extern _X_EXPORT void CompositeServerPaintWindow(PicturePtr pDst, int x, int y,
+                                                 WindowPtr pWin);
+
 #endif                          /* _COMPOSITEEXT_H_ */

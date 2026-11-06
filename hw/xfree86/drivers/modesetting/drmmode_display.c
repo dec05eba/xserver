@@ -298,7 +298,8 @@ get_drawable_modifiers(DrawablePtr draw, uint32_t format,
         return TRUE;
     }
 
-    if (!present_can_window_flip((WindowPtr) draw) ||
+    if (!(present_can_window_flip((WindowPtr) draw) ||
+          ms_overlay_presented_wants_scanout((WindowPtr) draw)) ||
         !ms->drmmode.pageflip || ms->drmmode.dri2_flipping || !scrn->vtSema) {
         *num_modifiers = 0;
         *modifiers = NULL;
@@ -555,6 +556,50 @@ plane_add_prop(drmModeAtomicReq *req, drmmode_crtc_private_ptr drmmode_crtc,
 }
 
 static int
+overlay_plane_add_position(drmModeAtomicReq *req,
+                           drmmode_crtc_private_ptr drmmode_crtc,
+                           uint32_t plane_id,
+                           const drmmode_overlay_position_rec *position)
+{
+    const BoxRec *box = &position->box;
+    int ret = 0;
+
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_X, (uint64_t) position->src_x << 16);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_Y, (uint64_t) position->src_y << 16);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_W, (box->x2 - box->x1) << 16);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_SRC_H, (box->y2 - box->y1) << 16);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_X, box->x1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_Y, box->y1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_W, box->x2 - box->x1);
+    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_CRTC_H, box->y2 - box->y1);
+    return ret;
+}
+
+int
+drmmode_overlay_add_moved_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                                uint32_t fb_id,
+                                const drmmode_overlay_position_rec *position)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint32_t plane_id = drmmode_crtc->overlay_plane.plane_id;
+
+    return drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
+                                  DRMMODE_PLANE_FB_ID, fb_id) |
+        overlay_plane_add_position(req, drmmode_crtc, plane_id, position);
+}
+
+static Bool
+drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode);
+
+static int
 overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                         const drmmode_hdr_state_rec *state,
                         uint32_t *matrix_blob)
@@ -565,7 +610,6 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
         &drmmode_crtc->props_plane[DRMMODE_PLANE_PIXEL_BLEND_MODE];
     uint32_t plane_id = overlay->plane_id;
     uint32_t fb_id = overlay->next_fb_id;
-    BoxPtr box = &overlay->next_box;
     int ret = 0;
 
     ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
@@ -586,7 +630,9 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     if (overlay->color.pipeline_prop)
         ret |= drmmode_plane_color_add_props(req, crtc, plane_id,
                                              &overlay->color,
-                                             state->plane_sdr_to_pq,
+                                             state->plane_sdr_to_pq ||
+                                             (overlay->next_convert_sdr &&
+                                              drmmode_hdr_mode_expects_pq(state->mode)),
                                              state->sdr_white_level,
                                              matrix_blob);
     if (blend->prop_id &&
@@ -594,26 +640,31 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
         ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
                                       DRMMODE_PLANE_PIXEL_BLEND_MODE,
                                       blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].value);
-    /* nvidia-drm ignores SRC_X and SRC_Y on overlay planes, so the content
-     * starts at the origin of the buffer.
-     */
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_SRC_X, 0);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_SRC_Y, 0);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_SRC_W, (box->x2 - box->x1) << 16);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_SRC_H, (box->y2 - box->y1) << 16);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_CRTC_X, box->x1);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_CRTC_Y, box->y1);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_CRTC_W, box->x2 - box->x1);
-    ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
-                                  DRMMODE_PLANE_CRTC_H, box->y2 - box->y1);
-    return ret;
+    return ret | overlay_plane_add_position(req, drmmode_crtc, plane_id,
+                                           &overlay->next_position);
+}
+
+Bool
+drmmode_overlay_test(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_hdr_rec *hdr = &drmmode_crtc->hdr;
+    drmModeAtomicReq *req;
+    uint32_t matrix = 0;
+    int ret;
+
+    if (!ms->atomic_modeset || !(req = drmModeAtomicAlloc()))
+        return FALSE;
+
+    ret = overlay_plane_add_props(req, crtc, hdr->has_pending ? &hdr->pending : &hdr->current,
+                                  &matrix);
+    if (ret == 0)
+        ret = drmModeAtomicCommit(ms->fd, req, DRM_MODE_ATOMIC_TEST_ONLY, NULL);
+    drmModeAtomicFree(req);
+    if (matrix)
+        drmModeDestroyPropertyBlob(ms->fd, matrix);
+    return ret == 0;
 }
 
 static int
@@ -1309,10 +1360,14 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
     Bool format_changed = layout.format != drmmode_crtc->scanout_layout.format;
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
-    Bool with_overlay = overlay->plane_id &&
-        overlay->fb_id != overlay->next_fb_id;
-    Bool with_cursor = ms_cursor_needs_commit(crtc);
+    Bool with_overlay, with_cursor = ms_cursor_needs_commit(crtc);
     int ret;
+
+    ms_overlay_prepare_commit(crtc);
+    with_overlay = overlay->plane_id &&
+        (overlay->fb_id != overlay->next_fb_id ||
+         (overlay->next_fb_id &&
+          !ms_overlay_position_equal(&overlay->position, &overlay->next_position)));
 
     /* The kernel rejects async flips that change anything other than the frame buffer, including its format,
      * modifier or pitch */
@@ -1380,6 +1435,10 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             drmmode_crtc->src_x = x;
             drmmode_crtc->src_y = y;
             overlay->fb_id = overlay->next_fb_id;
+            if (with_overlay) {
+                overlay->position = overlay->next_position;
+                ms_overlay_shown(crtc);
+            }
             if (with_cursor)
                 ms_cursor_committed(crtc, (uint32_t) (uintptr_t) data, FALSE);
             if (with_hdr) {
@@ -1403,7 +1462,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                                      data);
         }
         if (ret && ret != -EBUSY && overlay->next_fb_id && !overlay->fb_id)
-            ms_overlay_rejected(crtc, ret);
+            ms_overlay_commit_rejected(crtc, ret);
         ms_overlay_clear_next(crtc);
         return ret;
     }
@@ -3162,6 +3221,8 @@ drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
     drmModeObjectProperties *props = NULL;
 
     overlay->next_fence_fd = -1;
+    overlay->moving.buffer = -1;
+    overlay->moving.fence_fd = -1;
     RegionNull(&overlay->cover.region);
     overlay->plane_id = drmmode_crtc_find_plane(crtc, num,
                                                 DRMMODE_PLANE_TYPE_OVERLAY,
@@ -3315,6 +3376,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     drmmode_crtc->vblank_pipe = drmmode_crtc_vblank_pipe(num);
     xorg_list_init(&drmmode_crtc->mode_list);
     xorg_list_init(&drmmode_crtc->tearfree.dri_flip_list);
+    xorg_list_init(&drmmode_crtc->tearfree.plane_flip_list);
     for (i = 0; i < ARRAY_SIZE(drmmode_crtc->tearfree.frames.frame); i++)
         drmmode_crtc->tearfree.frames.frame[i].fence_fd = -1;
     drmmode_crtc->prime_scanout.commit.deadline.fd = -1;
@@ -4875,6 +4937,8 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
      */
     drmmode->identity_color_tables = drmmode_driver_is(drmmode->fd,
                                                        "nvidia-drm");
+    /* nvidia-drm ignores SRC_X and SRC_Y on overlay planes */
+    drmmode->overlay_src_offsets = !drmmode_driver_is(drmmode->fd, "nvidia-drm");
 #ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
     /* amdgpu flickers whenever the CRTC colour tables change, so SDR content
      * on HDR monitors is converted by the plane instead.
@@ -6167,6 +6231,14 @@ drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
 
     return drmmode_crtc_set_hdr_state(crtc, &state, with_next_flip) &&
         (!pq || state.mode != DRMMODE_HDR_OFF);
+}
+
+Bool
+drmmode_crtc_output_expects_pq(xf86CrtcPtr crtc)
+{
+    drmmode_hdr_rec *hdr = &((drmmode_crtc_private_ptr) crtc->driver_private)->hdr;
+
+    return drmmode_hdr_mode_expects_pq(hdr->has_pending ? hdr->pending.mode : hdr->current.mode);
 }
 
 Bool

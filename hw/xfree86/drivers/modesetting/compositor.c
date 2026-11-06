@@ -722,8 +722,8 @@ ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
 #endif
 
 #ifdef HAVE_GBM
-static Bool
-ms_compositor_cursor_in_box(ScrnInfoPtr scrn, BoxPtr bounds)
+Bool
+ms_compositor_cursor_in_box(ScrnInfoPtr scrn, const BoxRec *bounds)
 {
     modesettingPtr ms = modesettingPTR(scrn);
     ms_sw_cursor_ptr sw_cursor;
@@ -788,10 +788,27 @@ ms_compositor_sdr_pixmap(PixmapPtr dst, PixmapPtr *sdr)
     return *sdr != NULL;
 }
 
+typedef void (*ms_compositor_layers_proc)(PicturePtr dst, int x, int y,
+                                          RegionPtr region, WindowPtr window);
+
+static void
+ms_compositor_cover_layers(PicturePtr dst, int x, int y, RegionPtr region,
+                           WindowPtr window)
+{
+    CompositeServerPaintCover(dst, x, y, region, window, NULL);
+}
+
+static void
+ms_compositor_window_layers(PicturePtr dst, int x, int y, RegionPtr region,
+                            WindowPtr window)
+{
+    CompositeServerPaintWindow(dst, x, y, window);
+}
+
 static Bool
-ms_compositor_paint_cover(xf86CrtcPtr crtc, PixmapPtr dst, BoxPtr box,
-                          RegionPtr cover, WindowPtr window, Bool pq,
-                          PixmapPtr *sdr)
+ms_compositor_paint_overlay(xf86CrtcPtr crtc, PixmapPtr dst, const BoxRec *box,
+                            RegionPtr region, WindowPtr window, Bool pq,
+                            PixmapPtr *sdr, ms_compositor_layers_proc layers)
 {
     ScreenPtr screen = dst->drawable.pScreen;
     modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
@@ -811,13 +828,12 @@ ms_compositor_paint_cover(xf86CrtcPtr crtc, PixmapPtr dst, BoxPtr box,
     }
 
     RegionNull(&local);
-    RegionCopy(&local, cover);
+    RegionCopy(&local, region);
     RegionTranslate(&local, -box->x1, -box->y1);
 
     if (ms_compositor_clear(screen, target, &area) &&
         (picture = ms_compositor_argb_picture(screen, target))) {
-        CompositeServerPaintCover(picture, box->x1, box->y1, cover, window,
-                                  NULL);
+        layers(picture, box->x1, box->y1, region, window);
         FreePicture(picture, 0);
         painted = TRUE;
     }
@@ -835,6 +851,24 @@ ms_compositor_paint_cover(xf86CrtcPtr crtc, PixmapPtr dst, BoxPtr box,
 
     RegionUninit(&local);
     return painted;
+}
+
+static Bool
+ms_compositor_paint_cover(xf86CrtcPtr crtc, PixmapPtr dst, BoxPtr box,
+                          RegionPtr cover, WindowPtr window, Bool pq,
+                          PixmapPtr *sdr)
+{
+    return ms_compositor_paint_overlay(crtc, dst, box, cover, window, pq, sdr,
+                                       ms_compositor_cover_layers);
+}
+
+Bool
+ms_compositor_paint_window(xf86CrtcPtr crtc, PixmapPtr dst, WindowPtr window,
+                           Bool pq, PixmapPtr *sdr)
+{
+    return ms_compositor_paint_overlay(crtc, dst, RegionExtents(&window->borderSize),
+                                       &window->borderSize, window, pq, sdr,
+                                       ms_compositor_window_layers);
 }
 
 static Bool

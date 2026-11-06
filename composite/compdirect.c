@@ -167,12 +167,14 @@ compServerDeferUpdate(WindowPtr pWin)
     dw->deferred.active = TRUE;
     dw->deferred.stale = TRUE;
 
-    RegionNull(&region);
-    RegionCopy(&region, DamageRegion(cw->damage));
-    RegionTranslate(&region, pWin->drawable.x, pWin->drawable.y);
-    RegionIntersect(&region, &region, &cw->borderClip);
-    DamageDamageRegion(&pWin->parent->drawable, &region);
-    RegionUninit(&region);
+    if (!compServerIsPresentPlaneWindow(pWin)) {
+        RegionNull(&region);
+        RegionCopy(&region, DamageRegion(cw->damage));
+        RegionTranslate(&region, pWin->drawable.x, pWin->drawable.y);
+        RegionIntersect(&region, &region, &cw->borderClip);
+        DamageDamageRegion(&pWin->parent->drawable, &region);
+        RegionUninit(&region);
+    }
     DamageEmpty(cw->damage);
     return TRUE;
 }
@@ -269,6 +271,19 @@ compServerForgetDeferred(WindowPtr pWin)
         dw->deferred.active = FALSE;
         compServerReleaseDirectWindow(dw);
     }
+}
+
+Bool
+CompositeServerRedirectPresentWindow(WindowPtr pWin)
+{
+    if (!pWin->parent || CompositeIsServerRoot(pWin->parent) ||
+        pWin->redirectDraw != RedirectDrawNone || !pWin->viewable ||
+        pWin->drawable.class != InputOutput || wBorderWidth(pWin) ||
+        !RegionEqual(&pWin->clipList, &pWin->winSize) ||
+        !CompositeIsServerRedirected(compServerToplevel(pWin)))
+        return FALSE;
+
+    return compRedirectWindow(serverClient, pWin, CompositeRedirectAutomatic) == Success;
 }
 
 Bool

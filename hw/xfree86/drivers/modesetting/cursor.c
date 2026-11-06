@@ -656,15 +656,21 @@ ms_cursor_abort(void *data)
 }
 
 static int
-ms_cursor_do_commit(xf86CrtcPtr crtc, uint32_t flags, uint32_t seq)
+ms_cursor_do_commit(xf86CrtcPtr crtc, uint32_t flags, uint32_t seq,
+                    uint32_t overlay_fb_id,
+                    const drmmode_overlay_position_rec *overlay_position)
 {
     drmModeAtomicReq *req = drmModeAtomicAlloc();
-    int ret;
+    int ret = 0;
 
     if (!req)
         return -ENOMEM;
 
-    ret = ms_cursor_add_props(req, crtc);
+    if (ms_cursor(crtc)->plane.id)
+        ret = ms_cursor_add_props(req, crtc);
+    if (ret == 0 && overlay_position)
+        ret = drmmode_overlay_add_moved_props(req, crtc, overlay_fb_id,
+                                              overlay_position);
     if (ret == 0)
         ret = drmModeAtomicCommit(ms_cursor_fd(crtc), req, flags,
                                   (void *) (uintptr_t) seq);
@@ -675,15 +681,16 @@ ms_cursor_do_commit(xf86CrtcPtr crtc, uint32_t flags, uint32_t seq)
 Bool
 ms_cursor_test(xf86CrtcPtr crtc)
 {
-    return ms_cursor_do_commit(crtc, DRM_MODE_ATOMIC_TEST_ONLY, 0) == 0;
+    return ms_cursor_do_commit(crtc, DRM_MODE_ATOMIC_TEST_ONLY, 0, 0, NULL) == 0;
 }
 
 static void
 ms_cursor_commit(xf86CrtcPtr crtc)
 {
     ScrnInfoPtr scrn = crtc->scrn;
-    Bool moved;
-    uint32_t seq;
+    drmmode_overlay_position_rec overlay_position;
+    uint32_t overlay_fb_id = 0, seq;
+    Bool moved, with_overlay;
     int ret;
 
     if (!scrn->vtSema || !xf86_crtc_on(crtc))
@@ -696,19 +703,37 @@ ms_cursor_commit(xf86CrtcPtr crtc)
     if (!seq)
         return;
 
+    with_overlay = ms_overlay_pending(crtc, &overlay_fb_id, &overlay_position);
     moved = ms_cursor_take_moved(crtc);
     ret = ms_cursor_do_commit(crtc, DRM_MODE_ATOMIC_NONBLOCK |
-                              DRM_MODE_PAGE_FLIP_EVENT, seq);
+                              DRM_MODE_PAGE_FLIP_EVENT, seq, overlay_fb_id,
+                              with_overlay ? &overlay_position : NULL);
     if (ret == 0) {
         ms_cursor_committed(crtc, seq, TRUE);
+        if (with_overlay)
+            ms_overlay_committed_alone(crtc, overlay_fb_id, &overlay_position, seq);
         return;
     }
 
     if (moved)
         ms_cursor_set_moved(crtc);
     ms_drm_abort_seq(scrn, seq);
-    if (ret != -EBUSY)
+    if (ret == -EBUSY)
+        return;
+
+    if (with_overlay && ms_cursor_test(crtc))
+        ms_overlay_commit_rejected(crtc, ret);
+    else
         ms_cursor_rejected(crtc, ret);
+}
+
+static Bool
+ms_cursor_overlay_needs_commit(xf86CrtcPtr crtc)
+{
+    drmmode_overlay_position_rec position;
+    uint32_t fb_id;
+
+    return ms_overlay_pending(crtc, &fb_id, &position);
 }
 
 static Bool
@@ -755,8 +780,8 @@ ms_cursor_commit_pending(ScreenPtr screen, void *timeout)
             continue;
         }
 #endif
-        if (ms_cursor_needs_commit(crtc) && !ms_cursor_flip_expected(crtc) &&
-            ms_cursor_commit_due(crtc, timeout))
+        if ((ms_cursor_needs_commit(crtc) || ms_cursor_overlay_needs_commit(crtc)) &&
+            !ms_cursor_flip_expected(crtc) && ms_cursor_commit_due(crtc, timeout))
             ms_cursor_commit(crtc);
     }
 }

@@ -322,6 +322,8 @@ compServerReconfigureFrame(WindowPtr pWin, PixmapPtr pOld, int x, int y,
         return;
 
     if (w == pOld->drawable.width && h == pOld->drawable.height) {
+        if (x != pOld->screen_x || y != pOld->screen_y)
+            sw->movedAt = GetTimeInMicros();
         if (sw->held.layers)
             compServerMoveHeldFrame(sw, x - pOld->screen_x,
                                     y - pOld->screen_y);

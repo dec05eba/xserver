@@ -799,6 +799,7 @@ ms_drm_abort_one(struct ms_drm_queue *q)
         return;
 
     ms_cursor_flip_done(q->crtc, q->seq);
+    ms_overlay_event_aborted(q->crtc, q->seq);
 
     /* Don't remove vblank events if they were queued in the kernel */
     if (q->kernel_queued) {
@@ -932,6 +933,7 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
         }
     }
     ms_cursor_flip_done(crtc, seq);
+    ms_overlay_event_done(crtc, seq, msc, ns / 1000);
     if (ms_tearfree_is_active_on_crtc(crtc))
         SetBlockHandlerDeadline(GetTimeInMicros());
 

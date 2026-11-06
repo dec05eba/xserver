@@ -539,6 +539,12 @@ ms_present_window_flip(RRCrtcPtr crtc,
                                     ms_present_flip_handler,
                                     ms_present_flip_abort);
 
+    ms_overlay_presented_window_flipped(crtc->devPrivate, toplevel);
+    if (ms_overlay_presented_shows(crtc->devPrivate, toplevel))
+        return ms_tearfree_plane_window_flip(crtc->devPrivate, event,
+                                             ms_present_flip_handler,
+                                             ms_present_flip_abort);
+
     return ms_tearfree_window_flip(crtc->devPrivate, toplevel, !sync_flip,
                                    event, ms_present_flip_handler,
                                    ms_present_flip_abort);
@@ -569,7 +575,9 @@ ms_present_flip_suboptimal(WindowPtr window, PixmapPtr pixmap)
 {
     xf86CrtcPtr crtc = ms_compositor_prime_output_for_window(window);
 
-    return crtc && !ms_prime_import(crtc, pixmap);
+    if (crtc)
+        return !ms_prime_import(crtc, pixmap);
+    return ms_overlay_presented_suboptimal(window, pixmap);
 }
 
 static Bool
