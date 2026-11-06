@@ -757,7 +757,6 @@ int drmmode_plane_color_refresh_degamma(drmModeAtomicReq *req,
                                         xf86CrtcPtr crtc, uint32_t plane_id,
                                         const drmmode_plane_color_rec *color);
 Bool drmmode_crtc_overlay_content(xf86CrtcPtr crtc, Bool *pq);
-Bool drmmode_crtc_output_expects_pq(xf86CrtcPtr crtc);
 PixmapPtr drmmode_shadow_fb_create(xf86CrtcPtr crtc, void *data, int width,
                                    int height, int depth, drmmode_bo *bo,
                                    uint32_t *fb_id);

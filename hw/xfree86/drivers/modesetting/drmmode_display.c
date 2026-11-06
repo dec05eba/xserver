@@ -6233,14 +6233,6 @@ drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
 }
 
 Bool
-drmmode_crtc_output_expects_pq(xf86CrtcPtr crtc)
-{
-    drmmode_hdr_rec *hdr = &((drmmode_crtc_private_ptr) crtc->driver_private)->hdr;
-
-    return drmmode_hdr_mode_expects_pq(hdr->has_pending ? hdr->pending.mode : hdr->current.mode);
-}
-
-Bool
 drmmode_crtc_overlay_content(xf86CrtcPtr crtc, Bool *pq)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;

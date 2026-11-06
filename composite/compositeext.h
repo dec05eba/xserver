@@ -117,8 +117,6 @@ extern _X_EXPORT WindowPtr CompositeServerPresentPlaneWindow(ScreenPtr pScreen);
 
 extern _X_EXPORT Bool CompositeServerWindowUnobscured(WindowPtr pWin);
 
-extern _X_EXPORT Bool CompositeServerWindowTranslucent(WindowPtr pWin);
-
 extern _X_EXPORT uint64_t CompositeServerWindowSerial(WindowPtr pWin);
 
 extern _X_EXPORT void CompositeServerPaintWindow(PicturePtr pDst, int x, int y,

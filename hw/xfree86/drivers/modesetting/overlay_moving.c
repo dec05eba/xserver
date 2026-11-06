@@ -85,7 +85,6 @@ ms_overlay_moving_candidate(xf86CrtcPtr crtc,
     window = CompositeServerMovingWindow(screen, GetTimeInMicros() - MS_OVERLAY_MOVING_HOLD_USEC);
     plane_window = CompositeServerPlaneWindow(screen);
     if (!window || (plane_window && plane_window != ms_overlay_moving(crtc)->window) ||
-        (drmmode_crtc_output_expects_pq(crtc) && CompositeServerWindowTranslucent(window)) ||
         !ms_overlay_window_position(crtc, RegionExtents(&window->borderSize), position))
         return NULL;
     return window;

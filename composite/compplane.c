@@ -126,15 +126,6 @@ CompositeServerPresentPlaneWindow(ScreenPtr pScreen)
 }
 
 Bool
-CompositeServerWindowTranslucent(WindowPtr pWin)
-{
-    CompServerPtr server = compServerGet(pWin->drawable.pScreen);
-
-    return server && (compServerWindowHasAlpha(pWin) ||
-                      compServerWindowOpacity(server, pWin) != COMP_SERVER_OPAQUE);
-}
-
-Bool
 CompositeServerWindowUnobscured(WindowPtr pWin)
 {
     CompServerPtr server = compServerGet(pWin->drawable.pScreen);
