@@ -1059,6 +1059,12 @@ ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
     return flipped;
 }
 
+void
+ms_compositor_update_composed_output_mode(xf86CrtcPtr crtc)
+{
+    ms_compositor_update_output_mode(crtc, NULL);
+}
+
 Bool
 ms_compositor_direct_flip(xf86CrtcPtr crtc)
 {

@@ -374,6 +374,7 @@ ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc)
     if (buffer < 0 || frames->count == ARRAY_SIZE(frames->order))
         return FALSE;
 
+    ms_compositor_update_composed_output_mode(crtc);
     frame = &frames->frame[buffer];
     frame->seq = ms_drm_queue_alloc(crtc, frame, ms_tearfree_frame_shown,
                                     ms_tearfree_frame_aborted);
