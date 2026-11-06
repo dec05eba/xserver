@@ -277,6 +277,17 @@ ms_tearfree_rendered_late(xf86CrtcPtr crtc, drmmode_tearfree_frame_ptr frame,
 }
 
 Bool
+ms_tearfree_missed_frame_held(xf86CrtcPtr crtc, void *timeout)
+{
+    drmmode_tearfree_frame_ptr oldest = ms_tearfree_oldest_frame(ms_tearfree(crtc));
+    uint64_t next, next_msc;
+
+    return oldest && !oldest->committed &&
+        ms_tearfree_next_vblank(crtc, GetTimeInMicros(), &next, &next_msc) &&
+        next_msc > oldest->target_msc && !ms_tearfree_compose_due(crtc, timeout);
+}
+
+Bool
 ms_tearfree_compose_ahead(xf86CrtcPtr crtc)
 {
     drmmode_tearfree_ptr trf = ms_tearfree(crtc);

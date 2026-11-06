@@ -719,7 +719,8 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
 
         ms_tearfree_set_compose_deadline(crtc);
 
-        if (ms_tearfree_commit_composed(pScreen, crtc))
+        if (!ms_tearfree_missed_frame_held(crtc, timeout) &&
+            ms_tearfree_commit_composed(pScreen, crtc))
             ms_tearfree_show_front(scrn, crtc);
 
         if (trf->frames.count) {

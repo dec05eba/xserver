@@ -467,6 +467,7 @@ Bool ms_tearfree_flip_wanted(xf86CrtcPtr crtc);
 void ms_tearfree_set_compose_deadline(xf86CrtcPtr crtc);
 Bool ms_tearfree_composition_late(xf86CrtcPtr crtc);
 Bool ms_tearfree_commit_composed(ScreenPtr screen, xf86CrtcPtr crtc);
+Bool ms_tearfree_missed_frame_held(xf86CrtcPtr crtc, void *timeout);
 Bool ms_tearfree_compose_ahead(xf86CrtcPtr crtc);
 uint32_t ms_tearfree_newest_buffer(drmmode_tearfree_ptr trf);
 uint32_t ms_tearfree_pending_seq(drmmode_tearfree_ptr trf);
