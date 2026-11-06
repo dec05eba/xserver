@@ -85,6 +85,11 @@ the monitor instead of 60 frames per second.
 Performance
 -----------
 
+This X server has been compared with the upstream X server and with KWin and
+Mutter on Wayland. It's smoother than all of them in most cases and as smooth
+in the rest, never less smooth. Games framerate are the same in each, but the
+framerate at which they are presented on the screen differs.
+
 Fullscreen windows are scanned out directly: the monitor shows the
 application's own buffer, without compositing or copying it. This works when:
 
@@ -99,6 +104,14 @@ application's own buffer, without compositing or copying it. This works when:
 - the GPU can scan out the buffer format the application renders into.
 
 Fullscreen HDR windows (or SDR windows when HDR is enabled) are scanned out directly too.
+
+Games that aren't fullscreen are scanned out directly as well, on an overlay
+plane, when the GPU has one for that monitor and no other window covers the
+game. Windows that are being moved are shown on the overlay plane too, so they
+follow the cursor smoothly even while a game keeps the GPU fully busy.
+
+X11 rendering has also been made faster, so the desktop stays smooth under heavy
+GPU load.
 
 Monitors that are composited are composed just before each vblank, so a new
 frame reaches the screen at the next vblank and frame pacing stays even.
