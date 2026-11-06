@@ -734,7 +734,7 @@ ms_tearfree_do_flips(ScreenPtr pScreen, void *timeout)
             ms->drmmode.dri2_flipping || ms->drmmode.present_flipping)
             continue;
 
-        if (!ms_overlay_active(crtc) && ms_compositor_direct_flip(crtc))
+        if (!ms_overlay_active(crtc) && ms_compositor_direct_flip(crtc, timeout))
             continue;
 
         if (!ms_tearfree_flip_wanted(crtc))

@@ -322,7 +322,7 @@ Bool ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap);
 Bool ms_import_flip_fb(ScreenPtr screen, PixmapPtr pixmap, uint32_t *fb_id,
                        const char *log_prefix);
 
-Bool ms_compositor_direct_flip(xf86CrtcPtr crtc);
+Bool ms_compositor_direct_flip(xf86CrtcPtr crtc, void *timeout);
 void ms_compositor_update_composed_output_mode(xf86CrtcPtr crtc);
 Bool ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame);
 

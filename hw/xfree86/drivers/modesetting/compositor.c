@@ -1068,6 +1068,7 @@ ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
     RegionNull(&cover);
     window = ms_compositor_scanout_window(crtc, &pixmap, &cover);
     covered = RegionNotEmpty(&cover);
+    scanout->covered = window && covered;
     if (window && ms_compositor_update_output_mode(crtc, window) &&
         (!covered || ms_compositor_overlay_cover(crtc, window, &cover))) {
         if (pixmap == scanout->pixmap && scanout->fb_id &&
@@ -1100,17 +1101,23 @@ ms_compositor_update_composed_output_mode(xf86CrtcPtr crtc)
 }
 
 Bool
-ms_compositor_direct_flip(xf86CrtcPtr crtc)
+ms_compositor_direct_flip(xf86CrtcPtr crtc, void *timeout)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
     Bool async = scanout->async;
 
-    scanout->async = FALSE;
-    if (ms_compositor_can_direct_flip(crtc) &&
-        ms_compositor_flip_window(crtc, async))
-        return TRUE;
+    if (ms_compositor_can_direct_flip(crtc)) {
+        if (scanout->covered && !async && !ms_tearfree_compose_due(crtc, timeout))
+            return TRUE;
 
+        scanout->async = FALSE;
+        if (ms_compositor_flip_window(crtc, async))
+            return TRUE;
+    }
+
+    scanout->async = FALSE;
+    scanout->covered = FALSE;
     ms_compositor_update_output_mode(crtc, NULL);
     return FALSE;
 }

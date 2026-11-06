@@ -240,6 +240,7 @@ typedef struct {
     uint32_t fb_id;
     uint32_t flip_fb_id;
     Bool async;
+    Bool covered;
     WindowPtr output_mode_window;
     Bool output_mode_dirty;
 } drmmode_scanout_rec;
