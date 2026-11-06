@@ -303,6 +303,11 @@ typedef struct {
 } drmmode_plane_degamma_tf_rec, *drmmode_plane_degamma_tf_ptr;
 
 typedef struct {
+    uint32_t blob;
+    uint64_t matrix[12];
+} drmmode_plane_ctm_rec;
+
+typedef struct {
     uint32_t pipeline_prop;
     uint64_t pipeline;
     int num_ops;
@@ -312,6 +317,7 @@ typedef struct {
     drmmode_colorop_use_rec matrix;
     drmmode_colorop_use_rec inverse_eotf;
     drmmode_plane_degamma_tf_rec degamma_tf;
+    drmmode_plane_ctm_rec ctm;
 } drmmode_plane_color_rec, *drmmode_plane_color_ptr;
 
 typedef struct {
@@ -507,7 +513,6 @@ typedef struct {
     int next_fence_fd;
     drmmode_overlay_position_rec position;
     drmmode_overlay_position_rec next_position;
-    Bool next_convert_sdr;
     drmmode_overlay_owner queued_owner;
     drmmode_overlay_owner shown_owner;
     drmmode_plane_color_rec color;
@@ -743,11 +748,11 @@ int drmmode_bo_import_alpha(drmmode_ptr drmmode, drmmode_bo *bo,
 void drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
                               drmmode_plane_color_ptr color);
 Bool drmmode_plane_color_supported(xf86CrtcPtr crtc);
+void drmmode_plane_color_fini(xf86CrtcPtr crtc, drmmode_plane_color_ptr color);
 int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
-                                  uint32_t plane_id,
-                                  const drmmode_plane_color_rec *color,
+                                  uint32_t plane_id, drmmode_plane_color_ptr color,
                                   Bool sdr_to_pq, int sdr_white_level,
-                                  uint32_t *matrix_blob);
+                                  Bool reprogram);
 int drmmode_plane_color_refresh_degamma(drmModeAtomicReq *req,
                                         xf86CrtcPtr crtc, uint32_t plane_id,
                                         const drmmode_plane_color_rec *color);

@@ -184,7 +184,6 @@ ms_overlay_presented_promote(xf86CrtcPtr crtc, WindowPtr window, PixmapPtr pixma
 
     overlay->next_fb_id = presented->fbs.pending;
     overlay->next_position = *position;
-    overlay->next_convert_sdr = TRUE;
     accepted = drmmode_overlay_test(crtc);
     ms_overlay_clear_next(crtc);
 
@@ -349,7 +348,6 @@ ms_overlay_presented_fill(xf86CrtcPtr crtc)
 
     overlay->next_fb_id = overlay->presented.fbs.pending;
     overlay->next_position = overlay->presented.position;
-    overlay->next_convert_sdr = TRUE;
 }
 
 Bool

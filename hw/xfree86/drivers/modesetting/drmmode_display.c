@@ -600,9 +600,23 @@ static Bool
 drmmode_hdr_mode_expects_pq(enum drmmode_hdr_mode mode);
 
 static int
+overlay_plane_add_color_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                              const drmmode_hdr_state_rec *state, Bool reprogram)
+{
+    drmmode_overlay_plane_rec *overlay =
+        &((drmmode_crtc_private_ptr) crtc->driver_private)->overlay_plane;
+
+    if (!overlay->color.pipeline_prop)
+        return 0;
+
+    return drmmode_plane_color_add_props(req, crtc, overlay->plane_id, &overlay->color,
+                                         drmmode_hdr_mode_expects_pq(state->mode),
+                                         state->sdr_white_level, reprogram);
+}
+
+static int
 overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
-                        const drmmode_hdr_state_rec *state,
-                        uint32_t *matrix_blob)
+                        const drmmode_hdr_state_rec *state)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
@@ -627,14 +641,7 @@ overlay_plane_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
         ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
                                       DRMMODE_PLANE_IN_FENCE_FD,
                                       overlay->next_fence_fd);
-    if (overlay->color.pipeline_prop)
-        ret |= drmmode_plane_color_add_props(req, crtc, plane_id,
-                                             &overlay->color,
-                                             state->plane_sdr_to_pq ||
-                                             (overlay->next_convert_sdr &&
-                                              drmmode_hdr_mode_expects_pq(state->mode)),
-                                             state->sdr_white_level,
-                                             matrix_blob);
+    ret |= overlay_plane_add_color_props(req, crtc, state, !overlay->fb_id);
     if (blend->prop_id &&
         blend->enum_values[DRMMODE_PLANE_BLEND_PREMULTIPLIED].valid)
         ret |= drmmode_plane_add_prop(req, drmmode_crtc, plane_id,
@@ -651,19 +658,15 @@ drmmode_overlay_test(xf86CrtcPtr crtc)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_hdr_rec *hdr = &drmmode_crtc->hdr;
     drmModeAtomicReq *req;
-    uint32_t matrix = 0;
     int ret;
 
     if (!ms->atomic_modeset || !(req = drmModeAtomicAlloc()))
         return FALSE;
 
-    ret = overlay_plane_add_props(req, crtc, hdr->has_pending ? &hdr->pending : &hdr->current,
-                                  &matrix);
+    ret = overlay_plane_add_props(req, crtc, hdr->has_pending ? &hdr->pending : &hdr->current);
     if (ret == 0)
         ret = drmModeAtomicCommit(ms->fd, req, DRM_MODE_ATOMIC_TEST_ONLY, NULL);
     drmModeAtomicFree(req);
-    if (matrix)
-        drmModeDestroyPropertyBlob(ms->fd, matrix);
     return ret == 0;
 }
 
@@ -1181,7 +1184,7 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
         ret |= plane_add_props(req, crtc, active ? fb_id : 0, x, y);
         if (drmmode_crtc->overlay_plane.fb_id) {
             ms_overlay_clear_next(crtc);
-            ret |= overlay_plane_add_props(req, crtc, NULL, NULL);
+            ret |= overlay_plane_add_props(req, crtc, NULL);
         }
 
         /* Orphaned CRTCs need to be disabled right now in atomic mode */
@@ -1286,7 +1289,6 @@ typedef struct {
 typedef struct {
     drmmode_color_blobs color;
     uint32_t metadata;
-    uint32_t plane_matrix;
 } drmmode_hdr_blobs;
 
 static int
@@ -1383,7 +1385,6 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         Bool with_hdr = hdr->has_pending;
         Bool overlay_toggled = with_overlay &&
             !overlay->fb_id != !overlay->next_fb_id;
-        uint32_t overlay_matrix = 0, primary_matrix = 0;
         Bool cursor_moved;
 
         if (!req)
@@ -1403,7 +1404,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
         if (ret == 0 && with_overlay)
             ret = overlay_plane_add_props(req, crtc,
                                           with_hdr ? &hdr->pending :
-                                          &hdr->current, &overlay_matrix);
+                                          &hdr->current);
         /* amdgpu can lose the colour pipeline of the primary plane when the
          * overlay plane is turned on or off, so it's committed again then.
          */
@@ -1414,7 +1415,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                                                 &drmmode_crtc->plane_color,
                                                 hdr->current.plane_sdr_to_pq,
                                                 hdr->current.sdr_white_level,
-                                                &primary_matrix);
+                                                TRUE);
         if (ret == 0 && with_cursor)
             ret = ms_cursor_add_props(req, crtc);
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
@@ -1422,10 +1423,6 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
             ret = drmModeAtomicCommit(ms->fd, req, flags, data);
         drmModeAtomicFree(req);
         drmmode_destroy_hdr_blobs(drmmode_crtc->drmmode, &hdr_blobs);
-        if (overlay_matrix)
-            drmModeDestroyPropertyBlob(ms->fd, overlay_matrix);
-        if (primary_matrix)
-            drmModeDestroyPropertyBlob(ms->fd, primary_matrix);
 
         if (ret && cursor_moved)
             ms_cursor_set_moved(crtc);
@@ -2896,6 +2893,8 @@ drmmode_crtc_destroy(xf86CrtcPtr crtc)
     if (!ms->atomic_modeset)
         return;
 
+    drmmode_plane_color_fini(crtc, &drmmode_crtc->plane_color);
+    drmmode_plane_color_fini(crtc, &drmmode_crtc->overlay_plane.color);
     drmmode_prop_info_free(drmmode_crtc->props_plane, DRMMODE_PLANE__COUNT);
     xorg_list_for_each_entry_safe(iterator, next, &drmmode_crtc->mode_list, entry) {
         drm_mode_destroy(crtc, iterator);
@@ -5930,7 +5929,9 @@ drmmode_crtc_add_hdr_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                                              &drmmode_crtc->plane_color,
                                              state->plane_sdr_to_pq,
                                              state->sdr_white_level,
-                                             &blobs->plane_matrix);
+                                             TRUE);
+    if (req && drmmode_crtc->overlay_plane.fb_id)
+        ret |= overlay_plane_add_color_props(req, crtc, state, TRUE);
 
     if (update_connectors && drmmode_hdr_mode_signals_hdr(state->mode) &&
         drmModeCreatePropertyBlob(drmmode->fd, metadata, sizeof(*metadata),
@@ -5968,8 +5969,6 @@ drmmode_destroy_hdr_blobs(drmmode_ptr drmmode, const drmmode_hdr_blobs *blobs)
 
     if (blobs->metadata)
         drmModeDestroyPropertyBlob(drmmode->fd, blobs->metadata);
-    if (blobs->plane_matrix)
-        drmModeDestroyPropertyBlob(drmmode->fd, blobs->plane_matrix);
     drmmode_destroy_color_blobs(drmmode, &blobs->color);
     errno = err;
 }
@@ -6249,13 +6248,13 @@ drmmode_crtc_overlay_content(xf86CrtcPtr crtc, Bool *pq)
     const drmmode_hdr_state_rec *state =
         hdr->has_pending ? &hdr->pending : &hdr->current;
 
-    if (state->plane_sdr_to_pq) {
+    if (drmmode_crtc->overlay_plane.color.pipeline_prop) {
         *pq = FALSE;
-        return drmmode_crtc->overlay_plane.color.pipeline_prop != 0;
+        return TRUE;
     }
 
     *pq = drmmode_hdr_mode_expects_pq(state->mode);
-    return TRUE;
+    return !state->plane_sdr_to_pq;
 }
 
 void

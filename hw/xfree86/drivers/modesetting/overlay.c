@@ -390,7 +390,6 @@ ms_overlay_clear_next(xf86CrtcPtr crtc)
         close(overlay->next_fence_fd);
     overlay->next_fence_fd = -1;
     overlay->next_fb_id = 0;
-    overlay->next_convert_sdr = FALSE;
 }
 
 static void

@@ -210,17 +210,47 @@ drmmode_s31_32(double value)
     return value < 0 ? magnitude | (1ULL << 63) : magnitude;
 }
 
-int
-drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
-                              uint32_t plane_id,
-                              const drmmode_plane_color_rec *color,
-                              Bool sdr_to_pq, int sdr_white_level,
-                              uint32_t *matrix_blob)
+/* amdgpu resets a plane whenever any of its colorops changes, which turns
+ * the commit into a full update that completes vblanks late. A new blob
+ * counts as a change even when its contents are equal, so the matrix blob is
+ * kept until it changes or the pipeline has to be reprogrammed.
+ */
+static int
+drmmode_plane_color_update_ctm(xf86CrtcPtr crtc, drmmode_plane_ctm_rec *ctm,
+                               Bool reprogram)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     int fd = drmmode_crtc->drmmode->fd;
-    struct drm_color_ctm_3x4 ctm;
+    struct drm_color_ctm_3x4 wanted;
     double matrix[9];
+    uint32_t blob;
+    int i;
+
+    ms_hdr_desktop_matrix(drmmode_crtc_user_ctm(crtc), matrix);
+    memset(&wanted, 0, sizeof(wanted));
+    for (i = 0; i < 9; i++)
+        wanted.matrix[i / 3 * 4 + i % 3] = drmmode_s31_32(matrix[i]);
+
+    if (ctm->blob && !reprogram &&
+        memcmp(ctm->matrix, wanted.matrix, sizeof(ctm->matrix)) == 0)
+        return 0;
+
+    if (drmModeCreatePropertyBlob(fd, &wanted, sizeof(wanted), &blob))
+        return -1;
+
+    if (ctm->blob)
+        drmModeDestroyPropertyBlob(fd, ctm->blob);
+    ctm->blob = blob;
+    memcpy(ctm->matrix, wanted.matrix, sizeof(ctm->matrix));
+    return 0;
+}
+
+int
+drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
+                              uint32_t plane_id, drmmode_plane_color_ptr color,
+                              Bool sdr_to_pq, int sdr_white_level,
+                              Bool reprogram)
+{
     int i, ret;
 
     ret = drmmode_colorop_set(req, plane_id, color->pipeline_prop,
@@ -228,11 +258,7 @@ drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     if (ret || !sdr_to_pq)
         return ret;
 
-    ms_hdr_desktop_matrix(drmmode_crtc_user_ctm(crtc), matrix);
-    memset(&ctm, 0, sizeof(ctm));
-    for (i = 0; i < 9; i++)
-        ctm.matrix[i / 3 * 4 + i % 3] = drmmode_s31_32(matrix[i]);
-    if (drmModeCreatePropertyBlob(fd, &ctm, sizeof(ctm), matrix_blob))
+    if (drmmode_plane_color_update_ctm(crtc, &color->ctm, reprogram))
         return -1;
 
     for (i = 0; i < color->num_ops; i++) {
@@ -250,7 +276,7 @@ drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                                drmmode_s31_32(sdr_white_level /
                                               COLOROP_PQ_125_NITS));
     ret |= drmmode_colorop_set(req, color->ops[color->matrix.index].id,
-                               color->matrix.value_prop, *matrix_blob);
+                               color->matrix.value_prop, color->ctm.blob);
     ret |= drmmode_colorop_set(req, color->ops[color->inverse_eotf.index].id,
                                color->inverse_eotf.value_prop,
                                color->inverse_eotf.curve);
@@ -265,14 +291,23 @@ drmmode_plane_color_pipeline_init(int fd, uint32_t plane_id,
 
 int
 drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
-                              uint32_t plane_id,
-                              const drmmode_plane_color_rec *color,
+                              uint32_t plane_id, drmmode_plane_color_ptr color,
                               Bool sdr_to_pq, int sdr_white_level,
-                              uint32_t *matrix_blob)
+                              Bool reprogram)
 {
     return 0;
 }
 #endif
+
+void
+drmmode_plane_color_fini(xf86CrtcPtr crtc, drmmode_plane_color_ptr color)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (color->ctm.blob)
+        drmModeDestroyPropertyBlob(drmmode_crtc->drmmode->fd, color->ctm.blob);
+    color->ctm.blob = 0;
+}
 
 static void
 drmmode_plane_degamma_tf_init(int fd, uint32_t plane_id,
