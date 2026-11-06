@@ -2291,6 +2291,8 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
         dixDestroyPixmap(trf->composition.intermediate, 0);
         trf->composition.intermediate = NULL;
     }
+    ms_timer_destroy(&trf->deadline.fd);
+    trf->deadline.at = 0;
     ms_overlay_destroy(crtc);
     trf->composition.pq = FALSE;
     trf->composition.sdr_white_level = drmmode_crtc_sdr_white_level(crtc);
@@ -3376,6 +3378,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, drmModeResPtr mode_res
     xorg_list_init(&drmmode_crtc->mode_list);
     xorg_list_init(&drmmode_crtc->tearfree.dri_flip_list);
     xorg_list_init(&drmmode_crtc->tearfree.plane_flip_list);
+    drmmode_crtc->tearfree.deadline.fd = -1;
     for (i = 0; i < ARRAY_SIZE(drmmode_crtc->tearfree.frames.frame); i++)
         drmmode_crtc->tearfree.frames.frame[i].fence_fd = -1;
     drmmode_crtc->prime_scanout.commit.deadline.fd = -1;

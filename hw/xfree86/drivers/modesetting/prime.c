@@ -27,7 +27,6 @@
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/timerfd.h>
 #include <xf86.h>
 #include <xf86Crtc.h>
 
@@ -119,65 +118,13 @@ ms_prime_clear_direct(xf86CrtcPtr crtc)
     memset(direct, 0, sizeof(*direct));
 }
 
-static Bool
-ms_prime_timer_create(int *fd, NotifyFdProcPtr notify, xf86CrtcPtr crtc)
-{
-    if (*fd >= 0)
-        return TRUE;
-
-    *fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (*fd < 0)
-        return FALSE;
-
-    if (SetNotifyFd(*fd, notify, X_NOTIFY_READ, crtc))
-        return TRUE;
-
-    close(*fd);
-    *fd = -1;
-    return FALSE;
-}
-
-static void
-ms_prime_timer_destroy(int *fd)
-{
-    if (*fd < 0)
-        return;
-
-    SetNotifyFd(*fd, NULL, 0, NULL);
-    close(*fd);
-    *fd = -1;
-}
-
-static void
-ms_prime_timer_set(int fd, uint64_t *armed_at, uint64_t at)
-{
-    struct itimerspec spec = {
-        .it_value = {
-            .tv_sec = at / 1000000,
-            .tv_nsec = at % 1000000 * 1000,
-        },
-    };
-
-    if (*armed_at != at &&
-        !timerfd_settime(fd, at ? TFD_TIMER_ABSTIME : 0, &spec, NULL))
-        *armed_at = at;
-}
-
-static Bool
-ms_prime_timer_expired(int fd)
-{
-    uint64_t expirations;
-
-    return read(fd, &expirations, sizeof(expirations)) == sizeof(expirations);
-}
-
 static void
 ms_prime_commit_reset(xf86CrtcPtr crtc)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_commit_rec *commit = &prime_scanout->commit;
 
-    ms_prime_timer_destroy(&commit->deadline.fd);
+    ms_timer_destroy(&commit->deadline.fd);
     ms_prime_release_fb(crtc, &commit->flight.fb);
     *commit = (drmmode_prime_commit_rec) {
         .flight = { .buf_idx = -1 },
@@ -226,8 +173,7 @@ ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
     BoxRec whole = { 0, 0, ppix->drawable.width, ppix->drawable.height };
     int i;
 
-    if (!ms_prime_timer_create(&commit->deadline.fd, ms_prime_deadline_fired,
-                               crtc)) {
+    if (!ms_timer_create(&commit->deadline.fd, ms_prime_deadline_fired, crtc)) {
         ms_prime_commit_reset(crtc);
         return FALSE;
     }
@@ -442,7 +388,7 @@ ms_prime_commit_schedule(xf86CrtcPtr crtc, uint64_t after)
         from = max(from, commit->last_target + period / 2);
 
     if (!ms_prime_commit_wanted(crtc)) {
-        ms_prime_timer_set(deadline->fd, &deadline->at, 0);
+        ms_timer_set(deadline->fd, &deadline->at, 0);
         return;
     }
 
@@ -451,10 +397,10 @@ ms_prime_commit_schedule(xf86CrtcPtr crtc, uint64_t after)
         deadline->msc = 0;
         deadline->on_time = FALSE;
         if (after) {
-            ms_prime_timer_set(deadline->fd, &deadline->at, max(now, after));
+            ms_timer_set(deadline->fd, &deadline->at, max(now, after));
             return;
         }
-        ms_prime_timer_set(deadline->fd, &deadline->at, 0);
+        ms_timer_set(deadline->fd, &deadline->at, 0);
         ms_prime_commit_now(crtc, 0);
         return;
     }
@@ -468,11 +414,11 @@ ms_prime_commit_schedule(xf86CrtcPtr crtc, uint64_t after)
     deadline->msc = msc;
     deadline->on_time = now < due;
     if (deadline->on_time || after) {
-        ms_prime_timer_set(deadline->fd, &deadline->at, max(now, due));
+        ms_timer_set(deadline->fd, &deadline->at, max(now, due));
         return;
     }
 
-    ms_prime_timer_set(deadline->fd, &deadline->at, 0);
+    ms_timer_set(deadline->fd, &deadline->at, 0);
     ms_prime_commit_now(crtc, 0);
 }
 
@@ -849,7 +795,7 @@ ms_prime_deadline_fired(int fd, int ready, void *data)
         &ms_prime_scanout(crtc)->commit.deadline;
     uint64_t at = deadline->at;
 
-    if (!ms_prime_timer_expired(fd))
+    if (!ms_timer_expired(fd))
         return;
 
     deadline->at = 0;

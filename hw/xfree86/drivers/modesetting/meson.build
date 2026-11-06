@@ -16,6 +16,7 @@ modesetting_srcs = [
     'present.c',
     'prime.c',
     'tearfree.c',
+    'timer.c',
     'vblank.c',
 ]
 

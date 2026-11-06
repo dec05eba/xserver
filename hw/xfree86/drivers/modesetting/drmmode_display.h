@@ -261,6 +261,11 @@ typedef struct {
     drmmode_compose_hold_rec hold;
 } drmmode_compose_timing_rec;
 
+typedef struct {
+    int fd;
+    uint64_t at;
+} drmmode_timer_rec;
+
 typedef enum {
     DRMMODE_OVERLAY_NONE,
     DRMMODE_OVERLAY_MOVING,
@@ -331,6 +336,7 @@ typedef struct {
     uint32_t front_idx;
     uint32_t flip_seq;
     drmmode_compose_timing_rec compose;
+    drmmode_timer_rec deadline;
 } drmmode_tearfree_rec, *drmmode_tearfree_ptr;
 
 typedef struct {

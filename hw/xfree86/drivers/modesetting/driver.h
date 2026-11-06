@@ -357,6 +357,11 @@ int ms_dmabuf_writer_fence(int dmabuf_fd);
 Bool ms_fence_signaled(int fence_fd);
 Bool ms_fence_signal_time(int fence_fd, uint64_t *usec);
 
+Bool ms_timer_create(int *fd, NotifyFdProcPtr notify, void *data);
+void ms_timer_destroy(int *fd);
+void ms_timer_set(int fd, uint64_t *armed_at, uint64_t at);
+Bool ms_timer_expired(int fd);
+
 void ms_overlay_box(RegionPtr cover, const BoxRec *bounds, BoxPtr box);
 PixmapPtr ms_overlay_back_buffer(xf86CrtcPtr crtc);
 void ms_overlay_queue(xf86CrtcPtr crtc, const BoxRec *box);

@@ -239,6 +239,27 @@ ms_tearfree_flip_wanted(xf86CrtcPtr crtc)
         ms_tearfree_dri_waiting(trf);
 }
 
+static void
+ms_tearfree_deadline_fired(int fd, int ready, void *data)
+{
+    drmmode_tearfree_ptr trf = data;
+
+    if (!ms_timer_expired(fd))
+        return;
+
+    trf->deadline.at = 0;
+    SetBlockHandlerDeadline(GetTimeInMicros());
+}
+
+static void
+ms_tearfree_wake_at(xf86CrtcPtr crtc, uint64_t at)
+{
+    drmmode_tearfree_ptr trf = ms_tearfree(crtc);
+
+    if (ms_timer_create(&trf->deadline.fd, ms_tearfree_deadline_fired, trf))
+        ms_timer_set(trf->deadline.fd, &trf->deadline.at, at);
+}
+
 Bool
 ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
 {
@@ -251,6 +272,7 @@ ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
         return TRUE;
 
     AdjustWaitForDelay(timeout, (next - margin - now + 999) / 1000);
+    ms_tearfree_wake_at(crtc, next - margin);
     return FALSE;
 }
 
