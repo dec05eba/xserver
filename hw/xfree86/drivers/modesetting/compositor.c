@@ -1108,7 +1108,8 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc, void *timeout)
     Bool async = scanout->async;
 
     if (ms_compositor_can_direct_flip(crtc)) {
-        if (scanout->covered && !async && !ms_tearfree_compose_due(crtc, timeout))
+        if (scanout->covered && !async && !drmmode_crtc->vrr_enabled &&
+            !ms_tearfree_compose_due(crtc, timeout))
             return TRUE;
 
         scanout->async = FALSE;
