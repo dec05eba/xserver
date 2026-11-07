@@ -139,6 +139,9 @@ present_execute_wait(present_vblank_ptr vblank, uint64_t crtc_msc)
     }
 #endif /* DRI3 */
 
+    if (vblank->executed)
+        return FALSE;
+
     return present_wait_rendering(vblank) ||
         present_throttle_hold(vblank, crtc_msc);
 }
