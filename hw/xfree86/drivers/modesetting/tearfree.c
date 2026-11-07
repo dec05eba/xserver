@@ -27,7 +27,6 @@
 #include <unistd.h>
 #include <xf86drm.h>
 #include "driver.h"
-#include "present.h"
 
 #ifdef HAVE_GBM
 
@@ -349,7 +348,6 @@ ms_tearfree_compose(xf86CrtcPtr crtc, drmmode_tearfree_frame_ptr frame)
     frame->start = GetTimeInMicros();
     frame->fence_fd = drmmode_compose_damage_fenced(crtc, buf->px, &buf->dmg);
     ms_compose_timing_measured(&trf->compose, GetTimeInMicros() - frame->start);
-    present_screen_composed(crtc->scrn->pScreen);
 }
 
 static void

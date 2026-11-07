@@ -194,8 +194,7 @@ present_screen_priv_init(ScreenPtr screen)
 
     dixSetPrivate(&screen->devPrivates, &present_screen_private_key, screen_priv);
     screen_priv->pScreen = screen;
-    screen_priv->throttle.hidden_frame_usec = 1000000;
-    screen_priv->throttle.background_gpu_usage = 100;
+    screen_priv->hidden_frame_usec = 1000000;
     xorg_list_init(&screen_priv->flip_slots);
 
     return screen_priv;
@@ -250,25 +249,7 @@ present_set_hidden_window_fps(ScreenPtr screen, int fps)
     present_screen_priv_ptr screen_priv = present_screen_priv(screen);
 
     if (screen_priv)
-        screen_priv->throttle.hidden_frame_usec = fps > 0 ? 1000000 / fps : 0;
-}
-
-void
-present_set_background_gpu_usage(ScreenPtr screen, int percent)
-{
-    present_screen_priv_ptr screen_priv = present_screen_priv(screen);
-
-    if (screen_priv)
-        screen_priv->throttle.background_gpu_usage = percent;
-}
-
-void
-present_screen_composed(ScreenPtr screen)
-{
-    present_screen_priv_ptr screen_priv = present_screen_priv(screen);
-
-    if (screen_priv)
-        screen_priv->throttle.activity_usec = GetTimeInMicros();
+        screen_priv->hidden_frame_usec = fps > 0 ? 1000000 / fps : 0;
 }
 
 /*

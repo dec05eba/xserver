@@ -1368,10 +1368,11 @@ present_scmd_pixmap(WindowPtr window,
             if (!vblank->pixmap)
                 continue;
 
-            if (!vblank->queued || vblank->throttled)
+            if (!vblank->queued)
                 continue;
 
-            if (vblank->crtc != target_crtc || vblank->target_msc != target_msc)
+            if (!vblank->throttled &&
+                (vblank->crtc != target_crtc || vblank->target_msc != target_msc))
                 continue;
 
             /* Too late to abort now if TearFree execution already happened */

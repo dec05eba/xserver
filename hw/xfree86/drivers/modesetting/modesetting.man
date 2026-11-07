@@ -119,27 +119,15 @@ The default is
 .B off.
 .TP
 .BI "Option \*qHiddenWindowFPS\*q \*q" integer \*q
-With
-.B Compositing,
-applications whose windows are completely covered or off screen show at most
-this many frames per second, so they don't take GPU time from what's visible.
-Applications that wait for their frames to be shown slow down to the same
-rate. 0 lets them run as if they were visible.
+Applications with vsync turned on show at most this many frames per second
+while their windows aren't visible, so they don't take GPU time from what's
+visible. That includes unmapped windows, such as minimized ones, and with
+.B Compositing
+also windows that are completely covered or off screen. Applications with vsync
+turned off keep running at full speed. 0 lets them run as if they were visible.
 .br
 The default is
 .B 1.
-.TP
-.BI "Option \*qBackgroundGPUUsage\*q \*q" integer \*q
-Applications that don't have keyboard focus are slowed down to use at most this
-percentage of the GPU's time, so they don't make the focused application
-stutter. Applications that take longer than half a refresh to render a frame
-show 1 frame per second while something else on the screen updates. With
-.B Compositing,
-windows captured by another application, such as a screen recorder, are not
-slowed down. 100 lets them run at full speed.
-.br
-The default is
-.B 10.
 .TP
 .BI "Option \*qZaphodHeads\*q \*q" string \*q
 Specify the RandR output(s) to use with zaphod mode for a particular driver

@@ -97,8 +97,6 @@ struct present_vblank {
     int                 rendering_fd;   /* readable once the pixmap is rendered */
     Bool                rendered;
     Bool                throttled;
-    uint64_t            requested_usec;
-    uint64_t            rendered_usec;
 #ifdef DRI3
     struct dri3_syncobj *acquire_syncobj;
     struct dri3_syncobj *release_syncobj;
@@ -111,34 +109,9 @@ struct present_vblank {
 typedef struct present_screen_priv present_screen_priv_rec, *present_screen_priv_ptr;
 typedef struct present_window_priv present_window_priv_rec, *present_window_priv_ptr;
 
-typedef struct present_throttle {
-    uint64_t    hidden_frame_usec;
-    int         background_gpu_usage;
-    uint64_t    activity_usec;
-} present_throttle_rec, *present_throttle_ptr;
-
-#define PRESENT_GPU_TIME_MAX_FDS 16
-
-typedef struct present_gpu_time {
-    int         fds[PRESENT_GPU_TIME_MAX_FDS];
-    int         num_fds;
-    uint64_t    scanned_usec;
-} present_gpu_time_rec, *present_gpu_time_ptr;
-
-typedef struct present_gpu_cost {
-    present_gpu_time_rec    time;
-    Bool                    reported;
-    uint64_t                read_usec;
-    uint64_t                read_ns;
-    uint32_t                frames;
-    uint64_t                frame_usec;
-} present_gpu_cost_rec, *present_gpu_cost_ptr;
-
 typedef struct present_client_priv {
-    uint64_t                focused_usec;
-    uint64_t                visible_usec;
-    uint64_t                released_usec;
-    present_gpu_cost_rec    gpu_cost;
+    uint64_t    visible_usec;
+    uint64_t    released_usec;
 } present_client_priv_rec, *present_client_priv_ptr;
 
 /*
@@ -227,7 +200,7 @@ struct present_screen_priv {
     struct xorg_list            flip_slots;
 
     uint32_t                    fake_interval;
-    present_throttle_rec        throttle;
+    uint64_t                    hidden_frame_usec;
 
     present_screen_info_ptr     info;
 
@@ -330,9 +303,6 @@ present_query_capabilities(RRCrtcPtr crtc);
 RRCrtcPtr
 present_get_crtc(WindowPtr window);
 
-uint64_t
-present_crtc_frame_usec(RRCrtcPtr crtc);
-
 void
 present_copy_region(DrawablePtr drawable,
                     PixmapPtr pixmap,
@@ -422,12 +392,6 @@ present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc);
 
 void
 present_execute_post(present_vblank_ptr vblank, uint64_t ust, uint64_t crtc_msc);
-
-/*
- * present_gpu_time.c
- */
-Bool
-present_gpu_time_read(present_gpu_time_ptr gpu_time, pid_t pid, uint64_t now, uint64_t *ns);
 
 /*
  * present_throttle.c

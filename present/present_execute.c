@@ -53,7 +53,6 @@ static void present_syncobj_triggered(int fd, int xevents, void *data)
     SetNotifyFd(fd, NULL, 0, NULL);
     close(fd);
     vblank->efd = -1;
-    vblank->rendered_usec = GetTimeInMicros();
 
     screen_priv->re_execute(vblank);
 }
@@ -68,7 +67,6 @@ present_rendering_done(int fd, int xevents, void *data)
     SetNotifyFd(fd, NULL, 0, NULL);
     close(fd);
     vblank->rendering_fd = -1;
-    vblank->rendered_usec = GetTimeInMicros();
 
     screen_priv->re_execute(vblank);
 }

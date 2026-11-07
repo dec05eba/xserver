@@ -126,19 +126,13 @@ each vblank and they still run uncapped. To show their frames immediately with
 async flips, which can tear, set the `AllowTearing` option to true in the
 Device section of xorg.conf.
 
-Applications whose windows are completely covered or off screen, for example on
-another workspace, are slowed down to 1 frame per second, so they don't take
-GPU time from what you're looking at. The `HiddenWindowFPS` option in the
-Device section of xorg.conf sets that rate, and 0 lets them run as if they were
-visible.
-
-Applications that don't have keyboard focus are slowed down to use at most 10%
-of the GPU's time, so a game left running in the background doesn't make the
-application you're using stutter. Applications that take long to render a frame
-show 1 frame per second while something else on the screen updates. With
-compositing, windows captured by another application, such as a screen
-recorder, are not slowed down. The `BackgroundGPUUsage` option in the Device
-section of xorg.conf sets the percentage, and 100 lets them run at full speed.
+Applications with vsync turned on whose windows are minimized, completely
+covered or off screen, for example on another workspace, are slowed down to 1
+frame per second, so they don't take GPU time from what you're looking at.
+Like on Wayland, applications with vsync turned off keep running at full speed,
+so applications like OBS keep recording while their window is hidden. The
+`HiddenWindowFPS` option in the Device section of xorg.conf sets that rate, and
+0 lets them run as if they were visible.
 
 On laptops with two GPUs, fullscreen applications started with NVIDIA's
 `prime-run` on a monitor connected to the NVIDIA GPU are scanned out straight

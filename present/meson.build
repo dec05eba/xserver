@@ -4,7 +4,6 @@ srcs_present = [
     'present_execute.c',
     'present_fake.c',
     'present_fence.c',
-    'present_gpu_time.c',
     'present_notify.c',
     'present_request.c',
     'present_scmd.c',

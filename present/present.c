@@ -172,25 +172,21 @@ present_window_vblank_timing(WindowPtr window, uint64_t *ust, uint64_t *interval
 {
     present_screen_priv_ptr screen_priv = present_screen_priv(window->drawable.pScreen);
     RRCrtcPtr crtc;
+    RRModePtr mode;
     uint64_t msc;
 
     if (!screen_priv || !screen_priv->info)
         return FALSE;
 
     crtc = present_get_crtc(window);
-    *interval = present_crtc_frame_usec(crtc);
-    return *interval && (*screen_priv->info->get_ust_msc) (crtc, ust, &msc) == Success;
-}
+    mode = crtc ? crtc->mode : NULL;
+    if (!mode || !mode->mode.dotClock ||
+        (*screen_priv->info->get_ust_msc) (crtc, ust, &msc) != Success)
+        return FALSE;
 
-uint64_t
-present_crtc_frame_usec(RRCrtcPtr crtc)
-{
-    RRModePtr mode = crtc ? crtc->mode : NULL;
-
-    if (!mode || !mode->mode.dotClock)
-        return 0;
-
-    return (uint64_t) mode->mode.hTotal * mode->mode.vTotal * 1000000 / mode->mode.dotClock;
+    *interval = (uint64_t) mode->mode.hTotal * mode->mode.vTotal * 1000000 /
+        mode->mode.dotClock;
+    return TRUE;
 }
 
 uint64_t
