@@ -109,6 +109,13 @@ CompositeServerWindowHidden(WindowPtr pWin)
 }
 
 Bool
+CompositeServerWindowCaptured(WindowPtr pWin)
+{
+    return pWin->parent && CompositeServerActive(pWin->drawable.pScreen) &&
+        compServerWindowCaptured(compServerToplevel(pWin));
+}
+
+Bool
 CompositeIsServerRoot(WindowPtr pWin)
 {
     return !pWin->parent && CompositeServerActive(pWin->drawable.pScreen);

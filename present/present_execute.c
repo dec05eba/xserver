@@ -53,55 +53,11 @@ static void present_syncobj_triggered(int fd, int xevents, void *data)
     SetNotifyFd(fd, NULL, 0, NULL);
     close(fd);
     vblank->efd = -1;
+    vblank->rendered_usec = GetTimeInMicros();
 
     screen_priv->re_execute(vblank);
 }
 #endif /* DRI3 */
-
-static uint64_t *
-present_client_last_shown_usec(PixmapPtr pixmap)
-{
-    ClientPtr client = clients[CLIENT_ID(pixmap->drawable.id)];
-
-    return client ? dixLookupPrivate(&client->devPrivates,
-                                     &present_client_private_key) : NULL;
-}
-
-/* Clients like the GPU process of a browser present to all of their windows
- * from one thread, so holding back a hidden window would also stall the
- * visible ones.
- */
-static Bool
-present_wait_shown(present_vblank_ptr vblank, uint64_t crtc_msc)
-{
-    WindowPtr window = vblank->window;
-    ScreenPtr screen = window->drawable.pScreen;
-    present_screen_priv_ptr screen_priv = present_screen_priv(screen);
-    uint64_t hold = screen_priv->hidden_frame_usec;
-    uint64_t now = GetTimeInMicros(), *shown;
-
-    if (!vblank->pixmap || !hold)
-        return FALSE;
-
-    shown = present_client_last_shown_usec(vblank->pixmap);
-    if (!CompositeServerWindowHidden(window)) {
-        vblank->hidden_since = 0;
-        if (shown)
-            *shown = now;
-        return FALSE;
-    }
-
-    if (shown && *shown && now - *shown < hold)
-        return FALSE;
-
-    if (!vblank->hidden_since)
-        vblank->hidden_since = now;
-    if (now - vblank->hidden_since >= hold)
-        return FALSE;
-
-    return screen_priv->queue_vblank(screen, window, vblank->crtc,
-                                     vblank->event_id, crtc_msc + 1) == Success;
-}
 
 static void
 present_rendering_done(int fd, int xevents, void *data)
@@ -112,6 +68,7 @@ present_rendering_done(int fd, int xevents, void *data)
     SetNotifyFd(fd, NULL, 0, NULL);
     close(fd);
     vblank->rendering_fd = -1;
+    vblank->rendered_usec = GetTimeInMicros();
 
     screen_priv->re_execute(vblank);
 }
@@ -124,7 +81,7 @@ present_wait_rendering(present_vblank_ptr vblank)
 
     if (vblank->rendering_fd >= 0)
         return TRUE;
-    if (!vblank->pixmap || !info || info->version < 2 ||
+    if (vblank->rendered || !vblank->pixmap || !info || info->version < 2 ||
         !info->pixmap_rendering_fd)
         return FALSE;
 #ifdef DRI3
@@ -134,8 +91,10 @@ present_wait_rendering(present_vblank_ptr vblank)
 
     vblank->rendering_fd = info->pixmap_rendering_fd(vblank->window,
                                                      vblank->pixmap);
-    if (vblank->rendering_fd < 0)
+    if (vblank->rendering_fd < 0) {
+        vblank->rendered = TRUE;
         return FALSE;
+    }
 
     SetNotifyFd(vblank->rendering_fd, present_rendering_done, X_NOTIFY_READ,
                 vblank);
@@ -180,8 +139,8 @@ present_execute_wait(present_vblank_ptr vblank, uint64_t crtc_msc)
     }
 #endif /* DRI3 */
 
-    return present_wait_shown(vblank, crtc_msc) ||
-        present_wait_rendering(vblank);
+    return present_wait_rendering(vblank) ||
+        present_throttle_hold(vblank, crtc_msc);
 }
 
 void

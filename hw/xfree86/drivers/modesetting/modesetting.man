@@ -129,6 +129,18 @@ rate. 0 lets them run as if they were visible.
 The default is
 .B 1.
 .TP
+.BI "Option \*qBackgroundGPUUsage\*q \*q" integer \*q
+Applications that don't have keyboard focus are slowed down to use at most this
+percentage of the GPU's time, so they don't make the focused application
+stutter. Applications that take longer than half a refresh to render a frame
+show 1 frame per second while something else on the screen updates. With
+.B Compositing,
+windows captured by another application, such as a screen recorder, are not
+slowed down. 100 lets them run at full speed.
+.br
+The default is
+.B 10.
+.TP
 .BI "Option \*qZaphodHeads\*q \*q" string \*q
 Specify the RandR output(s) to use with zaphod mode for a particular driver
 instance.  If you use this option you must use this option for all instances

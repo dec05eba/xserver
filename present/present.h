@@ -189,6 +189,12 @@ extern _X_EXPORT void
 present_set_hidden_window_fps(ScreenPtr screen, int fps);
 
 extern _X_EXPORT void
+present_set_background_gpu_usage(ScreenPtr screen, int percent);
+
+extern _X_EXPORT void
+present_screen_composed(ScreenPtr screen);
+
+extern _X_EXPORT void
 present_check_flips(WindowPtr window);
 
 extern _X_EXPORT PixmapPtr

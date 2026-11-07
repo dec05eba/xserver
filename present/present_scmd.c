@@ -1368,7 +1368,7 @@ present_scmd_pixmap(WindowPtr window,
             if (!vblank->pixmap)
                 continue;
 
-            if (!vblank->queued || vblank->hidden_since)
+            if (!vblank->queued || vblank->throttled)
                 continue;
 
             if (vblank->crtc != target_crtc || vblank->target_msc != target_msc)

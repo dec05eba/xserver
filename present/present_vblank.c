@@ -104,6 +104,7 @@ present_vblank_init(present_vblank_ptr vblank,
     xorg_list_append(&vblank->window_list, &window_priv->vblank);
     xorg_list_init(&vblank->event_queue);
     vblank->rendering_fd = -1;
+    vblank->requested_usec = GetTimeInMicros();
 
     vblank->screen = screen;
     vblank->window = window;

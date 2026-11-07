@@ -667,24 +667,23 @@ ms_present_allow_tearing(ScrnInfoPtr scrn)
 }
 
 static int
-ms_present_hidden_window_fps(ScrnInfoPtr scrn)
+ms_present_option_int(ScrnInfoPtr scrn, int option, int value, int min, int max)
 {
     modesettingPtr ms = modesettingPTR(scrn);
+    const char *name = xf86TokenToOptName(ms->drmmode.Options, option);
     MessageType from = X_DEFAULT;
-    int fps = 1;
+    int config;
 
-    if (xf86GetOptValInteger(ms->drmmode.Options, OPTION_HIDDEN_WINDOW_FPS,
-                             &fps)) {
-        from = X_CONFIG;
-        if (fps < 0) {
-            xf86DrvMsg(scrn->scrnIndex, X_WARNING,
-                       "HiddenWindowFPS must not be negative, using 1\n");
-            from = X_DEFAULT;
-            fps = 1;
+    if (xf86GetOptValInteger(ms->drmmode.Options, option, &config)) {
+        if (config >= min && config <= max) {
+            value = config;
+            from = X_CONFIG;
+        } else {
+            xf86DrvMsg(scrn->scrnIndex, X_WARNING, "%s must be between %d and %d, using %d\n", name, min, max, value);
         }
     }
-    xf86DrvMsg(scrn->scrnIndex, from, "HiddenWindowFPS: %d\n", fps);
-    return fps;
+    xf86DrvMsg(scrn->scrnIndex, from, "%s: %d\n", name, value);
+    return value;
 }
 
 Bool
@@ -705,6 +704,7 @@ ms_present_screen_init(ScreenPtr screen)
     if (!present_screen_init(screen, &ms_present_screen_info))
         return FALSE;
 
-    present_set_hidden_window_fps(screen, ms_present_hidden_window_fps(scrn));
+    present_set_hidden_window_fps(screen, ms_present_option_int(scrn, OPTION_HIDDEN_WINDOW_FPS, 1, 0, 1000));
+    present_set_background_gpu_usage(screen, ms_present_option_int(scrn, OPTION_BACKGROUND_GPU_USAGE, 10, 1, 100));
     return TRUE;
 }

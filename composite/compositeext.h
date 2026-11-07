@@ -62,6 +62,8 @@ extern _X_EXPORT Bool CompositeServerActive(ScreenPtr pScreen);
 
 extern _X_EXPORT Bool CompositeServerWindowHidden(WindowPtr pWin);
 
+extern _X_EXPORT Bool CompositeServerWindowCaptured(WindowPtr pWin);
+
 extern _X_EXPORT Bool CompositeIsServerRoot(WindowPtr pWin);
 
 extern _X_EXPORT Bool CompositeIsServerRedirected(WindowPtr pWin);
