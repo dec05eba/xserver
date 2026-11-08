@@ -222,6 +222,7 @@ typedef struct _CompServerWindow {
     Bool hidden;
     uint64_t damageSerial;
     CARD64 movedAt;
+    CARD64 resizedAt;
     CARD32 presentCount;
     CompServerHeldFrameRec held;
     CompServerFrameWaitRec wait;

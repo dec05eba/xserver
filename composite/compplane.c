@@ -67,7 +67,7 @@ CompositeServerMovingWindow(ScreenPtr pScreen, CARD64 since)
     for (pWin = pScreen->root->firstChild; pWin; pWin = pWin->nextSib) {
         CompServerWindowPtr sw = GetCompServerWindow(pWin);
 
-        if (!sw || !compServerPaintsWindow(pWin) || sw->movedAt <= since)
+        if (!sw || !compServerPaintsWindow(pWin) || sw->movedAt <= since || sw->resizedAt > since)
             continue;
 
         if (sw->held.layers || compServerToplevelOverlapped(pWin, &pWin->borderSize))
@@ -143,6 +143,18 @@ CompositeServerWindowUnobscured(WindowPtr pWin)
         return FALSE;
 
     return !compServerToplevelOverlapped(pTop, &pWin->borderSize);
+}
+
+Bool
+CompositeServerWindowResized(WindowPtr pWin, CARD64 since)
+{
+    CompServerWindowPtr sw;
+
+    if (!pWin->parent)
+        return FALSE;
+
+    sw = GetCompServerWindow(compServerToplevel(pWin));
+    return sw && sw->resizedAt > since;
 }
 
 WindowPtr

@@ -330,6 +330,7 @@ compServerReconfigureFrame(WindowPtr pWin, PixmapPtr pOld, int x, int y,
         return;
     }
 
+    sw->resizedAt = GetTimeInMicros();
     compServerBeginFrameWait(sw);
 }
 

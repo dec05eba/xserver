@@ -36,6 +36,7 @@
 #define MS_OVERLAY_PRESENTED_GAP_USEC 200000
 #define MS_OVERLAY_PRESENTED_REALLOC_USEC 2000000
 #define MS_OVERLAY_PRESENTED_RECENT_USEC 5000000
+#define MS_OVERLAY_PRESENTED_RESIZE_USEC 250000
 
 static drmmode_overlay_plane_rec *
 ms_overlay_presented_plane(xf86CrtcPtr crtc)
@@ -136,6 +137,7 @@ ms_overlay_presented_candidate(xf86CrtcPtr crtc, PixmapPtr *pixmap,
         dixLookupWindow(&window, window_id, serverClient, DixGetAttrAccess) != Success ||
         window->drawable.pScreen != screen || window->drawable.id == presented->rejected_id ||
         (window != presented->window && !ms_overlay_presented_rate_ok(&presented->rate)) ||
+        CompositeServerWindowResized(window, GetTimeInMicros() - MS_OVERLAY_PRESENTED_RESIZE_USEC) ||
         !CompositeServerWindowUnobscured(window))
         return NULL;
 
