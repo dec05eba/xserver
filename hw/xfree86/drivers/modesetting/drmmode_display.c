@@ -4941,6 +4941,11 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
                                                        "nvidia-drm");
     /* nvidia-drm ignores SRC_X and SRC_Y on overlay planes */
     drmmode->overlay_src_offsets = !drmmode_driver_is(drmmode->fd, "nvidia-drm");
+    /* amdgpu reprograms all planes of a CRTC when one changes size, which is too
+     * slow to do on every move, so overlay planes keep the size of their window
+     * and the kernel clips the part that is off the CRTC.
+     */
+    drmmode->overlay_offscreen = drmmode_driver_is(drmmode->fd, "amdgpu");
 #ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
     /* amdgpu flickers whenever the CRTC colour tables change, so SDR content
      * on HDR monitors is converted by the plane instead.

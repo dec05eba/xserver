@@ -197,6 +197,9 @@ ms_overlay_window_position(xf86CrtcPtr crtc, const BoxRec *win,
         return FALSE;
 #endif
 
+    if (ms->drmmode.overlay_offscreen)
+        visible = *win;
+
     position->src_x = visible.x1 - win->x1;
     position->src_y = visible.y1 - win->y1;
     position->box.x1 = visible.x1 - bounds->x1;
