@@ -3241,6 +3241,15 @@ drmmode_crtc_find_overlay_plane(xf86CrtcPtr crtc, int num)
     overlay->moving.buffer = -1;
     overlay->moving.fence_fd = -1;
     RegionNull(&overlay->cover.region);
+
+    /* With more than one monitor active, amdgpu (DCN 3.2) overcommits its
+     * display buffer when an overlay plane is turned on or off ("CRB Config
+     * Warning", REG_WAIT timeouts in dcn32_program_compbuf_size) and the
+     * monitors show a broken frame or stop updating.
+     */
+    if (drmmode_driver_is(drmmode->fd, "amdgpu"))
+        return;
+
     overlay->plane_id = drmmode_crtc_find_plane(crtc, num,
                                                 DRMMODE_PLANE_TYPE_OVERLAY,
                                                 &props);

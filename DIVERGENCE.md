@@ -110,6 +110,9 @@ plane, when the GPU has one for that monitor and no other window covers the
 game. Windows that are being moved are shown on the overlay plane too, so they
 follow the cursor smoothly even while a game keeps the GPU fully busy.
 
+Overlay planes aren't used on AMD GPUs, because they make the monitors flash or
+freeze when more than one monitor is enabled.
+
 X11 rendering has also been made faster, so the desktop stays smooth under heavy
 GPU load.
 
