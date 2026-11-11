@@ -686,6 +686,7 @@ typedef struct {
     Atom atom;
     Atom capable_atom;
     Atom sdr_white_level_atom;
+    Atom metadata_atom;
 } drmmode_output_hdr_rec;
 
 typedef struct {

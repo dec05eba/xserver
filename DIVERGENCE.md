@@ -189,6 +189,10 @@ that can be changed while the X server runs:
 - `HDR`: 1 enables HDR on the output, 0 disables it.
 - `SDR white level`: the SDR white level in nits, from 1 to 10000.
 - `HDR capable`: read-only, 1 if the monitor supports HDR10.
+- `HDR output metadata`: read-only, the `struct hdr_output_metadata` from the
+  kernel's drm_mode.h (type CARDINAL, format 8) that the monitor gets, with the
+  peak luminance and primaries from its EDID. Applications can use it to fit
+  HDR content to the monitor themselves.
 
 For example:
 

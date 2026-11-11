@@ -3791,6 +3791,19 @@ drmmode_output_update_hdr_property(xf86OutputPtr output)
 }
 
 static void
+drmmode_output_update_metadata_property(xf86OutputPtr output)
+{
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+
+    if (drmmode_output->hdr.metadata_atom)
+        RRChangeOutputProperty(output->randr_output,
+                               drmmode_output->hdr.metadata_atom,
+                               XA_CARDINAL, 8, PropModeReplace,
+                               sizeof(drmmode_output->hdr.display_metadata),
+                               &drmmode_output->hdr.display_metadata, TRUE, FALSE);
+}
+
+static void
 drmmode_output_update_hdr_capable(xf86OutputPtr output)
 {
     drmmode_output_private_ptr drmmode_output = output->driver_private;
@@ -3806,6 +3819,7 @@ drmmode_output_update_hdr_capable(xf86OutputPtr output)
 
     drmmode_output->hdr.display_metadata = metadata;
     modesettingPTR(output->scrn)->output_mode_dirty = TRUE;
+    drmmode_output_update_metadata_property(output);
     if (capable == drmmode_output->hdr.pq_supported)
         return;
 
@@ -3972,6 +3986,26 @@ drmmode_output_create_range_property(xf86OutputPtr output, const char *name,
     return atom;
 }
 
+static Atom
+drmmode_output_create_metadata_property(xf86OutputPtr output, const char *name)
+{
+    Atom atom = MakeAtom(name, strlen(name), TRUE);
+    int err;
+
+    if (atom == BAD_RESOURCE)
+        return None;
+
+    err = RRConfigureOutputProperty(output->randr_output, atom, FALSE, FALSE,
+                                    TRUE, 0, NULL);
+    if (err != 0) {
+        xf86DrvMsg(output->scrn->scrnIndex, X_ERROR,
+                   "Failed to create output property %s: %d\n", name, err);
+        return None;
+    }
+
+    return atom;
+}
+
 static void
 drmmode_output_create_resources(xf86OutputPtr output)
 {
@@ -4063,6 +4097,9 @@ drmmode_output_create_resources(xf86OutputPtr output)
                                                  1, 10000,
                                                  drmmode_output->hdr.sdr_white_level,
                                                  FALSE);
+        drmmode_output->hdr.metadata_atom =
+            drmmode_output_create_metadata_property(output, "HDR output metadata");
+        drmmode_output_update_metadata_property(output);
         drmmode_output_update_hdr_property(output);
     }
 
