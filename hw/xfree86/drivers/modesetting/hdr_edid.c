@@ -52,7 +52,9 @@ typedef struct {
     double max_luminance;
     double max_fall;
     double min_luminance;
-} ms_hdr_edid_luminance_rec;
+    Bool has_primaries;
+    double primaries[6];
+} ms_hdr_edid_display_rec;
 
 static const uint8_t dolby_oui[] = { 0x46, 0xd0, 0x00 };
 
@@ -85,52 +87,111 @@ ms_hdr_edid_parse_primaries(const uint8_t *edid,
 }
 
 static void
-ms_hdr_edid_parse_static(const uint8_t *data, int len,
-                         ms_hdr_edid_luminance_rec *luminance)
+ms_hdr_edid_set_primaries(struct hdr_metadata_infoframe *info, const double *primaries)
 {
-    luminance->pq = (data[1] & CTA_EOTF_SMPTE_ST2084) != 0;
+    int i;
+
+    for (i = 0; i < 3; i++) {
+        info->display_primaries[i].x = lrint(primaries[i * 2] * METADATA_CHROMATICITY_SCALE);
+        info->display_primaries[i].y = lrint(primaries[i * 2 + 1] * METADATA_CHROMATICITY_SCALE);
+    }
+}
+
+static void
+ms_hdr_edid_parse_static(const uint8_t *data, int len,
+                         ms_hdr_edid_display_rec *parsed)
+{
+    parsed->pq = (data[1] & CTA_EOTF_SMPTE_ST2084) != 0;
     if (len >= 4 && data[3])
-        luminance->max_luminance = ms_hdr_edid_luminance(data[3]);
+        parsed->max_luminance = ms_hdr_edid_luminance(data[3]);
     if (len >= 5 && data[4])
-        luminance->max_fall = ms_hdr_edid_luminance(data[4]);
+        parsed->max_fall = ms_hdr_edid_luminance(data[4]);
     if (len >= 6)
-        luminance->min_luminance = luminance->max_luminance *
+        parsed->min_luminance = parsed->max_luminance *
             pow(data[5] / 255.0, 2.0) / 100.0;
+}
+
+static Bool
+ms_hdr_edid_parse_dolby_primaries(const uint8_t *data, int len, double *xy)
+{
+    int i;
+
+    switch (data[0] >> 5) {
+    case 0:
+        if (len < 10)
+            return FALSE;
+        for (i = 0; i < 3; i++) {
+            const uint8_t *primary = data + 1 + i * 3;
+
+            xy[i * 2] = ((primary[1] << 4) | (primary[0] >> 4)) / 4096.0;
+            xy[i * 2 + 1] = ((primary[2] << 4) | (primary[0] & 0xf)) / 4096.0;
+        }
+        return TRUE;
+    case 1:
+        if (len >= 10) {
+            for (i = 0; i < 6; i++)
+                xy[i] = data[4 + i] / 256.0;
+            return TRUE;
+        }
+        if (len < 7)
+            return FALSE;
+        xy[0] = (0xa0 | data[6] >> 3) / 256.0;
+        xy[1] = (0x40 | (data[6] & 0x7) << 2 | (data[5] & 0x1) << 1 | (data[4] & 0x1)) / 256.0;
+        xy[2] = (data[4] >> 1) / 256.0;
+        xy[3] = (0x80 | data[5] >> 1) / 256.0;
+        xy[4] = (0x20 | data[3] >> 5) / 256.0;
+        xy[5] = (0x08 | (data[3] >> 2 & 0x7)) / 256.0;
+        return TRUE;
+    case 2:
+        if (len < 7)
+            return FALSE;
+        xy[0] = (0xa0 | data[5] >> 3) / 256.0;
+        xy[1] = (0x40 | data[6] >> 3) / 256.0;
+        xy[2] = (data[3] >> 1) / 256.0;
+        xy[3] = (0x80 | data[4] >> 1) / 256.0;
+        xy[4] = (0x20 | (data[5] & 0x7)) / 256.0;
+        xy[5] = (0x08 | (data[6] & 0x7)) / 256.0;
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static void
 ms_hdr_edid_parse_dolby(const uint8_t *data, int len,
-                        ms_hdr_edid_luminance_rec *luminance)
+                        ms_hdr_edid_display_rec *parsed)
 {
+    parsed->has_primaries = ms_hdr_edid_parse_dolby_primaries(data, len,
+                                                              parsed->primaries);
+
     switch (data[0] >> 5) {
     case 0:
         if (len < 16)
             return;
-        luminance->max_luminance =
+        parsed->max_luminance =
             ms_hdr_pq_eotf(((data[15] << 4) | (data[13] & 0xf)) / 4095.0);
-        luminance->min_luminance =
+        parsed->min_luminance =
             ms_hdr_pq_eotf(((data[14] << 4) | (data[13] >> 4)) / 4095.0);
         break;
     case 1:
         if (len < 3)
             return;
-        luminance->max_luminance = 100 + (data[1] >> 1) * 50;
-        luminance->min_luminance = pow((data[2] >> 1) / 127.0, 2.0);
+        parsed->max_luminance = 100 + (data[1] >> 1) * 50;
+        parsed->min_luminance = pow((data[2] >> 1) / 127.0, 2.0);
         break;
     case 2:
         if (len < 3)
             return;
-        luminance->max_luminance =
+        parsed->max_luminance =
             ms_hdr_pq_eotf((2055 + 65 * (data[2] >> 3)) / 4095.0);
-        luminance->min_luminance =
+        parsed->min_luminance =
             ms_hdr_pq_eotf(20 * (data[1] >> 3) / 4095.0);
         break;
     }
 }
 
 static void
-ms_hdr_edid_parse_cta(const uint8_t *ext, ms_hdr_edid_luminance_rec *hdr_static,
-                      ms_hdr_edid_luminance_rec *dolby)
+ms_hdr_edid_parse_cta(const uint8_t *ext, ms_hdr_edid_display_rec *hdr_static,
+                      ms_hdr_edid_display_rec *dolby)
 {
     int end = ext[2];
     int i, len;
@@ -158,8 +219,8 @@ ms_hdr_parse_edid(const uint8_t *edid, size_t size,
                   struct hdr_output_metadata *metadata)
 {
     struct hdr_metadata_infoframe *info = &metadata->hdmi_metadata_type1;
-    ms_hdr_edid_luminance_rec hdr_static = { 0 }, dolby = { 0 };
-    const ms_hdr_edid_luminance_rec *luminance;
+    ms_hdr_edid_display_rec hdr_static = { 0 }, dolby = { 0 };
+    const ms_hdr_edid_display_rec *luminance;
     size_t block;
 
     *metadata = (struct hdr_output_metadata) {
@@ -183,6 +244,9 @@ ms_hdr_parse_edid(const uint8_t *edid, size_t size,
         if (ext[0] == CTA_EXTENSION_TAG && ext[2] < EDID_BLOCK_SIZE)
             ms_hdr_edid_parse_cta(ext, &hdr_static, &dolby);
     }
+
+    if (dolby.has_primaries && ms_hdr_gamut_valid(dolby.primaries))
+        ms_hdr_edid_set_primaries(info, dolby.primaries);
 
     luminance = dolby.max_luminance > 0 ? &dolby : &hdr_static;
     if (luminance->max_luminance > 0) {

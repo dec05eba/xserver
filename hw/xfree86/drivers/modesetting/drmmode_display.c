@@ -610,8 +610,10 @@ overlay_plane_add_color_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
         return 0;
 
     return drmmode_plane_color_add_props(req, crtc, overlay->plane_id, &overlay->color,
-                                         drmmode_hdr_mode_expects_pq(state->mode),
-                                         state->sdr_white_level, reprogram);
+                                         drmmode_hdr_mode_expects_pq(state->mode) ?
+                                         DRMMODE_PLANE_COLOR_SDR_TO_PQ :
+                                         DRMMODE_PLANE_COLOR_BYPASS,
+                                         state, reprogram);
 }
 
 static int
@@ -1324,6 +1326,18 @@ drmmode_hdr_cursor_expects_pq(const drmmode_hdr_state_rec *state)
     return drmmode_hdr_mode_expects_pq(state->mode) && !state->plane_sdr_to_pq;
 }
 
+static drmmode_plane_color_mode
+drmmode_primary_plane_color_mode(xf86CrtcPtr crtc, const drmmode_hdr_state_rec *state)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (state->plane_sdr_to_pq)
+        return DRMMODE_PLANE_COLOR_SDR_TO_PQ;
+    if (drmmode_plane_color_maps_pq(&drmmode_crtc->plane_color, &state->pq_map))
+        return DRMMODE_PLANE_COLOR_PQ_MAP;
+    return DRMMODE_PLANE_COLOR_BYPASS;
+}
+
 static Bool
 drmmode_crtc_test_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y)
 {
@@ -1360,6 +1374,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_fb_layout_rec layout = drmmode_fb_get_layout(ms->fd, fb_id);
     drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
+    Bool layout_changed = !drmmode_fb_layout_equal(&layout, &drmmode_crtc->scanout_layout);
     Bool format_changed = layout.format != drmmode_crtc->scanout_layout.format;
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
     Bool with_overlay, with_cursor = ms_cursor_needs_commit(crtc);
@@ -1373,8 +1388,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
 
     /* The kernel rejects async flips that change anything other than the frame buffer, including its format,
      * modifier or pitch */
-    if (!drmmode_fb_layout_equal(&layout, &drmmode_crtc->scanout_layout) ||
-        (ms->atomic_modeset && src_changed) ||
+    if (layout_changed || (ms->atomic_modeset && src_changed) ||
         drmmode_crtc->hdr.has_pending || with_overlay || with_cursor)
         flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
@@ -1406,16 +1420,18 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                                           with_hdr ? &hdr->pending :
                                           &hdr->current);
         /* amdgpu can lose the colour pipeline of the primary plane when the
-         * overlay plane is turned on or off, so it's committed again then.
+         * overlay plane is turned on or off or the frame buffer layout changes,
+         * for example between composited and directly shown windows, so it's
+         * committed again then.
          */
-        if (ret == 0 && overlay_toggled && !with_hdr &&
+        if (ret == 0 && (overlay_toggled || layout_changed) && !with_hdr &&
             drmmode_plane_color_supported(crtc))
             ret = drmmode_plane_color_add_props(req, crtc,
                                                 drmmode_crtc->plane_id,
                                                 &drmmode_crtc->plane_color,
-                                                hdr->current.plane_sdr_to_pq,
-                                                hdr->current.sdr_white_level,
-                                                TRUE);
+                                                drmmode_primary_plane_color_mode(crtc,
+                                                                                 &hdr->current),
+                                                &hdr->current, TRUE);
         if (ret == 0 && with_cursor)
             ret = ms_cursor_add_props(req, crtc);
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
@@ -5854,27 +5870,55 @@ drmmode_crtc_fill_identity_color_blobs(xf86CrtcPtr crtc,
         (blobs->gamma_lut || !props[DRMMODE_CRTC_GAMMA_LUT].prop_id);
 }
 
+/* Without a plane colour pipeline that can do it, PQ content is tone mapped
+ * after blending. The gamut can't be mapped there.
+ */
 static Bool
-drmmode_crtc_create_color_blobs(xf86CrtcPtr crtc, enum drmmode_hdr_mode mode,
-                                const struct hdr_output_metadata *metadata,
-                                int sdr_white_level, drmmode_color_blobs *blobs)
+drmmode_crtc_create_pq_map_color_blobs(xf86CrtcPtr crtc,
+                                       const drmmode_hdr_state_rec *state,
+                                       drmmode_color_blobs *blobs)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    int size = drmmode_crtc->props[DRMMODE_CRTC_GAMMA_LUT_SIZE].value;
+    struct drm_color_lut *gamma;
+
+    if (!state->pq_map.tone_map || size < 2 ||
+        drmmode_primary_plane_color_mode(crtc, state) == DRMMODE_PLANE_COLOR_PQ_MAP)
+        return TRUE;
+
+    gamma = calloc(size, sizeof(*gamma));
+    if (!gamma)
+        return FALSE;
+
+    ms_hdr_pq_map_gamma(&state->pq_map, gamma, size);
+    blobs->gamma_lut = drmmode_create_blob(drmmode_crtc->drmmode, gamma,
+                                           sizeof(*gamma) * size);
+    free(gamma);
+    return blobs->gamma_lut != 0;
+}
+
+static Bool
+drmmode_crtc_create_color_blobs(xf86CrtcPtr crtc,
+                                const drmmode_hdr_state_rec *state,
+                                drmmode_color_blobs *blobs)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     Bool ret = FALSE;
 
     *blobs = (drmmode_color_blobs) { 0 };
 
-    switch (mode) {
+    switch (state->mode) {
     case DRMMODE_HDR_OFF:
         ret = drmmode_crtc_create_sdr_color_blobs(crtc, blobs);
         break;
     case DRMMODE_HDR_DESKTOP:
     case DRMMODE_HDR_TONEMAP:
-        ret = drmmode_crtc_create_lut_color_blobs(crtc, mode, metadata,
-                                                  sdr_white_level, blobs);
+        ret = drmmode_crtc_create_lut_color_blobs(crtc, state->mode,
+                                                  &state->metadata,
+                                                  state->sdr_white_level, blobs);
         break;
     case DRMMODE_HDR_PASSTHROUGH:
-        ret = TRUE;
+        ret = drmmode_crtc_create_pq_map_color_blobs(crtc, state, blobs);
         break;
     }
 
@@ -5922,9 +5966,7 @@ drmmode_crtc_add_hdr_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     int i, ret = 0;
 
     if (drmmode_crtc->use_gamma_lut) {
-        if (drmmode_crtc_create_color_blobs(crtc, state->mode, metadata,
-                                            state->sdr_white_level,
-                                            &blobs->color))
+        if (drmmode_crtc_create_color_blobs(crtc, state, &blobs->color))
             ret |= drmmode_crtc_set_color_props(req, crtc, &blobs->color);
         else
             ret = -1;
@@ -5935,9 +5977,8 @@ drmmode_crtc_add_hdr_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
     if (req && drmmode_plane_color_supported(crtc))
         ret |= drmmode_plane_color_add_props(req, crtc, drmmode_crtc->plane_id,
                                              &drmmode_crtc->plane_color,
-                                             state->plane_sdr_to_pq,
-                                             state->sdr_white_level,
-                                             TRUE);
+                                             drmmode_primary_plane_color_mode(crtc, state),
+                                             state, TRUE);
     if (req && drmmode_crtc->overlay_plane.fb_id)
         ret |= overlay_plane_add_color_props(req, crtc, state, TRUE);
 
@@ -6120,13 +6161,22 @@ drmmode_crtc_display_metadata(xf86CrtcPtr crtc,
         *metadata = drmmode_output->hdr.display_metadata;
 }
 
+int
+drmmode_crtc_display_peak(xf86CrtcPtr crtc)
+{
+    drmmode_output_private_ptr drmmode_output = drmmode_crtc_first_output(crtc);
+
+    return drmmode_output ? drmmode_output->hdr.display_metadata.hdmi_metadata_type1.max_cll : 0;
+}
+
 static Bool
 drmmode_hdr_state_equal(const drmmode_hdr_state_rec *a,
                         const drmmode_hdr_state_rec *b)
 {
     return a->mode == b->mode && a->plane_sdr_to_pq == b->plane_sdr_to_pq &&
         a->sdr_white_level == b->sdr_white_level &&
-        memcmp(&a->metadata, &b->metadata, sizeof(a->metadata)) == 0;
+        memcmp(&a->metadata, &b->metadata, sizeof(a->metadata)) == 0 &&
+        memcmp(&a->pq_map, &b->pq_map, sizeof(a->pq_map)) == 0;
 }
 
 static Bool
@@ -6214,10 +6264,13 @@ drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc)
     return drmmode_crtc->hdr.has_pending;
 }
 
+/* Composed HDR windows are tone mapped by the compositor, each by its own
+ * metadata, so only their gamut is mapped here.
+ */
 Bool
 drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
                                  const struct hdr_output_metadata *metadata,
-                                 Bool with_next_flip)
+                                 Bool composed, Bool with_next_flip)
 {
     drmmode_hdr_state_rec state = {
         .mode = DRMMODE_HDR_OFF,
@@ -6235,6 +6288,9 @@ drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
         drmmode_crtc_display_metadata(crtc, &state.metadata);
     else if (metadata && state.mode == DRMMODE_HDR_TONEMAP)
         state.metadata = *metadata;
+
+    if (pq && metadata && state.mode == DRMMODE_HDR_PASSTHROUGH)
+        ms_hdr_pq_map_init(&state.pq_map, metadata, &state.metadata, !composed);
 
     return drmmode_crtc_set_hdr_state(crtc, &state, with_next_flip) &&
         (!pq || state.mode != DRMMODE_HDR_OFF);

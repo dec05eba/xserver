@@ -8,6 +8,7 @@ modesetting_srcs = [
     'dumb_bo.c',
     'hdr.c',
     'hdr_edid.c',
+    'hdr_map.c',
     'offload.c',
     'overlay.c',
     'overlay_moving.c',

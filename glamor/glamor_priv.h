@@ -235,6 +235,7 @@ typedef struct {
     GLint               matrix_uniform;
     GLint               sdr_white_uniform;
     GLint               peak_uniform;
+    GLint               display_peak_uniform;
     GLint               opacity_uniform;
 } glamor_color_program;
 

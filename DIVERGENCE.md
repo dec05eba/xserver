@@ -195,6 +195,13 @@ For example:
 
 Changes made with xrandr last until the X server exits.
 
+HDR windows that are brighter than the monitor, or use colors it can't show, are
+fitted to the brightness and colors the monitor reports, so the monitor doesn't
+have to clip them. Each HDR window is fitted by its own brightness, so other
+windows on the monitor stay the same. Only the most saturated colors are
+adjusted. On AMD GPUs with Linux 6.19 or newer both brightness and colors are
+fitted, on other GPUs only the brightness.
+
 For best result change your monitor/TVs "Dynamic Tone Mapping" option to "HGiG" or "Off".
 
 Vulkan games and applications can output HDR through the X11 HDR Vulkan layer

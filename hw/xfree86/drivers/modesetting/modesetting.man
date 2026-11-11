@@ -178,8 +178,14 @@ CTM and GAMMA_LUT CRTC properties. Fullscreen windows with the
 hdr_output_metadata property are passed through unconverted. Switching between
 them does not require a modeset, so it is instant. With Compositing, the
 monitor is composited in HDR10, so other windows with the property are shown
-as HDR too. The monitor always gets metadata with the luminance it reports in its
-EDID.
+as HDR too. The monitor always gets metadata with the luminance and primaries
+it reports in its EDID, preferring its Dolby Vision data block. Windows whose
+metadata exceeds that luminance are tone mapped to it with the ITU-R BT.2390
+EETF, and windows with a wider gamut are compressed into the monitor's gamut.
+Composited windows are tone mapped each by its own metadata while compositing.
+Windows shown directly are tone mapped with the plane COLOR_PIPELINE when it
+has a 1D LUT, otherwise with the GAMMA_LUT CRTC property. The gamut is compressed
+with the 3D LUT of the plane COLOR_PIPELINE when there is one.
 On monitors with HDR disabled these windows are tone mapped to SDR. This
 sets the initial value
 of the

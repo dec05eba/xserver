@@ -62,6 +62,7 @@ use_color(DrawablePtr drawable, GCPtr gc, glamor_program *prog, void *arg)
     glUniformMatrix3fv(color->matrix_uniform, 1, GL_FALSE, matrix);
     glUniform1f(color->sdr_white_uniform, conversion->sdr_white);
     glUniform1f(color->peak_uniform, conversion->peak);
+    glUniform1f(color->display_peak_uniform, conversion->display_peak);
     glUniform1f(color->opacity_uniform, args->opacity);
 
     return TRUE;
@@ -81,6 +82,7 @@ static const glamor_facet glamor_facet_color = {
                 "uniform mat3 conversion;\n"
                 "uniform float sdr_white;\n"
                 "uniform float peak;\n"
+                "uniform float display_peak;\n"
                 "uniform float opacity;\n"
                 "vec3 pq_to_nits(vec3 e) {\n"
                 "       vec3 p = pow(clamp(e, 0.0, 1.0), vec3(1.0 / 78.84375));\n"
@@ -101,13 +103,28 @@ static const glamor_facet glamor_facet_color = {
                 "       float tp = (p - knee) / (1.0 - knee);\n"
                 "       float mapped = knee + (1.0 - knee) * t * (1.0 + t / (tp * tp)) / (1.0 + t);\n"
                 "       return c * (mapped / m);\n"
+                "}\n"
+                "vec3 eetf(vec3 e) {\n"
+                "       if (display_peak <= 0.0)\n"
+                "               return e;\n"
+                "       float source = nits_to_pq(vec3(peak)).r;\n"
+                "       float target = nits_to_pq(vec3(display_peak)).r / source;\n"
+                "       float knee = max(1.5 * target - 0.5, 0.0);\n"
+                "       vec3 v = min(e / source, 1.0);\n"
+                "       vec3 t = max((v - knee) / (1.0 - knee), 0.0);\n"
+                "       vec3 t2 = t * t;\n"
+                "       vec3 t3 = t2 * t;\n"
+                "       vec3 spline = ((2.0 * t3 - 3.0 * t2 + 1.0) * knee +\n"
+                "                      (t3 - 2.0 * t2 + t) * (1.0 - knee) +\n"
+                "                      (-2.0 * t3 + 3.0 * t2) * target) * source;\n"
+                "       return mix(e, spline, step(knee, v));\n"
                 "}\n"),
     .fs_exec = ("       vec4 s = texture(sampler, fill_pos);\n"
                 "       float a = src_alpha > 0.5 ? s.a : 1.0;\n"
                 "       vec3 c = s.rgb / max(a, 0.000001);\n"
                 "       vec3 l = src_pq > 0.5 ? pq_to_nits(c) : pow(c, vec3(2.2)) * sdr_white;\n"
                 "       l = max(conversion * l, 0.0);\n"
-                "       vec3 e = dst_pq > 0.5 ? nits_to_pq(l) :\n"
+                "       vec3 e = dst_pq > 0.5 ? eetf(nits_to_pq(l)) :\n"
                 "                pow(min(tone_map(l / sdr_white), 1.0), vec3(1.0 / 2.2));\n"
                 "       a *= opacity;\n"
                 "       frag_color = vec4(e * a, a);\n"),
@@ -131,6 +148,8 @@ glamor_build_color_program(ScreenPtr screen, glamor_color_program *color)
     color->sdr_white_uniform = glGetUniformLocation(color->prog.prog,
                                                     "sdr_white");
     color->peak_uniform = glGetUniformLocation(color->prog.prog, "peak");
+    color->display_peak_uniform = glGetUniformLocation(color->prog.prog,
+                                                       "display_peak");
     color->opacity_uniform = glGetUniformLocation(color->prog.prog, "opacity");
     return TRUE;
 }

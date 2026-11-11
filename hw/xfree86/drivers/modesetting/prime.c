@@ -207,10 +207,12 @@ ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
         drmmode_crtc_set_scanout_content(crtc, direct->pq,
                                          direct->has_metadata ?
                                          &direct->metadata : NULL,
-                                         with_next_flip);
+                                         FALSE, with_next_flip);
     else
         drmmode_crtc_set_scanout_content(crtc, prime_scanout->composition.pq,
-                                         NULL, with_next_flip);
+                                         prime_scanout->composition_has_metadata ?
+                                         &prime_scanout->composition_metadata : NULL,
+                                         TRUE, with_next_flip);
 }
 
 static msPixmapPrivPtr

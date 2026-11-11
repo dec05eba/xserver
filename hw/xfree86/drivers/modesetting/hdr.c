@@ -118,7 +118,7 @@ ms_hdr_update(ScreenPtr screen)
         }
 
         metadata = ms_fullscreen_hdr_output_metadata(screen->root, &crtc->bounds);
-        drmmode_crtc_set_scanout_content(crtc, metadata != NULL, metadata, FALSE);
+        drmmode_crtc_set_scanout_content(crtc, metadata != NULL, metadata, FALSE, FALSE);
     }
 }
 
@@ -144,12 +144,6 @@ static const double bt2020_to_bt709[9] = {
     -0.0181511, -0.1005787, 1.1187299,
 };
 
-static const double pq_m1 = 2610.0 / 16384.0;
-static const double pq_m2 = 2523.0 / 4096.0 * 128.0;
-static const double pq_c1 = 3424.0 / 4096.0;
-static const double pq_c2 = 2413.0 / 4096.0 * 32.0;
-static const double pq_c3 = 2392.0 / 4096.0 * 32.0;
-
 static uint16_t
 ms_hdr_lut_value(double value)
 {
@@ -172,46 +166,11 @@ ms_hdr_linearize_ramp(const uint16_t *ramp, int size, double x)
     return ms_hdr_lut_value(pow(ms_hdr_sample_ramp(ramp, size, x), SDR_GAMMA));
 }
 
-double
-ms_hdr_pq_eotf(double value)
-{
-    const double p = pow(value, 1.0 / pq_m2);
-
-    return 10000.0 * pow(fmax(p - pq_c1, 0.0) / (pq_c2 - pq_c3 * p), 1.0 / pq_m1);
-}
-
-static double
-ms_hdr_pq_inverse_eotf(double nits)
-{
-    const double y = pow(nits / 10000.0, pq_m1);
-
-    return pow((pq_c1 + pq_c2 * y) / (1.0 + pq_c3 * y), pq_m2);
-}
-
-static double
-ms_hdr_tone_map(double value, double peak)
-{
-    const double knee = 0.75;
-    double t, peak_t;
-
-    if (value <= knee || peak <= 1.0)
-        return value;
-
-    t = (value - knee) / (1.0 - knee);
-    peak_t = (peak - knee) / (1.0 - knee);
-    return knee + (1.0 - knee) * t * (1.0 + t / (peak_t * peak_t)) / (1.0 + t);
-}
-
 static double
 ms_hdr_content_peak(const struct hdr_output_metadata *metadata, int white_level)
 {
-    double peak = 0.0;
+    double peak = ms_hdr_metadata_peak(metadata);
 
-    if (metadata) {
-        peak = metadata->hdmi_metadata_type1.max_cll;
-        if (!peak)
-            peak = metadata->hdmi_metadata_type1.max_display_mastering_luminance;
-    }
     if (!peak)
         peak = 1000.0;
 
@@ -232,20 +191,6 @@ ms_hdr_double_to_ctm(double value)
     uint64_t magnitude = llround(fabs(value) * 4294967296.0);
 
     return value < 0 ? magnitude | (1ULL << 63) : magnitude;
-}
-
-static void
-ms_hdr_matrix_multiply(const double *a, const double *b, double *out)
-{
-    int row, col, i;
-
-    for (row = 0; row < 3; row++) {
-        for (col = 0; col < 3; col++) {
-            out[row * 3 + col] = 0.0;
-            for (i = 0; i < 3; i++)
-                out[row * 3 + col] += a[row * 3 + i] * b[i * 3 + col];
-        }
-    }
 }
 
 static void
@@ -350,6 +295,22 @@ ms_hdr_tonemap_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
 }
 
 void
+ms_hdr_pq_map_gamma(const ms_hdr_pq_map_rec *map, struct drm_color_lut *gamma, int size)
+{
+    int i;
+
+    for (i = 0; i < size; i++) {
+        uint16_t value = ms_hdr_lut_value(ms_hdr_pq_map_tone(map, (double)i / (size - 1)));
+
+        gamma[i] = (struct drm_color_lut) {
+            .red = value,
+            .green = value,
+            .blue = value,
+        };
+    }
+}
+
+void
 ms_hdr_sdr_to_pq_table(int white_level, uint8_t *table)
 {
     int i;
@@ -379,7 +340,27 @@ ms_hdr_pq_to_sdr_conversion(const struct hdr_output_metadata *metadata,
     conversion->dst = GLAMOR_COLOR_SDR;
     conversion->sdr_white = white_level;
     conversion->peak = ms_hdr_content_peak(metadata, white_level);
+    conversion->display_peak = 0.0;
     ms_hdr_set_conversion_matrix(bt2020_to_bt709, conversion);
+}
+
+Bool
+ms_hdr_pq_to_pq_conversion(const struct hdr_output_metadata *metadata,
+                           int display_peak, glamor_color_conversion *conversion)
+{
+    static const double identity[9] = { 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 };
+    int peak = ms_hdr_tone_map_peak(metadata, display_peak);
+
+    if (!peak)
+        return FALSE;
+
+    conversion->src = GLAMOR_COLOR_PQ;
+    conversion->dst = GLAMOR_COLOR_PQ;
+    conversion->sdr_white = 0.0;
+    conversion->peak = peak;
+    conversion->display_peak = display_peak;
+    ms_hdr_set_conversion_matrix(identity, conversion);
+    return TRUE;
 }
 
 void
@@ -393,6 +374,7 @@ ms_hdr_sdr_to_pq_conversion(const struct drm_color_ctm *user_ctm,
     conversion->dst = GLAMOR_COLOR_PQ;
     conversion->sdr_white = white_level;
     conversion->peak = 10000.0;
+    conversion->display_peak = 0.0;
     ms_hdr_desktop_matrix(user_ctm, matrix);
     ms_hdr_set_conversion_matrix(matrix, conversion);
 }

@@ -49,6 +49,7 @@ typedef struct {
 typedef struct {
     PixmapPtr dst;
     int x, y;
+    int display_peak;
     RegionRec copied;
 } ms_compositor_pq_rec;
 
@@ -62,6 +63,7 @@ typedef struct {
     BoxRec bounds;
     drmmode_composition_rec *composition;
     const struct drm_color_ctm *user_ctm;
+    int display_peak;
 } ms_compositor_target_rec;
 
 static Bool
@@ -90,6 +92,7 @@ ms_compositor_crtc_target(xf86CrtcPtr crtc, ms_compositor_target_rec *target)
     target->bounds = crtc->bounds;
     target->composition = &drmmode_crtc->tearfree.composition;
     target->user_ctm = drmmode_crtc_user_ctm(crtc);
+    target->display_peak = drmmode_crtc_display_peak(crtc);
 }
 
 static PicturePtr
@@ -123,39 +126,71 @@ ms_compositor_subtract_cursors(ScrnInfoPtr scrn, RegionPtr region)
     }
 }
 
-static void
-ms_compositor_copy_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
-                      WindowPtr window, PixmapPtr src, int src_x, int src_y,
-                      RegionPtr exposed)
+static Bool
+ms_compositor_tone_map_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
+                          WindowPtr window, PixmapPtr src, int src_x, int src_y,
+                          RegionPtr region)
 {
-    ScreenPtr screen = scrn->pScreen;
-    PicturePtr src_picture, dst_picture;
-    RegionRec copy;
-    int error;
+    glamor_color_conversion conversion;
+    RegionRec dst_region;
+    Bool converted;
 
-    RegionNull(&copy);
-    RegionCopy(&copy, exposed);
-    ms_compositor_subtract_cursors(scrn, &copy);
-    if (RegionNil(&copy)) {
-        RegionUninit(&copy);
-        return;
-    }
+    if (!ms_hdr_pq_to_pq_conversion(ms_hdr_window_metadata(window),
+                                    pq->display_peak, &conversion))
+        return FALSE;
+
+    RegionNull(&dst_region);
+    RegionCopy(&dst_region, region);
+    RegionTranslate(&dst_region, -pq->x, -pq->y);
+    converted = modesettingPTR(scrn)->glamor.convert_color(src, pq->dst, &dst_region,
+                                                           pq->x - src_x, pq->y - src_y,
+                                                           FALSE, 0xffff, &conversion);
+    RegionUninit(&dst_region);
+    return converted;
+}
+
+static Bool
+ms_compositor_copy_raw_pq(ScreenPtr screen, ms_compositor_pq_rec *pq,
+                          WindowPtr window, PixmapPtr src, int src_x, int src_y,
+                          RegionPtr region)
+{
+    PicturePtr src_picture, dst_picture;
+    Bool copied = FALSE;
+    int error;
 
     src_picture = CreatePicture(0, &src->drawable, PictureWindowFormat(window),
                                 0, NULL, serverClient, &error);
     dst_picture = ms_compositor_create_picture(screen, pq->dst);
     if (src_picture && dst_picture) {
-        SetPictureClipRegion(dst_picture, -pq->x, -pq->y, &copy);
+        SetPictureClipRegion(dst_picture, -pq->x, -pq->y, region);
         CompositePicture(PictOpSrc, src_picture, NULL, dst_picture,
                          0, 0, 0, 0, src_x - pq->x, src_y - pq->y,
                          src->drawable.width, src->drawable.height);
-        RegionUnion(&pq->copied, &pq->copied, &copy);
+        copied = TRUE;
     }
 
     if (dst_picture)
         FreePicture(dst_picture, 0);
     if (src_picture)
         FreePicture(src_picture, 0);
+    return copied;
+}
+
+static void
+ms_compositor_copy_pq(ScrnInfoPtr scrn, ms_compositor_pq_rec *pq,
+                      WindowPtr window, PixmapPtr src, int src_x, int src_y,
+                      RegionPtr exposed)
+{
+    RegionRec copy;
+
+    RegionNull(&copy);
+    RegionCopy(&copy, exposed);
+    ms_compositor_subtract_cursors(scrn, &copy);
+    if (!RegionNil(&copy) &&
+        (ms_compositor_tone_map_pq(scrn, pq, window, src, src_x, src_y, &copy) ||
+         ms_compositor_copy_raw_pq(scrn->pScreen, pq, window, src, src_x, src_y,
+                                   &copy)))
+        RegionUnion(&pq->copied, &pq->copied, &copy);
     RegionUninit(&copy);
 }
 
@@ -466,6 +501,7 @@ ms_compositor_paint_pq(ms_compositor_target_rec *target, PixmapPtr dst,
         .dst = dst,
         .x = target->bounds.x1,
         .y = target->bounds.y1,
+        .display_peak = target->display_peak,
     };
     glamor_color_conversion conversion;
     PixmapPtr pixmap;
@@ -589,6 +625,7 @@ ms_compositor_prime_target(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
     ms_compositor_dirty_box(dirty, &target->bounds);
     target->composition = &drmmode_crtc->prime_scanout.composition;
     target->user_ctm = drmmode_crtc_user_ctm(crtc);
+    target->display_peak = drmmode_crtc_display_peak(crtc);
 }
 #endif
 
@@ -703,19 +740,31 @@ ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
     ScreenPtr screen = dirty->src->pScreen;
     modesettingPtr ms = modesettingPTR(xf86ScreenToScrn(screen));
     xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
+    const struct hdr_output_metadata *metadata;
+    drmmode_prime_scanout_rec *prime_scanout;
     drmmode_crtc_private_ptr drmmode_crtc;
+    WindowPtr hdr_window;
+    BoxRec box;
     Bool pq;
 
     if (!crtc)
         return;
 
     drmmode_crtc = crtc->driver_private;
+    prime_scanout = &drmmode_crtc->prime_scanout;
     pq = ms->glamor.convert_color && dirty->rotation == RR_Rotate_0 &&
         !dirty->dst_x && !dirty->dst_y &&
         ms_compositor_dirty_dst(dirty)->drawable.depth == 30 &&
         drmmode_crtc_hdr_enabled(crtc);
 
-    if (ms_compositor_update_composition(&drmmode_crtc->prime_scanout.composition,
+    ms_compositor_dirty_box(dirty, &box);
+    hdr_window = pq ? CompositeServerHdrWindow(screen, &box) : NULL;
+    metadata = hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL;
+    prime_scanout->composition_has_metadata = metadata != NULL;
+    if (metadata)
+        prime_scanout->composition_metadata = *metadata;
+
+    if (ms_compositor_update_composition(&prime_scanout->composition,
                                          pq, drmmode_crtc_sdr_white_level(crtc)))
         ms_compositor_damage_prime(screen, crtc);
 }
@@ -1025,23 +1074,24 @@ ms_compositor_update_output_mode(xf86CrtcPtr crtc, WindowPtr window)
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_scanout_rec *scanout = &drmmode_crtc->tearfree.scanout;
+    const struct hdr_output_metadata *metadata;
+    WindowPtr hdr_window;
     Bool updated;
 
     if (window == scanout->output_mode_window && !scanout->output_mode_dirty)
         return TRUE;
 
+    hdr_window = CompositeServerHdrWindow(crtc->scrn->pScreen, &crtc->bounds);
+    metadata = hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL;
     if (window) {
-        WindowPtr hdr_window = CompositeServerHdrWindow(crtc->scrn->pScreen,
-                                                        &crtc->bounds);
-
         updated = drmmode_crtc_set_scanout_content(crtc, hdr_window != NULL,
-            hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL, TRUE);
+                                                   metadata, FALSE, TRUE);
     }
     else {
         Bool pq = ms_compositor_can_compose_pq(crtc);
 
         ms_compositor_set_composition(crtc, pq);
-        updated = drmmode_crtc_set_scanout_content(crtc, pq, NULL, TRUE);
+        updated = drmmode_crtc_set_scanout_content(crtc, pq, metadata, TRUE, TRUE);
     }
 
     if (ms->vrr_support)

@@ -35,6 +35,7 @@
 #endif
 
 #include "dumb_bo.h"
+#include "hdr_map.h"
 
 struct gbm_device;
 
@@ -111,6 +112,7 @@ typedef struct {
     int sdr_white_level;
     struct hdr_output_metadata metadata;
     Bool plane_sdr_to_pq;
+    ms_hdr_pq_map_rec pq_map;
 } drmmode_hdr_state_rec;
 
 typedef struct {
@@ -300,6 +302,7 @@ typedef struct {
     int index;
     uint32_t value_prop;
     uint64_t curve;
+    uint64_t size;
 } drmmode_colorop_use_rec, *drmmode_colorop_use_ptr;
 
 typedef struct {
@@ -314,16 +317,35 @@ typedef struct {
 } drmmode_plane_ctm_rec;
 
 typedef struct {
-    uint32_t pipeline_prop;
-    uint64_t pipeline;
-    int num_ops;
-    drmmode_colorop_rec ops[16];
     drmmode_colorop_use_rec eotf;
     drmmode_colorop_use_rec multiplier;
     drmmode_colorop_use_rec matrix;
     drmmode_colorop_use_rec inverse_eotf;
-    drmmode_plane_degamma_tf_rec degamma_tf;
     drmmode_plane_ctm_rec ctm;
+} drmmode_plane_sdr_to_pq_rec;
+
+typedef struct {
+    drmmode_colorop_use_rec shaper;
+    drmmode_colorop_use_rec lut3d;
+    uint32_t shaper_blob;
+    uint32_t lut3d_blob;
+    ms_hdr_pq_map_rec map;
+} drmmode_plane_pq_map_rec;
+
+typedef enum {
+    DRMMODE_PLANE_COLOR_BYPASS,
+    DRMMODE_PLANE_COLOR_SDR_TO_PQ,
+    DRMMODE_PLANE_COLOR_PQ_MAP,
+} drmmode_plane_color_mode;
+
+typedef struct {
+    uint32_t pipeline_prop;
+    uint64_t pipeline;
+    int num_ops;
+    drmmode_colorop_rec ops[16];
+    drmmode_plane_sdr_to_pq_rec sdr_to_pq;
+    drmmode_plane_pq_map_rec pq_map;
+    drmmode_plane_degamma_tf_rec degamma_tf;
 } drmmode_plane_color_rec, *drmmode_plane_color_ptr;
 
 typedef struct {
@@ -439,6 +461,8 @@ typedef struct {
     uint32_t back_idx;
     uint32_t front_idx;
     drmmode_composition_rec composition;
+    Bool composition_has_metadata;
+    struct hdr_output_metadata composition_metadata;
     drmmode_prime_direct_rec direct;
     drmmode_prime_direct_fbs_rec direct_fbs;
     drmmode_prime_overlay_rec overlay;
@@ -756,10 +780,12 @@ void drmmode_plane_color_init(xf86CrtcPtr crtc, uint32_t plane_id,
                               drmmode_plane_color_ptr color);
 Bool drmmode_plane_color_supported(xf86CrtcPtr crtc);
 void drmmode_plane_color_fini(xf86CrtcPtr crtc, drmmode_plane_color_ptr color);
+Bool drmmode_plane_color_maps_pq(const drmmode_plane_color_rec *color,
+                                 const ms_hdr_pq_map_rec *map);
 int drmmode_plane_color_add_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                                   uint32_t plane_id, drmmode_plane_color_ptr color,
-                                  Bool sdr_to_pq, int sdr_white_level,
-                                  Bool reprogram);
+                                  drmmode_plane_color_mode mode,
+                                  const drmmode_hdr_state_rec *state, Bool reprogram);
 int drmmode_plane_color_refresh_degamma(drmModeAtomicReq *req,
                                         xf86CrtcPtr crtc, uint32_t plane_id,
                                         const drmmode_plane_color_rec *color);
@@ -817,12 +843,13 @@ drmmode_shadow_fb_ptr drmmode_prime_front_buffer(drmmode_prime_scanout_rec *prim
 void drmmode_reset_vrr(ScrnInfoPtr scrn);
 Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
                                       const struct hdr_output_metadata *metadata,
-                                      Bool with_next_flip);
+                                      Bool composed, Bool with_next_flip);
 Bool drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
 Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);
 Bool drmmode_crtc_can_show_pq(xf86CrtcPtr crtc);
 int drmmode_crtc_sdr_white_level(xf86CrtcPtr crtc);
+int drmmode_crtc_display_peak(xf86CrtcPtr crtc);
 const struct drm_color_ctm *drmmode_crtc_user_ctm(xf86CrtcPtr crtc);
 
 #endif

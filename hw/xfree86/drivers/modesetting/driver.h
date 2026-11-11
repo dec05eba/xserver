@@ -510,18 +510,20 @@ const struct hdr_output_metadata *ms_hdr_window_metadata(WindowPtr window);
 void ms_hdr_disable(ScrnInfoPtr scrn);
 Bool ms_hdr_parse_edid(const uint8_t *edid, size_t size,
                        struct hdr_output_metadata *metadata);
-double ms_hdr_pq_eotf(double value);
 void ms_hdr_desktop_matrix(const struct drm_color_ctm *user_ctm, double *matrix);
 void ms_hdr_desktop_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
                           int white_level, ms_hdr_color_rec *color);
 void ms_hdr_tonemap_color(xf86CrtcPtr crtc, const struct drm_color_ctm *user_ctm,
                           const struct hdr_output_metadata *metadata,
                           int white_level, ms_hdr_color_rec *color);
+void ms_hdr_pq_map_gamma(const ms_hdr_pq_map_rec *map, struct drm_color_lut *gamma, int size);
 void ms_hdr_sdr_to_pq_table(int white_level, uint8_t *table);
 #ifdef HAVE_GBM
 void ms_hdr_pq_to_sdr_conversion(const struct hdr_output_metadata *metadata,
                                  int white_level,
                                  glamor_color_conversion *conversion);
+Bool ms_hdr_pq_to_pq_conversion(const struct hdr_output_metadata *metadata,
+                                int display_peak, glamor_color_conversion *conversion);
 void ms_hdr_sdr_to_pq_conversion(const struct drm_color_ctm *user_ctm,
                                  int white_level,
                                  glamor_color_conversion *conversion);

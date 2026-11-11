@@ -432,6 +432,7 @@ typedef struct {
     float matrix[9];
     float sdr_white;
     float peak;
+    float display_peak;
 } glamor_color_conversion;
 
 extern _X_EXPORT Bool glamor_convert_color(PixmapPtr src, PixmapPtr dst,
