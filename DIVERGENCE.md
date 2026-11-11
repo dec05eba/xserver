@@ -236,9 +236,9 @@ can be changed while the X server runs:
 The X server doesn't use the value itself, it's up to applications to read it.
 Applications should prefer this `DPI` RandR property and only fall back to
 other properties, such as `XResources` `Xft.dpi`, if the RandR property isn't
-set. Applications should also use the DPI of the monitor that the center of
-the window is inside and when changing scale the size of the window itself
-shouldn't change, only the content should scale.
+set. Applications should also scale the window (content and window size) to the DPI
+of the monitor that the center of the window is inside after the window has been moved
+(or if the window is moved with the cursor then after the cursor has been released).
 
 NVIDIA
 ------
