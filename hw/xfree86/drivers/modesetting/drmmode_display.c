@@ -5295,7 +5295,7 @@ drmmode_setup_colormap(ScreenPtr pScreen, ScrnInfoPtr pScrn)
             return FALSE;
 
     /* Adapt color map size and depth to color depth of screen. */
-    if (!xf86HandleColormaps(pScreen, 1 << pScrn->rgbBits, 10,
+    if (!xf86HandleColormaps(pScreen, 1 << pScrn->rgbBits, pScrn->rgbBits,
                              drmmode_load_palette, NULL,
                              CMAP_PALETTED_TRUECOLOR |
                              CMAP_RELOAD_ON_MODE_SWITCH))

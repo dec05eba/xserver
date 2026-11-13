@@ -1257,6 +1257,55 @@ xf86RandR12CrtcSet(ScreenPtr pScreen,
     return xf86RandR12CrtcNotify(randr_crtc);
 }
 
+static unsigned short
+xf86RandR12PaletteValue(const LOCO *color, int channel)
+{
+    switch (channel) {
+    case 0:
+        return color->red;
+    case 1:
+        return color->green;
+    default:
+        return color->blue;
+    }
+}
+
+static double
+xf86RandR12RampValue(const LOCO *color, int channel, const CARD16 *ramp,
+                     int ramp_size)
+{
+    unsigned short index = xf86RandR12PaletteValue(color, channel);
+
+    if (ramp)
+        return ramp[index];
+
+    return index * 65535.0 / (ramp_size - 1);
+}
+
+static void
+xf86RandR12CrtcComputeGammaChannel(CARD16 *lut, int lut_size,
+                                   const LOCO *palette, int palette_size,
+                                   int channel, const CARD16 *ramp,
+                                   int ramp_size)
+{
+    int i;
+
+    for (i = 0; i < lut_size; i++) {
+        double position = lut_size > 1 ?
+            (double) i * (palette_size - 1) / (lut_size - 1) : 0.0;
+        int index = position;
+        double fraction = position - index;
+        double value = xf86RandR12RampValue(&palette[index], channel, ramp,
+                                            ramp_size);
+
+        if (fraction > 0.0)
+            value += fraction * (xf86RandR12RampValue(&palette[index + 1], channel,
+                                                      ramp, ramp_size) - value);
+
+        lut[i] = value + 0.5;
+    }
+}
+
 static void
 xf86RandR12CrtcComputeGamma(xf86CrtcPtr crtc, LOCO *palette,
                             int palette_red_size, int palette_green_size,
@@ -1264,102 +1313,15 @@ xf86RandR12CrtcComputeGamma(xf86CrtcPtr crtc, LOCO *palette,
                             CARD16 *gamma_green, CARD16 *gamma_blue,
                             int gamma_size)
 {
-    int gamma_slots;
-    unsigned shift;
-    int i, j;
-    CARD32 value = 0;
-
-    for (shift = 0; (gamma_size << shift) < (1 << 16); shift++);
-
-    if (crtc->gamma_size >= palette_red_size) {
-        /* Upsampling of smaller palette to larger hw lut size */
-        gamma_slots = crtc->gamma_size / palette_red_size;
-        for (i = 0; i < palette_red_size; i++) {
-            value = palette[i].red;
-            if (gamma_red)
-                value = gamma_red[value];
-            else
-                value <<= shift;
-
-            for (j = 0; j < gamma_slots; j++)
-                crtc->gamma_red[i * gamma_slots + j] = value;
-        }
-
-        /* Replicate last value until end of crtc for gamma_size not a power of 2 */
-        for (j = i * gamma_slots; j < crtc->gamma_size; j++)
-                crtc->gamma_red[j] = value;
-    } else {
-        /* Downsampling of larger palette to smaller hw lut size */
-        for (i = 0; i < crtc->gamma_size; i++) {
-            value = palette[i * (palette_red_size - 1) / (crtc->gamma_size - 1)].red;
-            if (gamma_red)
-                value = gamma_red[value];
-            else
-                value <<= shift;
-
-            crtc->gamma_red[i] = value;
-        }
-    }
-
-    if (crtc->gamma_size >= palette_green_size) {
-        /* Upsampling of smaller palette to larger hw lut size */
-        gamma_slots = crtc->gamma_size / palette_green_size;
-        for (i = 0; i < palette_green_size; i++) {
-            value = palette[i].green;
-            if (gamma_green)
-                value = gamma_green[value];
-            else
-                value <<= shift;
-
-            for (j = 0; j < gamma_slots; j++)
-                crtc->gamma_green[i * gamma_slots + j] = value;
-        }
-
-        /* Replicate last value until end of crtc for gamma_size not a power of 2 */
-        for (j = i * gamma_slots; j < crtc->gamma_size; j++)
-            crtc->gamma_green[j] = value;
-    } else {
-        /* Downsampling of larger palette to smaller hw lut size */
-        for (i = 0; i < crtc->gamma_size; i++) {
-            value = palette[i * (palette_green_size - 1) / (crtc->gamma_size - 1)].green;
-            if (gamma_green)
-                value = gamma_green[value];
-            else
-                value <<= shift;
-
-            crtc->gamma_green[i] = value;
-        }
-    }
-
-    if (crtc->gamma_size >= palette_blue_size) {
-        /* Upsampling of smaller palette to larger hw lut size */
-        gamma_slots = crtc->gamma_size / palette_blue_size;
-        for (i = 0; i < palette_blue_size; i++) {
-            value = palette[i].blue;
-            if (gamma_blue)
-                value = gamma_blue[value];
-            else
-                value <<= shift;
-
-            for (j = 0; j < gamma_slots; j++)
-                crtc->gamma_blue[i * gamma_slots + j] = value;
-        }
-
-        /* Replicate last value until end of crtc for gamma_size not a power of 2 */
-        for (j = i * gamma_slots; j < crtc->gamma_size; j++)
-            crtc->gamma_blue[j] = value;
-    } else {
-        /* Downsampling of larger palette to smaller hw lut size */
-        for (i = 0; i < crtc->gamma_size; i++) {
-            value = palette[i * (palette_blue_size - 1) / (crtc->gamma_size - 1)].blue;
-            if (gamma_blue)
-                value = gamma_blue[value];
-            else
-                value <<= shift;
-
-            crtc->gamma_blue[i] = value;
-        }
-    }
+    xf86RandR12CrtcComputeGammaChannel(crtc->gamma_red, crtc->gamma_size,
+                                       palette, palette_red_size, 0,
+                                       gamma_red, gamma_size);
+    xf86RandR12CrtcComputeGammaChannel(crtc->gamma_green, crtc->gamma_size,
+                                       palette, palette_green_size, 1,
+                                       gamma_green, gamma_size);
+    xf86RandR12CrtcComputeGammaChannel(crtc->gamma_blue, crtc->gamma_size,
+                                       palette, palette_blue_size, 2,
+                                       gamma_blue, gamma_size);
 }
 
 static void
@@ -1416,18 +1378,11 @@ static void
 init_one_component(CARD16 *comp, unsigned size, float gamma)
 {
     int i;
-    unsigned shift;
 
-    for (shift = 0; (size << shift) < (1 << 16); shift++);
+    for (i = 0; i < size; i++) {
+        double value = size > 1 ? (double) i / (double) (size - 1) : 1.0;
 
-    if (gamma == 1.0) {
-        for (i = 0; i < size; i++)
-            comp[i] = i << shift;
-    } else {
-        for (i = 0; i < size; i++)
-            comp[i] = (CARD16) (pow((double) i / (double) (size - 1),
-                                   1. / (double) gamma) *
-                               (double) (size - 1) * (1 << shift));
+        comp[i] = (CARD16) (pow(value, 1. / (double) gamma) * 65535.0 + 0.5);
     }
 }
 
