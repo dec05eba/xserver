@@ -163,7 +163,7 @@ compCheckRedirect(WindowPtr pWin)
         (cw != NULL) && (pWin->parent != NULL);
 
     /* Never redirect the overlay window, unless the server composites it */
-    if (cs->pOverlayWin != NULL && !cs->server) {
+    if (cs->pOverlayWin != NULL && !CompositeServerCompositing(pWin->drawable.pScreen)) {
         if (pWin == cs->pOverlayWin) {
             should = FALSE;
         }
@@ -277,7 +277,7 @@ compRealizeWindow(WindowPtr pWin)
     cs->RealizeWindow = pScreen->RealizeWindow;
     pScreen->RealizeWindow = compRealizeWindow;
 
-    if (!pWin->parent && cs->server) {
+    if (!pWin->parent && CompositeServerCompositing(pScreen)) {
         RegionEmpty(&pWin->clipList);
         RegionEmpty(&pWin->borderClip);
     }
@@ -597,7 +597,7 @@ compCreateWindow(WindowPtr pWin)
         if (compImplicitRedirect(pWin, pWin->parent))
             compRedirectWindow(serverClient, pWin, CompositeRedirectAutomatic);
     }
-    else if (ret && cs->server) {
+    else if (ret && CompositeServerCompositing(pScreen)) {
         ret = compRedirectSubwindows(serverClient, pWin,
                                      CompositeRedirectAutomatic) == Success;
     }

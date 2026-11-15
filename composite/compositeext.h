@@ -56,9 +56,12 @@ typedef Bool (*CompositeServerPaintHdrProcPtr) (PicturePtr pDst, int x, int y,
                                                 void *closure);
 
 extern _X_EXPORT Bool CompositeServerInit(ScreenPtr pScreen,
-                                          CompositeServerPaintHdrProcPtr PaintHdr);
+                                          CompositeServerPaintHdrProcPtr PaintHdr,
+                                          Bool compositing);
 
 extern _X_EXPORT Bool CompositeServerActive(ScreenPtr pScreen);
+
+extern _X_EXPORT Bool CompositeServerCompositing(ScreenPtr pScreen);
 
 extern _X_EXPORT Bool CompositeServerWindowHidden(WindowPtr pWin);
 

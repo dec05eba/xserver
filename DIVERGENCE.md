@@ -31,8 +31,8 @@ refresh rate works with them.
   run with their compositor disabled. Mutter based window managers always composite
   and may refuse to start unless they are started with `--replace`.
 
-Compositing is on by default when the modesetting driver uses glamor. To turn
-it off, set the `Compositing` option in the Device section of xorg.conf:
+Compositing is on by default. To turn it off, set the `Compositing` option in
+the Device section of xorg.conf:
 
     Section "Device"
         Identifier "GPU"
@@ -40,20 +40,29 @@ it off, set the `Compositing` option in the Device section of xorg.conf:
         Option     "Compositing" "false"
     EndSection
 
-All monitors then share one framebuffer like in upstream, and a separate
-compositor such as picom can be used. Without compositing you lose tear-free
-output, transparency without a separate compositor, HDR windows that aren't
-fullscreen, synchronized window resizing.
+Windows are then drawn into one buffer for the whole desktop like in upstream,
+and a separate compositor such as picom can be used. Every monitor still has
+its own framebuffer that the changed parts of that buffer are copied to, so
+output is tear-free, fullscreen windows are scanned out directly and HDR works
+as with compositing, also for HDR windows that aren't fullscreen. Without
+compositing you lose transparency without a separate compositor,
+`_NET_WM_WINDOW_OPACITY`, synchronized window resizing, `_NET_WM_FRAME_DRAWN`
+and overlay planes.
 
 `TearFree` is the old name of this option. It still works but is deprecated,
 and if both are set `Compositing` is used.
 
+Per-monitor framebuffers need glamor. When glamor can't be used, for example
+in a virtual machine without 3D acceleration, all monitors share one
+framebuffer like in upstream.
+
 Limitations:
 
-- Drawing directly on the root window, other than its background, isn't
-  shown. Desktop wallpapers set with tools like `xsetroot` and `feh` work.
-- Reading the root window works with GetImage (screenshots, `xwd`, ffmpeg
-  x11grab), but not with CopyArea or Render.
+- With compositing, drawing directly on the root window, other than its
+  background, isn't shown. Desktop wallpapers set with tools like `xsetroot`
+  and `feh` work.
+- With compositing, reading the root window works with GetImage (screenshots,
+  `xwd`, ffmpeg x11grab), but not with CopyArea or Render.
 - Fullscreen windows on monitors connected to a secondary GPU (reverse PRIME)
   are copied by that GPU instead of scanned out directly. The exception is
   applications started with NVIDIA's `prime-run` on a monitor connected to
@@ -64,10 +73,10 @@ Limitations:
 Window resizing
 ---------------
 
-Windows are resized without their content jumping, stretching or showing
-garbage, with any window manager. While a window is being resized the X server
-keeps showing its previous frame until the application has drawn one at the
-new size.
+With compositing, windows are resized without their content jumping,
+stretching or showing garbage, with any window manager. While a window is being
+resized the X server keeps showing its previous frame until the application has
+drawn one at the new size.
 
 - This works best with applications that support `_NET_WM_SYNC_REQUEST`
   (GTK, Qt, Chromium/Electron and others).
@@ -78,9 +87,9 @@ new size.
   application doesn't draw the new size within 200 milliseconds the window is
   shown anyway.
 
-The X server also sends `_NET_WM_FRAME_DRAWN` and `_NET_WM_FRAME_TIMINGS` to
-applications that use them, such as GTK, so they draw at the refresh rate of
-the monitor instead of 60 frames per second.
+With compositing the X server also sends `_NET_WM_FRAME_DRAWN` and
+`_NET_WM_FRAME_TIMINGS` to applications that use them, such as GTK, so they draw
+at the refresh rate of the monitor instead of 60 frames per second.
 
 Performance
 -----------
@@ -93,10 +102,10 @@ framerate at which they are presented on the screen differs.
 Fullscreen windows are scanned out directly: the monitor shows the
 application's own buffer, without compositing or copying it. This works when:
 
-- the window covers a whole monitor exactly and isn't transparent. Windows on
-  top of it, such as notifications and menus, are shown on an overlay plane
-  when the GPU has one for that monitor. Without one the monitor is composited
-  while they are visible,
+- the window covers a whole monitor exactly and isn't transparent. With
+  compositing, windows on top of it, such as notifications and menus, are shown
+  on an overlay plane when the GPU has one for that monitor. Otherwise the
+  monitor is composited while they are visible,
 - the window isn't being resized,
 - the monitor isn't rotated or scaled and the cursor isn't a software cursor,
 - the application shows its frames through DRI3 and Present, which Vulkan and
@@ -105,10 +114,11 @@ application's own buffer, without compositing or copying it. This works when:
 
 Fullscreen HDR windows (or SDR windows when HDR is enabled) are scanned out directly too.
 
-Games that aren't fullscreen are scanned out directly as well, on an overlay
-plane, when the GPU has one for that monitor and no other window covers the
-game. Windows that are being moved are shown on the overlay plane too, so they
-follow the cursor smoothly even while a game keeps the GPU fully busy.
+With compositing, games that aren't fullscreen are scanned out directly as
+well, on an overlay plane, when the GPU has one for that monitor and no other
+window covers the game. Windows that are being moved are shown on the overlay
+plane too, so they follow the cursor smoothly even while a game keeps the GPU
+fully busy.
 
 Overlay planes aren't used on AMD GPUs, because they make the monitors flash or
 freeze when more than one monitor is enabled.
@@ -149,10 +159,11 @@ HDR
 The modesetting driver can run monitors that support HDR10 in HDR mode.
 On a monitor without HDR, or with HDR turned off, HDR windows are tone mapped to SDR.
 
-Without compositing (see above) only fullscreen HDR windows are
-supported. The gamma ramp (`xrandr --gamma`, night light tools) isn't applied
-to HDR monitors that are composited in HDR10, and rotated or scaled HDR
-monitors tone map HDR windows instead of showing them as HDR.
+With compositing turned off, HDR windows that a separate compositor such as
+picom draws are shown the way that compositor draws them. The gamma ramp
+(`xrandr --gamma`, night light tools) isn't applied to HDR monitors that are
+composited in HDR10, and rotated or scaled HDR monitors tone map HDR windows
+instead of showing them as HDR.
 
 On AMD GPUs with Linux older than 6.19 the screen can flicker briefly on an
 HDR monitor when a fullscreen window that isn't HDR starts or stops being shown

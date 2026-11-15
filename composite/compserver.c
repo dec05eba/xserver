@@ -80,6 +80,14 @@ CompositeServerActive(ScreenPtr pScreen)
     return compServerGet(pScreen) != NULL;
 }
 
+Bool
+CompositeServerCompositing(ScreenPtr pScreen)
+{
+    CompServerPtr server = compServerGet(pScreen);
+
+    return server && server->compositing;
+}
+
 static Bool
 compServerWindowCaptured(WindowPtr pWin)
 {
@@ -93,10 +101,28 @@ compServerWindowCaptured(WindowPtr pWin)
     return FALSE;
 }
 
+static RegionPtr
+compServerVisibleRegion(WindowPtr pWin)
+{
+    return pWin->redirectDraw != RedirectDrawNone ?
+        &GetCompWindow(pWin)->borderClip : &pWin->borderClip;
+}
+
+static Bool
+compServerToplevelHidden(WindowPtr pTop)
+{
+    CompServerWindowPtr sw;
+
+    if (!CompositeServerCompositing(pTop->drawable.pScreen))
+        return RegionNil(compServerVisibleRegion(pTop));
+
+    sw = GetCompServerWindow(pTop);
+    return sw && sw->hidden;
+}
+
 Bool
 CompositeServerWindowHidden(WindowPtr pWin)
 {
-    CompServerWindowPtr sw;
     WindowPtr pTop;
 
     if (!pWin->parent || !pWin->viewable ||
@@ -104,14 +130,13 @@ CompositeServerWindowHidden(WindowPtr pWin)
         return FALSE;
 
     pTop = compServerToplevel(pWin);
-    sw = GetCompServerWindow(pTop);
-    return sw && sw->hidden && !compServerWindowCaptured(pTop);
+    return compServerToplevelHidden(pTop) && !compServerWindowCaptured(pTop);
 }
 
 Bool
 CompositeIsServerRoot(WindowPtr pWin)
 {
-    return !pWin->parent && CompositeServerActive(pWin->drawable.pScreen);
+    return !pWin->parent && CompositeServerCompositing(pWin->drawable.pScreen);
 }
 
 static Bool
@@ -131,18 +156,21 @@ compServerOnlyRedirect(WindowPtr pWin)
 }
 
 Bool
-CompositeIsServerRedirected(WindowPtr pWin)
+compServerTreeServerOwned(WindowPtr pWin)
 {
-    if (!pWin->parent || !CompositeServerActive(pWin->drawable.pScreen) ||
-        !compServerOnlyRedirect(pWin))
-        return FALSE;
-
-    for (pWin = pWin->parent; pWin->parent; pWin = pWin->parent) {
+    for (; pWin->parent; pWin = pWin->parent) {
         if (pWin->redirectDraw != RedirectDrawNone &&
             !compServerOnlyRedirect(pWin))
             return FALSE;
     }
     return TRUE;
+}
+
+Bool
+CompositeIsServerRedirected(WindowPtr pWin)
+{
+    return pWin->parent && CompositeServerActive(pWin->drawable.pScreen) &&
+        compServerOnlyRedirect(pWin) && compServerTreeServerOwned(pWin->parent);
 }
 
 WindowPtr
@@ -156,7 +184,8 @@ compServerToplevel(WindowPtr pWin)
 Bool
 compServerPaintsWindow(WindowPtr pWin)
 {
-    return pWin->viewable && pWin->redirectDraw == RedirectDrawAutomatic;
+    return pWin->viewable && pWin->redirectDraw == RedirectDrawAutomatic &&
+        CompositeServerCompositing(pWin->drawable.pScreen);
 }
 
 Bool
@@ -359,6 +388,8 @@ compServerDestroyWindow(WindowPtr pWin)
     if (!server)
         return;
 
+    if (!pWin->parent)
+        server->pRootDamage = NULL;
     if (sw)
         compServerUntrackWindow(server, sw);
     if (server->presentPlaneWindow == pWin) {
@@ -391,6 +422,72 @@ compServerClaimCmSelection(ScreenPtr pScreen, CompServerPtr server)
                          wid, currentTime);
 }
 
+static void
+compServerSublayerRegion(WindowPtr pWin, RegionPtr pRegion)
+{
+    ScreenPtr pScreen = pWin->drawable.pScreen;
+    WindowPtr pStop = CompositeServerCompositing(pScreen) ?
+        compServerToplevel(pWin) : pScreen->root;
+    WindowPtr pAncestor;
+
+    RegionCopy(pRegion, &pWin->winSize);
+    if (pWin->redirectDraw == RedirectDrawNone)
+        RegionIntersect(pRegion, pRegion, &pWin->borderClip);
+
+    for (pAncestor = pWin; pAncestor != pStop; pAncestor = pAncestor->parent) {
+        if (pAncestor->redirectDraw != RedirectDrawNone)
+            RegionIntersect(pRegion, pRegion,
+                            &GetCompWindow(pAncestor)->borderClip);
+    }
+}
+
+static Bool
+compServerIsSublayer(CompServerPtr server, CompServerDirectWindowPtr dw)
+{
+    return dw->pWin->viewable &&
+        (server->compositing || compServerTreeServerOwned(dw->pWin));
+}
+
+static void
+compServerUpdateSublayers(CompServerPtr server)
+{
+    CompServerDirectWindowPtr dw;
+    RegionRec region;
+
+    RegionNull(&region);
+    xorg_list_for_each_entry(dw, &server->directWindows, entry) {
+        if (compServerIsSublayer(server, dw))
+            compServerSublayerRegion(dw->pWin, &region);
+        else
+            RegionEmpty(&region);
+
+        if (!RegionEqual(&region, &dw->painted)) {
+            compServerAddDamage(server, &dw->painted);
+            compServerAddDamage(server, &region);
+            RegionCopy(&dw->painted, &region);
+        }
+    }
+    RegionUninit(&region);
+}
+
+static void
+compServerTakeRootDamage(CompServerPtr server, WindowPtr pRoot, RegionPtr pDamage)
+{
+    if (!server->pRootDamage) {
+        server->pRootDamage = DamageCreate(NULL, NULL, DamageReportNone, TRUE,
+                                           pRoot->drawable.pScreen, NULL);
+        if (!server->pRootDamage)
+            return;
+
+        DamageRegister(&pRoot->drawable, server->pRootDamage);
+        RegionUnion(pDamage, pDamage, &pRoot->winSize);
+        return;
+    }
+
+    RegionUnion(pDamage, pDamage, DamageRegion(server->pRootDamage));
+    DamageEmpty(server->pRootDamage);
+}
+
 void
 CompositeServerFlush(ScreenPtr pScreen, RegionPtr pDamage)
 {
@@ -400,19 +497,24 @@ CompositeServerFlush(ScreenPtr pScreen, RegionPtr pDamage)
     if (!pRoot)
         return;
 
-    if (!server->cmSelectionClaimed)
+    if (server->compositing && !server->cmSelectionClaimed)
         compServerClaimCmSelection(pScreen, server);
 
     compServerUpdateDeferred(server);
     compPaintChildrenToWindow(pRoot);
-    compServerUpdateWindows(server, pRoot);
+    if (server->compositing)
+        compServerUpdateWindows(server, pRoot);
+    else
+        compServerUpdateSublayers(server);
 
-    if (RegionNil(&server->damage))
-        return;
+    if (RegionNotEmpty(&server->damage)) {
+        DamageDamageRegion(&pRoot->drawable, &server->damage);
+        RegionUnion(pDamage, pDamage, &server->damage);
+        RegionEmpty(&server->damage);
+    }
 
-    DamageDamageRegion(&pRoot->drawable, &server->damage);
-    RegionUnion(pDamage, pDamage, &server->damage);
-    RegionEmpty(&server->damage);
+    if (!server->compositing)
+        compServerTakeRootDamage(server, pRoot, pDamage);
 }
 
 static CARD16
@@ -478,6 +580,28 @@ compServerPaintBackground(WindowPtr pRoot, PicturePtr pDst, int x, int y,
     }
 }
 
+static void
+compServerPaintRootPixmap(WindowPtr pRoot, PicturePtr pDst, int x, int y,
+                          RegionPtr pRegion)
+{
+    PixmapPtr pPixmap = (*pRoot->drawable.pScreen->GetWindowPixmap) (pRoot);
+    BoxPtr pExtents = RegionExtents(pRegion);
+    PicturePtr pSrc;
+    int error;
+
+    pSrc = CreatePicture(0, &pPixmap->drawable, PictureWindowFormat(pRoot),
+                         0, NULL, serverClient, &error);
+    if (!pSrc)
+        return;
+
+    SetPictureClipRegion(pDst, -x, -y, pRegion);
+    CompositePicture(PictOpSrc, pSrc, NULL, pDst,
+                     pExtents->x1, pExtents->y1, 0, 0,
+                     pExtents->x1 - x, pExtents->y1 - y,
+                     pExtents->x2 - pExtents->x1, pExtents->y2 - pExtents->y1);
+    FreePicture(pSrc, 0);
+}
+
 void
 compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
                      PicturePtr pDst, int x, int y, void *closure)
@@ -520,23 +644,6 @@ compServerPaintLayer(CompServerPtr server, CompServerLayerPtr pLayer,
     if (pMask)
         FreePicture(pMask, 0);
     FreePicture(pSrc, 0);
-}
-
-static void
-compServerSublayerRegion(WindowPtr pWin, RegionPtr pRegion)
-{
-    WindowPtr pAncestor;
-
-    RegionCopy(pRegion, &pWin->winSize);
-    if (pWin->redirectDraw == RedirectDrawNone)
-        RegionIntersect(pRegion, pRegion, &pWin->borderClip);
-
-    for (pAncestor = pWin; pAncestor->parent->parent;
-         pAncestor = pAncestor->parent) {
-        if (pAncestor->redirectDraw != RedirectDrawNone)
-            RegionIntersect(pRegion, pRegion,
-                            &GetCompWindow(pAncestor)->borderClip);
-    }
 }
 
 static void
@@ -593,7 +700,7 @@ compServerAddSublayers(CompServerLayersPtr pLayers, WindowPtr pWin,
     for (i = 0; i < pLayers->numSublayers; i++) {
         CompServerSublayerPtr pSublayer = &pLayers->sublayers[i];
 
-        if (pSublayer->pToplevel != pWin)
+        if (pWin && pSublayer->pToplevel != pWin)
             continue;
 
         compServerSublayerRegion(pSublayer->pWin, &sublayerArea);
@@ -667,7 +774,7 @@ compServerCollectSublayers(CompServerPtr server, CompServerLayersPtr pLayers)
         CompServerSublayerPtr pSublayer =
             &pLayers->sublayers[pLayers->numSublayers];
 
-        if (!dw->pWin->viewable)
+        if (!compServerIsSublayer(server, dw))
             continue;
 
         pSublayer->pWin = dw->pWin;
@@ -704,12 +811,30 @@ compServerInitLayers(CompServerPtr server, CompServerLayersPtr pLayers,
 }
 
 static Bool
+compServerBuildSublayers(CompServerPtr server, RegionPtr pRegion,
+                         CompServerLayersPtr pLayers)
+{
+    RegionRec holes;
+
+    if (!compServerInitLayers(server, pLayers, 0))
+        return FALSE;
+
+    RegionNull(&holes);
+    compServerAddSublayers(pLayers, NULL, pRegion, COMP_SERVER_OPAQUE, &holes);
+    RegionUninit(&holes);
+    return TRUE;
+}
+
+static Bool
 compServerBuildLayers(CompServerPtr server, WindowPtr pFirst, WindowPtr pStop,
                       WindowPtr pSkip, RegionPtr pRegion,
                       CompServerLayersPtr pLayers)
 {
     WindowPtr pWin;
     int count = 0;
+
+    if (!server->compositing)
+        return compServerBuildSublayers(server, pRegion, pLayers);
 
     for (pWin = pFirst; pWin != pStop; pWin = pWin->nextSib)
         count += compServerWindowLayerCount(pWin);
@@ -770,8 +895,12 @@ compServerPaint(ScreenPtr pScreen, PicturePtr pDst, int x, int y,
 
     RegionNull(&background);
     RegionSubtract(&background, pRegion, &layers.covered);
-    if (RegionNotEmpty(&background))
-        compServerPaintBackground(pRoot, pDst, x, y, &background);
+    if (RegionNotEmpty(&background)) {
+        if (server->compositing)
+            compServerPaintBackground(pRoot, pDst, x, y, &background);
+        else
+            compServerPaintRootPixmap(pRoot, pDst, x, y, &background);
+    }
     RegionUninit(&background);
 
     for (i = layers.count - 1; i >= 0; i--)
@@ -994,11 +1123,42 @@ compServerAddCover(WindowPtr pWin, BoxPtr pBox, RegionPtr pCover)
 }
 
 static WindowPtr
+compServerSublayerScanoutWindow(CompServerPtr server, BoxPtr pBox)
+{
+    CompServerDirectWindowPtr dw;
+
+    xorg_list_for_each_entry(dw, &server->directWindows, entry) {
+        WindowPtr pWin = dw->pWin;
+        RegionRec region;
+        Bool covers;
+
+        if (!dw->deferred.active || !compServerIsSublayer(server, dw) ||
+            !compServerWindowMatchesBox(pWin, pBox) ||
+            compServerWindowHasAlpha(pWin))
+            continue;
+
+        RegionNull(&region);
+        compServerSublayerRegion(pWin, &region);
+        covers = RegionContainsRect(&region, pBox) == rgnIN;
+        RegionUninit(&region);
+
+        if (covers &&
+            compServerSublayersMatchScanout(server, compServerToplevel(pWin),
+                                            pWin, pBox))
+            return pWin;
+    }
+    return NULL;
+}
+
+static WindowPtr
 compServerScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, WindowPtr pResizing,
                         RegionPtr pCover)
 {
     CompServerPtr server = compServerGet(pScreen);
     WindowPtr pWin, pScanout;
+
+    if (!server->compositing)
+        return compServerSublayerScanoutWindow(server, pBox);
 
     for (pWin = pScreen->root->firstChild; pWin; pWin = pWin->nextSib) {
         Bool held = pWin != pResizing && compServerWindowHeld(pWin);
@@ -1145,7 +1305,8 @@ compServerPropertyState(CallbackListPtr *pcbl, void *closure, void *data)
 }
 
 Bool
-CompositeServerInit(ScreenPtr pScreen, CompositeServerPaintHdrProcPtr PaintHdr)
+CompositeServerInit(ScreenPtr pScreen, CompositeServerPaintHdrProcPtr PaintHdr,
+                    Bool compositing)
 {
     static const char opacity_name[] = "_NET_WM_WINDOW_OPACITY";
     CompScreenPtr cs;
@@ -1165,8 +1326,8 @@ CompositeServerInit(ScreenPtr pScreen, CompositeServerPaintHdrProcPtr PaintHdr)
     if (!server)
         return FALSE;
 
-    if (!AddCallback(&PropertyStateCallback, compServerPropertyState,
-                     pScreen)) {
+    if (compositing &&
+        !AddCallback(&PropertyStateCallback, compServerPropertyState, pScreen)) {
         free(server);
         return FALSE;
     }
@@ -1175,14 +1336,17 @@ CompositeServerInit(ScreenPtr pScreen, CompositeServerPaintHdrProcPtr PaintHdr)
     xorg_list_init(&server->windows);
     xorg_list_init(&server->directWindows);
     compServerInitFrameTiming(server);
+    server->compositing = compositing;
     server->PaintHdr = PaintHdr;
     server->opacityAtom = MakeAtom(opacity_name, strlen(opacity_name), TRUE);
 
-    server->GetImage = pScreen->GetImage;
-    pScreen->GetImage = compServerGetImage;
+    if (compositing) {
+        server->GetImage = pScreen->GetImage;
+        pScreen->GetImage = compServerGetImage;
 
-    server->ClearToBackground = pScreen->ClearToBackground;
-    pScreen->ClearToBackground = compServerClearToBackground;
+        server->ClearToBackground = pScreen->ClearToBackground;
+        pScreen->ClearToBackground = compServerClearToBackground;
+    }
 
     cs->server = server;
     return TRUE;
@@ -1198,12 +1362,14 @@ compServerCloseScreen(ScreenPtr pScreen)
     if (!server)
         return;
 
-    DeleteCallback(&PropertyStateCallback, compServerPropertyState, pScreen);
     compServerCloseFrameSync();
     compServerCloseFrameTiming(server);
 
-    pScreen->GetImage = server->GetImage;
-    pScreen->ClearToBackground = server->ClearToBackground;
+    if (server->compositing) {
+        DeleteCallback(&PropertyStateCallback, compServerPropertyState, pScreen);
+        pScreen->GetImage = server->GetImage;
+        pScreen->ClearToBackground = server->ClearToBackground;
+    }
 
     xorg_list_for_each_entry_safe(sw, tmp, &server->windows, entry)
         compServerFreeWindow(sw);

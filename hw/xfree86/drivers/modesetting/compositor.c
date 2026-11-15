@@ -262,14 +262,15 @@ ms_compositor_screen_init(ScrnInfoPtr scrn)
     modesettingPtr ms = modesettingPTR(scrn);
 
     xorg_list_init(&ms->compositor.sw_cursors);
-    ms->compositor.EnableDisableFBAccess = scrn->EnableDisableFBAccess;
-    scrn->EnableDisableFBAccess = ms_compositor_enable_disable_fb_access;
+    if (ms->drmmode.compositing) {
+        ms->compositor.EnableDisableFBAccess = scrn->EnableDisableFBAccess;
+        scrn->EnableDisableFBAccess = ms_compositor_enable_disable_fb_access;
+    }
 }
 
-Bool
-ms_compositor_create_screen_resources(ScreenPtr screen)
+static Bool
+ms_compositor_use_empty_screen_pixmap(ScreenPtr screen)
 {
-    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
     PixmapPtr old_pixmap = screen->GetScreenPixmap(screen);
     PixmapPtr pixmap;
 
@@ -279,15 +280,27 @@ ms_compositor_create_screen_resources(ScreenPtr screen)
 
     screen->SetScreenPixmap(pixmap);
     dixDestroyPixmap(old_pixmap, 0);
+    return TRUE;
+}
 
-    if (!CompositeServerInit(screen, ms_compositor_paint_hdr_proc(scrn))) {
+Bool
+ms_compositor_create_screen_resources(ScreenPtr screen)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
+    modesettingPtr ms = modesettingPTR(scrn);
+    Bool compositing = ms->drmmode.compositing;
+
+    if (compositing && !ms_compositor_use_empty_screen_pixmap(screen))
+        return FALSE;
+
+    if (!CompositeServerInit(screen, ms_compositor_paint_hdr_proc(scrn),
+                             compositing)) {
         xf86DrvMsg(scrn->scrnIndex, X_ERROR,
-                   "Failed to set up compositing, use "
-                   "Option \"Compositing\" \"false\" for a shared framebuffer\n");
+                   "Failed to set up per-monitor framebuffers\n");
         return FALSE;
     }
 
-    modesettingPTR(scrn)->glamor.set_flush_unshared_on_idle(screen, FALSE);
+    ms->glamor.set_flush_unshared_on_idle(screen, FALSE);
     return TRUE;
 }
 

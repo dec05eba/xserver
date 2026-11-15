@@ -4742,7 +4742,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
     if (scrn->virtualX == width && scrn->virtualY == height)
         return TRUE;
 
-    if (drmmode->tearfree_enable) {
+    if (drmmode->compositing) {
         scrn->virtualX = width;
         scrn->virtualY = height;
         scrn->displayWidth = width;
@@ -4801,7 +4801,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr scrn, int width, int height)
     for (i = 0; i < xf86_config->num_crtc; i++) {
         xf86CrtcPtr crtc = xf86_config->crtc[i];
 
-        if (!crtc->enabled)
+        if (!crtc->enabled || drmmode->tearfree_enable)
             continue;
 
         drmmode_set_mode_major(crtc, &crtc->mode,
@@ -5548,7 +5548,7 @@ drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
     int cpp = (ms->drmmode.kbpp + 7) / 8;
     int i;
 
-    if (!drmmode->tearfree_enable) {
+    if (!drmmode->compositing) {
         if (!drmmode_create_front_bo(drmmode, pScrn->virtualX,
                                      pScrn->virtualY))
             return FALSE;

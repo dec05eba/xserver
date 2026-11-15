@@ -339,7 +339,7 @@ compServerReconfigureClient(WindowPtr pWin, PixmapPtr pOld, int w, int h)
 {
     CompServerWindowPtr sw;
 
-    if (!CompositeServerActive(pWin->drawable.pScreen) ||
+    if (!CompositeServerCompositing(pWin->drawable.pScreen) ||
         (w == pOld->drawable.width && h == pOld->drawable.height))
         return;
 
@@ -369,7 +369,7 @@ CompositeServerPresented(WindowPtr pWin, PixmapPtr pPixmap)
     CompServerWindowPtr sw;
     Bool matches;
 
-    if (!pWin->parent || !CompositeServerActive(pWin->drawable.pScreen))
+    if (!pWin->parent || !CompositeServerCompositing(pWin->drawable.pScreen))
         return;
 
     sw = GetCompServerWindow(compServerToplevel(pWin));
@@ -410,7 +410,7 @@ compServerWmTarget(ClientPtr client, XID id, WindowPtr *ppWin)
     CompServerWindowPtr sw;
 
     if (dixLookupWindow(&pWin, id, client, DixGetAttrAccess) != Success ||
-        !pWin->parent || !CompositeServerActive(pWin->drawable.pScreen) ||
+        !pWin->parent || !CompositeServerCompositing(pWin->drawable.pScreen) ||
         !compServerIsWm(client, pWin->drawable.pScreen->root))
         return NULL;
 
@@ -443,7 +443,7 @@ compServerHideSyncCounter(CallbackListPtr *pcbl, void *closure, void *data)
     if (!(rec->access_mode & ~(DixReadAccess | DixGetAttrAccess)) &&
         (*rec->ppProp)->propertyName ==
         compServerAtom("_NET_WM_SYNC_REQUEST_COUNTER") &&
-        CompositeServerActive(pWin->drawable.pScreen) &&
+        CompositeServerCompositing(pWin->drawable.pScreen) &&
         compServerIsWm(rec->client, pWin->drawable.pScreen->root))
         rec->status = BadMatch;
 }

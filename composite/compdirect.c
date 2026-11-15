@@ -57,6 +57,7 @@ compServerAddDirectWindow(CompServerPtr server, WindowPtr pWin)
         return NULL;
 
     dw->pWin = pWin;
+    RegionNull(&dw->painted);
     xorg_list_add(&dw->entry, &server->directWindows);
     return dw;
 }
@@ -64,6 +65,7 @@ compServerAddDirectWindow(CompServerPtr server, WindowPtr pWin)
 static void
 compServerFreeDirectWindow(CompServerDirectWindowPtr dw)
 {
+    RegionUninit(&dw->painted);
     xorg_list_del(&dw->entry);
     free(dw);
 }
@@ -238,7 +240,7 @@ compServerFlushInferiors(WindowPtr pWin)
 {
     CompServerPtr server = compServerGet(pWin->drawable.pScreen);
 
-    if (server && pWin->parent)
+    if (server && (pWin->parent || !server->compositing))
         compServerForEachDeferred(server, pWin, compServerFlushInferior);
 }
 
@@ -273,14 +275,24 @@ compServerForgetDeferred(WindowPtr pWin)
     }
 }
 
+static Bool
+compServerCanRedirectPresentWindow(WindowPtr pWin)
+{
+    if (!CompositeServerCompositing(pWin->drawable.pScreen))
+        return CompositeServerActive(pWin->drawable.pScreen) &&
+            compServerTreeServerOwned(pWin->parent);
+
+    return !CompositeIsServerRoot(pWin->parent) &&
+        CompositeIsServerRedirected(compServerToplevel(pWin));
+}
+
 Bool
 CompositeServerRedirectPresentWindow(WindowPtr pWin)
 {
-    if (!pWin->parent || CompositeIsServerRoot(pWin->parent) ||
-        pWin->redirectDraw != RedirectDrawNone || !pWin->viewable ||
-        pWin->drawable.class != InputOutput || wBorderWidth(pWin) ||
-        !RegionEqual(&pWin->clipList, &pWin->winSize) ||
-        !CompositeIsServerRedirected(compServerToplevel(pWin)))
+    if (!pWin->parent || pWin->redirectDraw != RedirectDrawNone ||
+        !pWin->viewable || pWin->drawable.class != InputOutput ||
+        wBorderWidth(pWin) || !RegionEqual(&pWin->clipList, &pWin->winSize) ||
+        !compServerCanRedirectPresentWindow(pWin))
         return FALSE;
 
     return compRedirectWindow(serverClient, pWin, CompositeRedirectAutomatic) == Success;

@@ -680,7 +680,7 @@ static Bool
 xf86RandR12ScreenPixmapCoversScreen(ScreenPtr pScreen)
 {
 #ifdef COMPOSITE
-    if (CompositeServerActive(pScreen))
+    if (CompositeServerCompositing(pScreen))
         return FALSE;
 #endif
     return TRUE;

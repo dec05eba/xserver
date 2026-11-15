@@ -134,7 +134,7 @@ compChangeWindowAttributes(WindowPtr pWin, unsigned long mask)
         pScreen->backingStoreSupport != NotUseful)
         compCheckBackingStore(pWin);
 
-    if (ret && cs->server && !pWin->parent &&
+    if (ret && CompositeServerCompositing(pScreen) && !pWin->parent &&
         (mask & (CWBackPixel | CWBackPixmap)))
         compServerAddDamage(cs->server, &pWin->winSize);
 
@@ -263,8 +263,9 @@ typedef struct _alternateVisual {
 
 /*
  * The 30-bit visual is only offered when the DDX supports depth 30 pixmaps
- * on a lower depth screen. Windows using it are meant to only receive content
- * through Present, so they are not redirected and can be page flipped.
+ * on a lower depth screen. Without per-monitor framebuffers, windows using it
+ * are meant to only receive content through Present, so they are not
+ * redirected and can be page flipped.
  */
 static CompAlternateVisual altVisuals[] = {
 #if COMP_INCLUDE_RGB24_VISUAL

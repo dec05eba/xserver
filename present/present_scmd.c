@@ -1325,7 +1325,8 @@ present_scmd_pixmap(WindowPtr window,
     if (pixmap && !valid && !x_off && !y_off && present_window_flips(screen) &&
         pixmap->drawable.width == window->drawable.width &&
         pixmap->drawable.height == window->drawable.height &&
-        pixmap->drawable.depth == window->drawable.depth)
+        pixmap->drawable.depth == window->drawable.depth &&
+        (CompositeServerCompositing(screen) || present_window_covers_crtc(window)))
         CompositeServerRedirectPresentWindow(window);
 
     if (!screen_priv || !screen_priv->info)

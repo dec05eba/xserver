@@ -238,6 +238,7 @@ typedef struct _CompServerDirectWindow {
     struct xorg_list entry;
     WindowPtr pWin;
     Bool hdr;
+    RegionRec painted;
     CompServerDeferredUpdateRec deferred;
 } CompServerDirectWindowRec, *CompServerDirectWindowPtr;
 
@@ -264,6 +265,8 @@ typedef struct _CompServerFrameTiming {
 } CompServerFrameTimingRec;
 
 typedef struct _CompServer {
+    Bool compositing;
+    DamagePtr pRootDamage;
     RegionRec damage;
     uint64_t damageSerial;
     uint64_t layoutSerial;
@@ -462,6 +465,9 @@ void
 
 WindowPtr
  compServerToplevel(WindowPtr pWin);
+
+Bool
+ compServerTreeServerOwned(WindowPtr pWin);
 
 Bool
  compServerPaintsWindow(WindowPtr pWin);

@@ -18,7 +18,7 @@ is an @xservername@ driver for KMS devices.  This driver supports
 TrueColor visuals at framebuffer depths of 15, 16, 24, and 30. RandR
 1.2 is supported for multi-head configurations. Acceleration is available
 through glamor for devices supporting at least OpenGL ES 2.0 or OpenGL 2.1.
-If glamor is not enabled, a shadow framebuffer is configured based on the
+If glamor is not available, a shadow framebuffer is configured based on the
 KMS drivers' preference (unless the framebuffer is 24 bits per pixel, in
 which case the shadow framebuffer is always used).
 .SH SUPPORTED HARDWARE
@@ -60,22 +60,6 @@ a broken cursor, try setting this to
 .BI "Option \*qkmsdev\*q \*q" string \*q
 The framebuffer device to use. Default: /dev/dri/card0.
 .TP
-.BI "Option \*qShadowFB\*q \*q" boolean \*q
-Enable or disable use of the shadow framebuffer layer.  Default: on.
-.TP
-.BI "Option \*qDoubleShadow\*q \*q" boolean \*q
-Double-buffer shadow updates. When enabled, the driver will keep two copies of
-the shadow framebuffer. When the shadow framebuffer is flushed, the old and new
-versions of the shadow are compared, and only tiles that have actually changed
-are uploaded to the device. This is an optimization for server-class GPUs with
-a remote display function (typically VNC), where remote updates are triggered
-by any framebuffer write, so minimizing the amount of data uploaded is crucial.
-This defaults to enabled for ASPEED and Matrox G200 devices, and disabled
-otherwise.
-.TP
-.BI "Option \*qAccelMethod\*q \*q" string \*q
-One of \*qglamor\*q or \*qnone\*q.  Default: glamor.
-.TP
 .BI "Option \*qPageFlip\*q \*q" boolean \*q
 Enable DRI3 page flipping.  The default is
 .B on.
@@ -110,10 +94,7 @@ off, show their frames with async flips, which can tear. When disabled, their
 newest frame is flipped at the next vblank instead, so they are still not
 limited to the refresh rate but never tear. It must be enabled for
 .B AsyncFlipSecondaries
-to have an effect. Without
-.B Compositing,
-windows that aren't flipped are drawn straight to the screen and can tear
-either way.
+to have an effect.
 .br
 The default is
 .B off.
@@ -121,9 +102,8 @@ The default is
 .BI "Option \*qHiddenWindowFPS\*q \*q" integer \*q
 Applications with vsync turned on show at most this many frames per second
 while their windows aren't visible, so they don't take GPU time from what's
-visible. That includes unmapped windows, such as minimized ones, and with
-.B Compositing
-also windows that are completely covered or off screen. Applications with vsync
+visible. That includes unmapped windows, such as minimized ones, and windows
+that are completely covered or off screen. Applications with vsync
 turned off keep running at full speed. 0 lets them run as if they were visible.
 .br
 The default is
@@ -146,16 +126,17 @@ entries, if supported by the kernel. By default, GAMMA_LUT will be used for
 kms drivers which are known to be safe for use of GAMMA_LUT.
 .TP
 .BI "Option \*qCompositing\*q \*q" boolean \*q
-Let the X server composite the windows itself, without tearing, so no separate
-compositor is needed. Every CRTC gets its own scanout buffers instead of one
-framebuffer for the whole screen, also on transformed screens such as rotated
-and scaled CRTCs. Windows with an alpha channel are transparent and
-_NET_WM_WINDOW_OPACITY is supported. When PageFlip is enabled, a fullscreen
-window that presents with the Present extension is scanned out directly on its
-CRTC. HDR windows that aren't fullscreen and synchronized window resizing also
-need compositing. Requires glamor and the Composite extension; when disabled
-all CRTCs scan out one shared framebuffer and a separate compositor can be
-used.
+Let the X server composite the windows itself, so no separate compositor is
+needed. Windows with an alpha channel are transparent, _NET_WM_WINDOW_OPACITY
+is supported and windows are resized in sync with their applications. When
+disabled, windows are drawn into one buffer for the whole screen that is copied
+to the CRTCs, and a separate compositor can be used.
+.br
+Either way every CRTC has its own scanout buffers, so nothing tears, also on
+transformed CRTCs such as rotated and scaled ones, and when PageFlip is enabled
+a fullscreen window that presents with the Present extension is scanned out
+directly on its CRTC. That requires glamor and the Composite extension; without
+them all CRTCs scan out one shared framebuffer.
 .br
 The default is
 .B on.
@@ -176,10 +157,11 @@ Enable HDR on monitors that support HDR10. The desktop is treated as gamma 2.2
 content with BT.709 primaries and is converted to HDR10 with the DEGAMMA_LUT,
 CTM and GAMMA_LUT CRTC properties. Fullscreen windows with the
 hdr_output_metadata property are passed through unconverted. Switching between
-them does not require a modeset, so it is instant. With Compositing, the
-monitor is composited in HDR10, so other windows with the property are shown
-as HDR too. The monitor always gets metadata with the luminance and primaries
-it reports in its EDID, preferring its Dolby Vision data block. Windows whose
+them does not require a modeset, so it is instant. Otherwise the monitor is
+composited in HDR10, so other windows with the property are shown as HDR too,
+unless a separate compositor draws them. The monitor always gets metadata with
+the luminance and primaries it reports in its EDID, preferring its Dolby Vision
+data block. Windows whose
 metadata exceeds that luminance are tone mapped to it with the ITU-R BT.2390
 EETF, and windows with a wider gamut are compressed into the monitor's gamut.
 Composited windows are tone mapped each by its own metadata while compositing.

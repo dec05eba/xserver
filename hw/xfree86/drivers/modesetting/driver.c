@@ -152,11 +152,8 @@ static const OptionInfoRec Options[] = {
     {OPTION_SW_CURSOR, "SWcursor", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_CURSOR_SIZE_OPTIM, "CursorSizeOptimization", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_DEVICE_PATH, "kmsdev", OPTV_STRING, {0}, FALSE},
-    {OPTION_SHADOW_FB, "ShadowFB", OPTV_BOOLEAN, {0}, FALSE},
-    {OPTION_ACCEL_METHOD, "AccelMethod", OPTV_STRING, {0}, FALSE},
     {OPTION_PAGEFLIP, "PageFlip", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_ZAPHOD_HEADS, "ZaphodHeads", OPTV_STRING, {0}, FALSE},
-    {OPTION_DOUBLE_SHADOW, "DoubleShadow", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_ATOMIC, "Atomic", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_VARIABLE_REFRESH, "VariableRefresh", OPTV_BOOLEAN, {0}, FALSE},
     {OPTION_USE_GAMMA_LUT, "UseGammaLUT", OPTV_BOOLEAN, {0}, FALSE},
@@ -1169,21 +1166,12 @@ static void
 try_enable_glamor(ScrnInfoPtr pScrn)
 {
     modesettingPtr ms = modesettingPTR(pScrn);
-    const char *accel_method_str = xf86GetOptValString(ms->drmmode.Options,
-                                                       OPTION_ACCEL_METHOD);
-    Bool do_glamor = (!accel_method_str ||
-                      strcmp(accel_method_str, "glamor") == 0);
 
     ms->drmmode.glamor = FALSE;
 
 #ifdef HAVE_GBM
     if (ms->drmmode.force_24_32) {
         xf86DrvMsg(pScrn->scrnIndex, X_CONFIG, "Cannot use glamor with 24bpp packed fb\n");
-        return;
-    }
-
-    if (!do_glamor) {
-        xf86DrvMsg(pScrn->scrnIndex, X_CONFIG, "glamor disabled\n");
         return;
     }
 
@@ -1200,10 +1188,7 @@ try_enable_glamor(ScrnInfoPtr pScrn)
                    "Failed to load glamor module.\n");
     }
 #else
-    if (do_glamor) {
-        xf86DrvMsg(pScrn->scrnIndex, X_INFO,
-                   "No glamor support in the X Server\n");
-    }
+    xf86DrvMsg(pScrn->scrnIndex, X_INFO, "No glamor support in the X Server\n");
 #endif
 }
 
@@ -1230,8 +1215,7 @@ msCompositingOption(ScrnInfoPtr pScrn, modesettingPtr ms)
 static Bool
 msShouldDoubleShadow(ScrnInfoPtr pScrn, modesettingPtr ms)
 {
-    Bool ret = FALSE, asked;
-    int from;
+    Bool ret = FALSE;
     drmVersionPtr v;
 
     if (!ms->drmmode.shadow_enable)
@@ -1248,14 +1232,7 @@ msShouldDoubleShadow(ScrnInfoPtr pScrn, modesettingPtr ms)
         xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
                    "Failed to query DRM version.\n");
 
-    asked = xf86GetOptValBool(ms->drmmode.Options, OPTION_DOUBLE_SHADOW, &ret);
-
-    if (asked)
-        from = X_CONFIG;
-    else
-        from = X_INFO;
-
-    xf86DrvMsg(pScrn->scrnIndex, from,
+    xf86DrvMsg(pScrn->scrnIndex, X_INFO,
                "Double-buffered shadow updates: %s\n", ret ? "on" : "off");
 
     return ret;
@@ -1489,9 +1466,7 @@ PreInit(ScrnInfoPtr pScrn, int flags)
                 prefer_shadow = !!value;
             }
 
-            ms->drmmode.shadow_enable =
-                xf86ReturnOptValBool(ms->drmmode.Options, OPTION_SHADOW_FB,
-                                     prefer_shadow);
+            ms->drmmode.shadow_enable = prefer_shadow;
         }
 
         xf86DrvMsg(pScrn->scrnIndex, X_INFO,
@@ -1569,29 +1544,27 @@ PreInit(ScrnInfoPtr pScrn, int flags)
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
                    "Compositing disabled on PRIME secondary GPU; "
                    "use 'PRIME Synchronization' instead\n");
-    } else if (!msCompositingOption(pScrn, ms)) {
-        xf86DrvMsg(pScrn->scrnIndex, X_INFO,
-                   "Compositing disabled (Option \"Compositing\" \"false\"); "
-                   "using a shared framebuffer.\n");
     } else if (!ms->drmmode.glamor) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Compositing requires Glamor acceleration; "
+                   "Per-monitor framebuffers require Glamor acceleration; "
                    "falling back to a shared framebuffer.\n");
     } else if (noCompositeExtension) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Compositing requires the Composite extension; "
+                   "Per-monitor framebuffers require the Composite extension; "
                    "falling back to a shared framebuffer.\n");
     } else if (ms->drmmode.pageflip &&
                /* Atomic modesetting implicitly enables universal planes */
                !ms->atomic_modeset &&
                drmSetClientCap(ms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Compositing requires either universal planes "
+                   "Per-monitor framebuffers require either universal planes "
                    "or 'Option \"PageFlip\" \"off\"'; falling back to a "
                    "shared framebuffer.\n");
     } else {
         ms->drmmode.tearfree_enable = TRUE;
-        xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Compositing: enabled\n");
+        ms->drmmode.compositing = msCompositingOption(pScrn, ms);
+        xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Compositing: %sabled\n",
+                   ms->drmmode.compositing ? "en" : "dis");
     }
 
     ms->kms_has_modifiers = FALSE;
@@ -2063,6 +2036,9 @@ ms_init_shared_screen_pixmap(ScreenPtr pScreen)
             return FALSE;
     }
 
+    if (ms->drmmode.tearfree_enable)
+        return TRUE;
+
     err = drmModeDirtyFB(ms->fd, ms->drmmode.fb_id, NULL, 0);
     if (err == -EINVAL || err == -ENOSYS)
         return TRUE;
@@ -2095,13 +2071,12 @@ CreateScreenResources(ScreenPtr pScreen)
     if (!drmmode_set_desired_modes(pScrn, &ms->drmmode, pScrn->is_gpu, FALSE))
         return FALSE;
 
-    if (ms->drmmode.tearfree_enable) {
-        if (!ms_compositor_create_screen_resources(pScreen))
-            return FALSE;
-    }
-    else if (!ms_init_shared_screen_pixmap(pScreen)) {
+    if (!ms->drmmode.compositing && !ms_init_shared_screen_pixmap(pScreen))
         return FALSE;
-    }
+
+    if (ms->drmmode.tearfree_enable &&
+        !ms_compositor_create_screen_resources(pScreen))
+        return FALSE;
 
     drmmode_uevent_init(pScrn, &ms->drmmode);
 
@@ -2439,7 +2414,7 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
     pScrn->vtSema = TRUE;
 
     if (serverGeneration == 1 && bgNoneRoot && ms->drmmode.glamor &&
-        !ms->drmmode.tearfree_enable) {
+        !ms->drmmode.compositing) {
         ms->CreateWindow = pScreen->CreateWindow;
         pScreen->CreateWindow = CreateWindow_oneshot;
     }
