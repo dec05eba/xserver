@@ -49,6 +49,10 @@ compositing you lose transparency without a separate compositor,
 `_NET_WM_WINDOW_OPACITY`, synchronized window resizing, `_NET_WM_FRAME_DRAWN`
 and overlay planes.
 
+picom's `egl` backend shows wrong colors. It picks the 10-bit EGL config that
+exists for HDR windows instead of one matching its own 8-bit window. Use the
+`glx` backend instead, for example `picom --backend glx`.
+
 `TearFree` is the old name of this option. It still works but is deprecated,
 and if both are set `Compositing` is used.
 
