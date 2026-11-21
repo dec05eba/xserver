@@ -472,9 +472,16 @@ typedef struct {
 } drmmode_prime_source_wait_rec;
 
 typedef struct {
+    Bool copy_pending;
+    int copy_fence_fd;
+} drmmode_prime_staging_rec;
+
+typedef struct {
     drmmode_shadow_fb_rec buf[3];
     uint32_t back_idx;
     uint32_t front_idx;
+    drmmode_prime_staging_rec staging[2];
+    int staging_idx;
     drmmode_composition_rec composition;
     Bool composition_has_metadata;
     struct hdr_output_metadata composition_metadata;

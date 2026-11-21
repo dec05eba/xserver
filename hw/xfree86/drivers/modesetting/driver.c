@@ -2208,7 +2208,8 @@ msSharedPixmapNotifyDamage(PixmapPtr ppix)
 
 #ifdef HAVE_GBM
         if (ms->drmmode.reverse_prime_offload_mode) {
-            if (ppix == drmmode_crtc->prime_pixmap_back) {
+            if (ppix == drmmode_crtc->prime_pixmap ||
+                ppix == drmmode_crtc->prime_pixmap_back) {
                 ms_prime_kick(crtc);
                 ret = TRUE;
             }

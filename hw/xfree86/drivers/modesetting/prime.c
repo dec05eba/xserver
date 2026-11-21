@@ -47,6 +47,7 @@ ms_prime_scanout(xf86CrtcPtr crtc)
 static void ms_prime_commit_cancel(xf86CrtcPtr crtc);
 static void ms_prime_source_wait_cancel(xf86CrtcPtr crtc);
 static void ms_prime_deadline_fired(int fd, int ready, void *data);
+static void ms_prime_staging_forget_copy(drmmode_prime_staging_rec *staging);
 
 static void
 ms_prime_release_import(drmmode_prime_import_rec *import)
@@ -150,6 +151,9 @@ ms_prime_destroy_scanout(xf86CrtcPtr crtc)
         }
     }
     prime_scanout->back_idx = 0;
+    for (i = 0; i < ARRAY_SIZE(prime_scanout->staging); i++)
+        ms_prime_staging_forget_copy(&prime_scanout->staging[i]);
+    prime_scanout->staging_idx = 0;
 
     if (prime_scanout->composition.intermediate)
         dixDestroyPixmap(prime_scanout->composition.intermediate, 0);
@@ -230,21 +234,9 @@ ms_prime_source_priv(PixmapPtr ppix)
     return msGetPixmapPriv(&modesettingPTR(scrn)->drmmode, primary);
 }
 
-/* Only the back shared pixmap is painted, and everything drawn so far is in
- * it, so the damage of the other one is never needed.
- */
-static void
-ms_prime_discard_front_damage(xf86CrtcPtr crtc)
-{
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    msPixmapPrivPtr ppriv = ms_prime_source_priv(drmmode_crtc->prime_pixmap);
-
-    if (ppriv && ppriv->dirty)
-        DamageEmpty(ppriv->dirty->damage);
-}
-
-/* The shared pixmap is complete, so the back buffer only needs what changed
- * since it was last shown. The client's own buffer is new every frame.
+/* Each shared pixmap is complete once painted, so the back buffer only needs
+ * what changed since it was last shown. The client's own buffer is new every
+ * frame.
  */
 static RegionPtr
 ms_prime_back_damage(xf86CrtcPtr crtc, PixmapPtr ppix, Bool shared)
@@ -341,6 +333,60 @@ ms_prime_fence_signaled(int fence_fd)
     struct pollfd pfd = { .fd = fence_fd, .events = POLLIN };
 
     return fence_fd < 0 || poll(&pfd, 1, 0) != 0;
+}
+
+static PixmapPtr
+ms_prime_staging_pixmap(xf86CrtcPtr crtc, int idx)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return idx ? drmmode_crtc->prime_pixmap : drmmode_crtc->prime_pixmap_back;
+}
+
+static void
+ms_prime_staging_forget_copy(drmmode_prime_staging_rec *staging)
+{
+    if (staging->copy_pending)
+        close(staging->copy_fence_fd);
+    staging->copy_pending = FALSE;
+}
+
+static void
+ms_prime_staging_copied(xf86CrtcPtr crtc, PixmapPtr ppix, int fence_fd)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    int idx;
+
+    for (idx = 0; idx < ARRAY_SIZE(prime_scanout->staging); idx++) {
+        drmmode_prime_staging_rec *staging = &prime_scanout->staging[idx];
+
+        if (ms_prime_staging_pixmap(crtc, idx) != ppix)
+            continue;
+
+        ms_prime_staging_forget_copy(staging);
+        if (fence_fd >= 0) {
+            staging->copy_fence_fd = dup(fence_fd);
+            staging->copy_pending = staging->copy_fence_fd >= 0;
+        }
+    }
+}
+
+static Bool
+ms_prime_staging_idle(xf86CrtcPtr crtc, int idx)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_staging_rec *staging = &prime_scanout->staging[idx];
+
+    if (prime_scanout->source_wait.seq &&
+        prime_scanout->source_wait.pixmap == ms_prime_staging_pixmap(crtc, idx))
+        return FALSE;
+
+    if (staging->copy_pending) {
+        if (!ms_prime_fence_signaled(staging->copy_fence_fd))
+            return FALSE;
+        ms_prime_staging_forget_copy(staging);
+    }
+    return TRUE;
 }
 
 static Bool
@@ -455,14 +501,6 @@ ms_prime_queue_head(xf86CrtcPtr crtc)
     drmmode_prime_queue_rec *queue = &ms_prime_scanout(crtc)->commit.queue;
 
     return queue->count ? &queue->content[0] : NULL;
-}
-
-static drmmode_prime_content_rec *
-ms_prime_queue_tail(xf86CrtcPtr crtc)
-{
-    drmmode_prime_queue_rec *queue = &ms_prime_scanout(crtc)->commit.queue;
-
-    return queue->count ? &queue->content[queue->count - 1] : NULL;
 }
 
 static void
@@ -916,6 +954,8 @@ ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
             ms_overlay_flip_failed(crtc);
             return FALSE;
         }
+        if (src == ppix)
+            ms_prime_staging_copied(crtc, ppix, fence_fd);
     }
 
     ms_prime_set_scanout_content(crtc, TRUE);
@@ -986,7 +1026,6 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 
     if (prime_scanout->direct.covered)
         ms_prime_overlay_prepare(crtc);
-    ms_prime_discard_front_damage(crtc);
 
     fence_fd = ms_prime_source_fence(crtc, ppix);
     if (fence_fd < 0)
@@ -1113,33 +1152,64 @@ ms_prime_kick(xf86CrtcPtr crtc)
         ms_prime_scanout(crtc)->kick = TRUE;
 }
 
+/* Both shared pixmaps collect the same damage and painting one empties only
+ * its own, so the other still holds what was just shown. Only damage in the
+ * pixmap painted last is new.
+ */
+static Bool
+ms_prime_wait_for_new_damage(xf86CrtcPtr crtc, PixmapPtr painted_last)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    ScreenPtr primary = crtc->randr_crtc->pScreen->current_primary;
+    msPixmapPrivPtr source = ms_prime_source_priv(painted_last);
+
+    if (!source || !source->dirty || !primary->RequestSharedPixmapNotifyDamage ||
+        RegionNotEmpty(DamageRegion(source->dirty->damage)))
+        return FALSE;
+
+    msGetPixmapPriv(drmmode_crtc->drmmode, painted_last)->wait_for_damage = TRUE;
+    return primary->RequestSharedPixmapNotifyDamage(painted_last);
+}
+
 static void
 ms_prime_present(xf86CrtcPtr crtc)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    msPixmapPrivPtr ppriv = msGetPixmapPriv(drmmode_crtc->drmmode,
-                                            drmmode_crtc->prime_pixmap_back);
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    PixmapPtr staging = ms_prime_staging_pixmap(crtc, prime_scanout->staging_idx);
+    PixmapPtr painted_last = ms_prime_staging_pixmap(crtc, prime_scanout->staging_idx ^ 1);
+    msPixmapPrivPtr idle = msGetPixmapPriv(drmmode_crtc->drmmode, drmmode_crtc->prime_pixmap_back);
+    msPixmapPrivPtr staging_priv = msGetPixmapPriv(drmmode_crtc->drmmode, staging);
+    Bool presented;
 
-    ms_prime_scanout(crtc)->commit.compose_start = GetTimeInMicros();
-    ppriv->wait_for_damage = FALSE;
-    if (!drmmode_SharedPixmapPresentNow(drmmode_crtc->prime_pixmap_back, crtc,
-                                        drmmode_crtc->drmmode))
-        ppriv->wait_for_damage = TRUE;
+    if (ms_prime_wait_for_new_damage(crtc, painted_last)) {
+        idle->wait_for_damage = TRUE;
+        return;
+    }
+
+    prime_scanout->commit.compose_start = GetTimeInMicros();
+    idle->wait_for_damage = FALSE;
+    staging_priv->wait_for_damage = FALSE;
+    presented = drmmode_SharedPixmapPresentNow(staging, crtc, drmmode_crtc->drmmode) &&
+        !staging_priv->wait_for_damage;
+    if (presented)
+        prime_scanout->staging_idx ^= 1;
+    else
+        idle->wait_for_damage = TRUE;
 }
 
-/* The shared pixmap is painted again for the next frame, so the copy of the
- * frame queued last must be done, and the copy needs a buffer that is neither
- * on screen nor committed or queued.
+/* The copy needs a buffer that is neither on screen nor committed or queued,
+ * and the shared pixmap painted next must not still be read by an earlier
+ * copy.
  */
 static Bool
 ms_prime_can_compose(xf86CrtcPtr crtc)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_commit_rec *commit = &prime_scanout->commit;
-    drmmode_prime_content_rec *tail = ms_prime_queue_tail(crtc);
     int back = prime_scanout->back_idx, i;
 
-    if (tail && !ms_prime_fence_signaled(tail->fence_fd))
+    if (!ms_prime_staging_idle(crtc, prime_scanout->staging_idx))
         return FALSE;
 
     if (back == prime_scanout->front_idx ||

@@ -1900,7 +1900,7 @@ drmmode_SharedPixmapPresentNow(PixmapPtr ppix, xf86CrtcPtr crtc,
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-    if (ppix == drmmode_crtc->prime_pixmap ||
+    if (ppix != drmmode_crtc->prime_pixmap &&
         ppix != drmmode_crtc->prime_pixmap_back)
         return FALSE;
 
