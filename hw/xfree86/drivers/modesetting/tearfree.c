@@ -187,8 +187,8 @@ ms_tearfree_frame_shown(uint64_t msc, uint64_t usec, void *data)
     ms_tearfree_frame_release(trf, frame, TRUE);
     ms_overlay_flip_done(crtc);
 
-    if (old_fb_id)
-        drmModeRmFB(drmmode_crtc->drmmode->fd, old_fb_id);
+    ms_flip_fb_cache_release(crtc, old_fb_id);
+    ms_flip_fb_cache_drop_unused(crtc);
 
     ms_tearfree_dri_notify(trf, seq, msc, usec);
 }

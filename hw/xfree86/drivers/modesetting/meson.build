@@ -6,6 +6,7 @@ modesetting_srcs = [
     'driver.c',
     'drmmode_display.c',
     'dumb_bo.c',
+    'flip_fb_cache.c',
     'hdr.c',
     'hdr_edid.c',
     'hdr_map.c',

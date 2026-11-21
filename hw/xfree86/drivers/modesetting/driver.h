@@ -199,6 +199,7 @@ typedef struct _modesettingRec {
         int (*egl_create_fence_fd)(ScreenPtr);
         int (*egl_pixmap_rendering_fd)(PixmapPtr);
         Bool (*egl_pixmap_format)(PixmapPtr, uint32_t *, uint64_t *);
+        uint64_t (*egl_pixmap_image_id)(PixmapPtr);
         Bool (*convert_color)(PixmapPtr, PixmapPtr, RegionPtr, int, int, Bool,
                               CARD16, const glamor_color_conversion *);
     } glamor;
@@ -317,6 +318,11 @@ Bool ms_prime_window_flip(xf86CrtcPtr crtc, ScreenPtr screen, void *event,
                           ms_pageflip_abort_proc pageflip_abort);
 
 Bool ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap);
+
+uint32_t ms_flip_fb_cache_get(xf86CrtcPtr crtc, PixmapPtr pixmap);
+void ms_flip_fb_cache_release(xf86CrtcPtr crtc, uint32_t fb_id);
+void ms_flip_fb_cache_drop_unused(xf86CrtcPtr crtc);
+
 Bool ms_import_flip_fb(ScreenPtr screen, PixmapPtr pixmap, uint32_t *fb_id,
                        const char *log_prefix);
 

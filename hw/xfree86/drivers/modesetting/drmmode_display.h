@@ -239,11 +239,23 @@ typedef struct {
 } drmmode_fb_layout_rec;
 
 typedef struct {
+    PixmapPtr pixmap;
+    uint64_t image_id;
+    uint32_t fb_id;
+} drmmode_flip_fb_rec;
+
+typedef struct {
+    drmmode_flip_fb_rec fbs[4];
+    int next;
+} drmmode_flip_fb_cache_rec;
+
+typedef struct {
     WindowPtr window;
     PixmapPtr pixmap;
     PixmapPtr failed_pixmap;
     uint32_t fb_id;
     uint32_t flip_fb_id;
+    drmmode_flip_fb_cache_rec fb_cache;
     Bool async;
     Bool covered;
     WindowPtr output_mode_window;

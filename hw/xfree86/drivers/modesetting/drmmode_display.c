@@ -2342,9 +2342,9 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
     trf->composition.pq = FALSE;
     trf->composition.sdr_white_level = drmmode_crtc_sdr_white_level(crtc);
 
-    if (trf->scanout.fb_id)
-        drmModeRmFB(drmmode_crtc->drmmode->fd, trf->scanout.fb_id);
+    ms_flip_fb_cache_release(crtc, trf->scanout.fb_id);
     trf->scanout.fb_id = 0;
+    ms_flip_fb_cache_drop_unused(crtc);
     trf->scanout.window = NULL;
     trf->scanout.pixmap = NULL;
     trf->scanout.output_mode_dirty = TRUE;

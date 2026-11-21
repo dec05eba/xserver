@@ -1194,10 +1194,8 @@ ms_tearfree_direct_flip_abort(void *data)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
 
-    if (trf->scanout.flip_fb_id) {
-        drmModeRmFB(drmmode_crtc->drmmode->fd, trf->scanout.flip_fb_id);
-        trf->scanout.flip_fb_id = 0;
-    }
+    ms_flip_fb_cache_release(crtc, trf->scanout.flip_fb_id);
+    trf->scanout.flip_fb_id = 0;
     trf->flip_seq = 0;
     ms_overlay_flip_aborted(crtc);
     ms_tearfree_dri_abort_all(crtc);
@@ -1216,8 +1214,7 @@ ms_tearfree_direct_flip_handler(uint64_t msc, uint64_t usec, void *data)
     trf->flip_seq = 0;
     ms_overlay_flip_done(crtc);
 
-    if (old_fb_id)
-        drmModeRmFB(drmmode_crtc->drmmode->fd, old_fb_id);
+    ms_flip_fb_cache_release(crtc, old_fb_id);
 
     /* Notify DRI clients that their pixmaps are now visible on the display */
     ms_tearfree_dri_notify(trf, seq, msc, usec);
@@ -1235,13 +1232,14 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
 
     ms->glamor.block_handler(screen);
 
-    if (!ms_import_flip_fb(screen, pixmap, &fb_id, "Direct-scanout"))
+    fb_id = ms_flip_fb_cache_get(crtc, pixmap);
+    if (!fb_id)
         return FALSE;
 
     seq = ms_drm_queue_alloc(crtc, crtc, ms_tearfree_direct_flip_handler,
                              ms_tearfree_direct_flip_abort);
     if (!seq) {
-        drmModeRmFB(ms->fd, fb_id);
+        ms_flip_fb_cache_release(crtc, fb_id);
         return FALSE;
     }
 
@@ -1249,7 +1247,7 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
         flags |= DRM_MODE_PAGE_FLIP_ASYNC;
 
     if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, 0, 0, -1)) {
-        drmModeRmFB(ms->fd, fb_id);
+        ms_flip_fb_cache_release(crtc, fb_id);
         return FALSE;
     }
 
