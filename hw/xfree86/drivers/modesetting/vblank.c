@@ -906,6 +906,9 @@ ms_drm_sequence_handler(int fd, uint64_t frame, uint64_t ns, Bool is64bit, uint6
     xorg_list_for_each_entry(q, &ms_drm_queue, list) {
         if (q->seq == seq) {
             crtc = q->crtc;
+            drmmode_crtc = crtc->driver_private;
+            if (drmmode_crtc->flip_event_seq == seq)
+                drmmode_crtc->flip_event_seq = 0;
             msc = ms_event_msc(crtc, seq, frame, ns, is64bit);
 
             /* Write the current MSC to this event to ensure its handler runs in

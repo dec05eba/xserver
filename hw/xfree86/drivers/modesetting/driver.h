@@ -457,6 +457,7 @@ void ms_cursor_close_screen(ScrnInfoPtr scrn);
 void ms_cursor_reset_scanout_wait(xf86CrtcPtr crtc);
 
 Bool ms_scrn_is_modesetting(ScrnInfoPtr scrn);
+int ms_flush_drm_events_timeout(ScreenPtr screen, int timeout);
 int ms_flush_drm_events(ScreenPtr screen);
 void ms_drain_drm_events(ScreenPtr screen);
 Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);

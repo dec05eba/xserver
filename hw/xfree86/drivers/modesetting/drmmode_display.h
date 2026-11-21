@@ -644,6 +644,7 @@ typedef struct {
     int src_x, src_y;
     drmmode_fb_layout_rec scanout_layout;
     uint32_t async_flip_seq;
+    uint32_t flip_event_seq;
 
     /**
      * @{ MSC (vblank count) handling for the PRESENT extension.
@@ -848,6 +849,7 @@ Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
                                       Bool composed, Bool with_next_flip);
 Bool drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
+void drmmode_close_fb(int fd, uint32_t fb_id);
 Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);
 Bool drmmode_crtc_can_show_pq(xf86CrtcPtr crtc);
 int drmmode_crtc_sdr_white_level(xf86CrtcPtr crtc);

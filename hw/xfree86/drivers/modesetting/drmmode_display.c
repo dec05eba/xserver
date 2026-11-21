@@ -1381,6 +1381,8 @@ drmmode_crtc_flip_committed(xf86CrtcPtr crtc, drmmode_fb_layout_rec layout,
     drmmode_crtc->scanout_layout = layout;
     drmmode_crtc->async_flip_seq = flags & DRM_MODE_PAGE_FLIP_ASYNC ?
         (uint32_t) (uintptr_t) data : 0;
+    if (flags & DRM_MODE_PAGE_FLIP_EVENT)
+        drmmode_crtc->flip_event_seq = (uint32_t) (uintptr_t) data;
 }
 
 int
@@ -2299,6 +2301,26 @@ drmmode_compose_damage_fenced(xf86CrtcPtr crtc, PixmapPtr dst, RegionPtr dmg)
 #endif
 }
 
+#define DRMMODE_FLIP_WAIT_MS 100
+
+/* nvidia-drm never completes a flip whose frame buffer is removed while it's
+ * in flight, which leaves the CRTC waiting for it forever.
+ */
+static void
+drmmode_crtc_wait_for_flip(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    ScreenPtr screen = crtc->scrn->pScreen;
+    CARD32 end = GetTimeInMillis() + DRMMODE_FLIP_WAIT_MS;
+
+    while (screen && drmmode_crtc->flip_event_seq) {
+        int left = (int) (end - GetTimeInMillis());
+
+        if (left <= 0 || ms_flush_drm_events_timeout(screen, left) < 0)
+            return;
+    }
+}
+
 static void
 drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
 {
@@ -2306,6 +2328,7 @@ drmmode_destroy_tearfree_shadow(xf86CrtcPtr crtc)
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
     int i;
 
+    drmmode_crtc_wait_for_flip(crtc);
     for (i = 0; i < ARRAY_SIZE(trf->frames.frame); i++) {
         if (trf->frames.frame[i].seq)
             ms_drm_abort_seq(crtc->scrn, trf->frames.frame[i].seq);
@@ -2888,6 +2911,16 @@ drmmode_shadow_create(xf86CrtcPtr crtc, void *data, int width, int height)
                                     &drmmode_crtc->rotate_fb_id);
 }
 
+/* RMFB disables a plane still showing the frame buffer with a commit of its
+ * own, while CLOSEFB leaves it on screen until the next commit replaces it.
+ */
+void
+drmmode_close_fb(int fd, uint32_t fb_id)
+{
+    if (drmModeCloseFB(fd, fb_id))
+        drmModeRmFB(fd, fb_id);
+}
+
 void
 drmmode_shadow_fb_destroy(xf86CrtcPtr crtc, PixmapPtr pixmap,
                           void *data, drmmode_bo *bo, uint32_t *fb_id)
@@ -2900,7 +2933,7 @@ drmmode_shadow_fb_destroy(xf86CrtcPtr crtc, PixmapPtr pixmap,
     }
 
     if (data) {
-        drmModeRmFB(drmmode->fd, *fb_id);
+        drmmode_close_fb(drmmode->fd, *fb_id);
         *fb_id = 0;
 
         drmmode_bo_destroy(drmmode, bo);

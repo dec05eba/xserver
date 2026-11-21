@@ -44,7 +44,7 @@
  * Returns a negative value on error, 0 if there was nothing to process,
  * or 1 if we handled any events.
  */
-static int
+int
 ms_flush_drm_events_timeout(ScreenPtr screen, int timeout)
 {
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
