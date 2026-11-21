@@ -589,6 +589,12 @@ typedef struct {
 } drmmode_vblank_emul_rec;
 
 typedef struct {
+    Bool enabled;
+    Bool pending;
+    Bool pending_enabled;
+} drmmode_crtc_vrr_rec;
+
+typedef struct {
     struct dumb_bo *bo;
     uint32_t fb_id;
     int width, height;
@@ -679,7 +685,7 @@ typedef struct {
     Bool enable_flipping;
     Bool flipping_active;
 
-    Bool vrr_enabled;
+    drmmode_crtc_vrr_rec vrr;
     Bool use_gamma_lut;
     drmmode_gamma_ramp_rec applied_gamma;
 
@@ -854,6 +860,7 @@ Bool drmmode_crtc_get_fb_id(xf86CrtcPtr crtc, uint32_t *fb_id, int *x, int *y);
 
 void drmmode_set_dpms(ScrnInfoPtr scrn, int PowerManagementMode, int flags);
 void drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled);
+void drmmode_crtc_set_vrr_with_next_flip(xf86CrtcPtr crtc, Bool enabled);
 void drmmode_forget_applied_gamma(ScrnInfoPtr scrn);
 drmmode_shadow_fb_ptr drmmode_prime_front_buffer(drmmode_prime_scanout_rec *prime_scanout);
 void drmmode_reset_vrr(ScrnInfoPtr scrn);

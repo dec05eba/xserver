@@ -1171,7 +1171,7 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc, void *timeout)
     Bool async = scanout->async;
 
     if (ms_compositor_can_direct_flip(crtc)) {
-        if (scanout->covered && !async && !drmmode_crtc->vrr_enabled &&
+        if (scanout->covered && !async && !drmmode_crtc->vrr.enabled &&
             !ms_tearfree_compose_due(crtc, timeout))
             return TRUE;
 
@@ -1260,6 +1260,18 @@ ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window)
         ((drmmode_crtc_private_ptr) crtc->driver_private)->overlay_plane.plane_id;
 }
 
+static void
+ms_compositor_prime_update_vrr(ScreenPtr primary, xf86CrtcPtr crtc, WindowPtr fullscreen_window)
+{
+    modesettingPtr primary_ms = modesettingPTR(xf86ScreenToScrn(primary));
+    Bool enabled = fullscreen_window &&
+        modesettingPTR(crtc->scrn)->vrr_support && primary_ms->vrr_support &&
+        ms_crtc_has_vrr_capable_output(crtc) &&
+        ms_compositor_window_has_variable_refresh(primary_ms, fullscreen_window);
+
+    drmmode_crtc_set_vrr_with_next_flip(crtc, enabled);
+}
+
 Bool
 ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
 {
@@ -1282,6 +1294,7 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
     ms_compositor_dirty_box(dirty, &box);
     RegionNull(&cover);
     window = ms_compositor_prime_window(dirty, crtc, &box, &pixmap, &cover);
+    ms_compositor_prime_update_vrr(screen, crtc, window);
     if (window)
         imported = ms_prime_import(crtc, pixmap);
 

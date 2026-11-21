@@ -1479,12 +1479,12 @@ PreInit(ScrnInfoPtr pScrn, int flags)
 
         ms->drmmode.shadow_enable2 = msShouldDoubleShadow(pScrn, ms);
     } else {
-        if (!pScrn->is_gpu) {
-            from = xf86GetOptValBool(ms->drmmode.Options, OPTION_VARIABLE_REFRESH,
-                                     &ms->vrr_support) ? X_CONFIG : X_DEFAULT;
-            xf86DrvMsg(pScrn->scrnIndex, from, "VariableRefresh: %sabled\n",
-                       ms->vrr_support ? "en" : "dis");
+        from = xf86GetOptValBool(ms->drmmode.Options, OPTION_VARIABLE_REFRESH,
+                                 &ms->vrr_support) ? X_CONFIG : X_DEFAULT;
+        xf86DrvMsg(pScrn->scrnIndex, from, "VariableRefresh: %sabled\n",
+                   ms->vrr_support ? "en" : "dis");
 
+        if (!pScrn->is_gpu) {
             ms->drmmode.async_flip_secondaries = FALSE;
             from = xf86GetOptValBool(ms->drmmode.Options, OPTION_ASYNC_FLIP_SECONDARIES,
                                      &ms->drmmode.async_flip_secondaries) ? X_CONFIG : X_DEFAULT;
@@ -2104,7 +2104,7 @@ CreateScreenResources(ScreenPtr pScreen)
         pScrPriv->rrSharedPixmapDepth = msSharedPixmapDepth;
     }
 
-    if (ms->vrr_support &&
+    if (ms->vrr_support && !pScrn->is_gpu &&
         !dixRegisterPrivateKey(&ms->drmmode.vrrPrivateKeyRec,
                                PRIVATE_WINDOW,
                                sizeof(struct ms_vrr_priv)))
@@ -2511,7 +2511,7 @@ ScreenInit(ScreenPtr pScreen, int argc, char **argv)
 
     pScrn->vtSema = TRUE;
 
-    if (ms->vrr_support) {
+    if (ms->vrr_support && !pScrn->is_gpu) {
         if (!property_vectors_wrapped) {
             saved_change_property = ProcVector[X_ChangeProperty];
             ProcVector[X_ChangeProperty] = ms_change_property;

@@ -468,6 +468,7 @@ int ms_flush_drm_events_timeout(ScreenPtr screen, int timeout);
 int ms_flush_drm_events(ScreenPtr screen);
 void ms_drain_drm_events(ScreenPtr screen);
 Bool ms_window_has_variable_refresh(modesettingPtr ms, WindowPtr win);
+Bool ms_crtc_has_vrr_capable_output(xf86CrtcPtr crtc);
 void ms_present_set_screen_vrr(ScrnInfoPtr scrn, Bool vrr_enabled);
 Bool ms_tearfree_is_active_on_crtc(xf86CrtcPtr crtc);
 #ifdef HAVE_GBM

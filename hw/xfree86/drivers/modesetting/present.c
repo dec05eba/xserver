@@ -87,7 +87,7 @@ ms_present_get_ust_msc(RRCrtcPtr crtc, CARD64 *ust, CARD64 *msc)
     return ms_get_crtc_ust_msc(xf86_crtc, ust, msc);
 }
 
-static Bool
+Bool
 ms_crtc_has_vrr_capable_output(xf86CrtcPtr crtc)
 {
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);

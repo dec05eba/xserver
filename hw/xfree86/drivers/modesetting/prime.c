@@ -372,6 +372,42 @@ static void ms_prime_frame_tick(xf86CrtcPtr crtc, uint64_t msc, uint64_t ust);
 static void ms_prime_tick_start(xf86CrtcPtr crtc, uint32_t seq,
                                 const drmmode_prime_deadline_rec *deadline);
 
+static Bool
+ms_prime_commit_waits_for_fence(xf86CrtcPtr crtc)
+{
+    drmmode_prime_queue_rec *queue = &ms_prime_scanout(crtc)->commit.queue;
+
+    return queue->count && queue->content[0].watching_fence &&
+        !ms_prime_cursor_wanted(crtc);
+}
+
+static void
+ms_prime_commit_without_deadline(xf86CrtcPtr crtc, uint64_t after)
+{
+    drmmode_prime_deadline_rec *deadline = &ms_prime_scanout(crtc)->commit.deadline;
+
+    deadline->vblank = 0;
+    deadline->msc = 0;
+    deadline->on_time = FALSE;
+    if (after) {
+        ms_timer_set(deadline->fd, &deadline->at, max(GetTimeInMicros(), after));
+        return;
+    }
+    ms_timer_set(deadline->fd, &deadline->at, 0);
+    ms_prime_commit_now(crtc, 0);
+}
+
+static void
+ms_prime_commit_when_ready(xf86CrtcPtr crtc, uint64_t after)
+{
+    drmmode_prime_deadline_rec *deadline = &ms_prime_scanout(crtc)->commit.deadline;
+
+    if (ms_prime_commit_waits_for_fence(crtc))
+        ms_timer_set(deadline->fd, &deadline->at, 0);
+    else
+        ms_prime_commit_without_deadline(crtc, after);
+}
+
 /* Retries never commit from here, so a deadline that keeps being missed
  * moves on through the timer instead of recursing. A vblank gets at most one
  * commit, also when nvidia completes a flip before that vblank.
@@ -394,16 +430,13 @@ ms_prime_commit_schedule(xf86CrtcPtr crtc, uint64_t after)
         return;
     }
 
+    if (((drmmode_crtc_private_ptr) crtc->driver_private)->vrr.enabled) {
+        ms_prime_commit_when_ready(crtc, after);
+        return;
+    }
+
     if (!period || !ms_tearfree_next_vblank(crtc, from, &vblank, &msc)) {
-        deadline->vblank = 0;
-        deadline->msc = 0;
-        deadline->on_time = FALSE;
-        if (after) {
-            ms_timer_set(deadline->fd, &deadline->at, max(now, after));
-            return;
-        }
-        ms_timer_set(deadline->fd, &deadline->at, 0);
-        ms_prime_commit_now(crtc, 0);
+        ms_prime_commit_without_deadline(crtc, after);
         return;
     }
 

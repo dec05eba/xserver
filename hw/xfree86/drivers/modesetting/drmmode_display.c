@@ -1384,6 +1384,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     Bool format_changed = layout.format != drmmode_crtc->scanout_layout.format;
     Bool src_changed = drmmode_crtc->src_x != x || drmmode_crtc->src_y != y;
     Bool with_overlay, with_cursor = ms_cursor_needs_commit(crtc);
+    Bool with_vrr = drmmode_crtc->vrr.pending;
     int ret;
 
     ms_overlay_prepare_commit(crtc);
@@ -1395,7 +1396,7 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
     /* The kernel rejects async flips that change anything other than the frame buffer, including its format,
      * modifier or pitch */
     if (layout_changed || (ms->atomic_modeset && src_changed) ||
-        drmmode_crtc->hdr.has_pending || with_overlay || with_cursor)
+        drmmode_crtc->hdr.has_pending || with_overlay || with_cursor || with_vrr)
         flags &= ~DRM_MODE_PAGE_FLIP_ASYNC;
 
     if (ms->atomic_modeset) {
@@ -1440,6 +1441,11 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                                                 &hdr->current, TRUE);
         if (ret == 0 && with_cursor)
             ret = ms_cursor_add_props(req, crtc);
+        if (ret == 0 && with_vrr &&
+            drmModeAtomicAddProperty(req, drmmode_crtc->mode_crtc->crtc_id,
+                                     drmmode_crtc->drmmode->vrr_prop_id,
+                                     drmmode_crtc->vrr.pending_enabled) <= 0)
+            ret = -ENOMEM;
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
         if (ret == 0)
             ret = drmModeAtomicCommit(ms->fd, req, flags, data);
@@ -1465,6 +1471,20 @@ drmmode_crtc_flip(xf86CrtcPtr crtc, uint32_t fb_id, int x, int y,
                 drmmode_crtc_set_current_hdr(crtc, &hdr->pending);
                 drmmode_crtc_color_committed(crtc);
             }
+            if (with_vrr) {
+                drmmode_crtc->vrr.enabled = drmmode_crtc->vrr.pending_enabled;
+                drmmode_crtc->vrr.pending = FALSE;
+            }
+        }
+        else if (with_vrr && ret != -EBUSY) {
+            xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING,
+                       "Failed to %s VRR with a flip on CRTC %d: %s\n",
+                       drmmode_crtc->vrr.pending_enabled ? "enable" : "disable",
+                       drmmode_crtc->mode_crtc->crtc_id, strerror(-ret));
+            drmmode_crtc->vrr.pending = FALSE;
+            drmmode_crtc_set_vrr(crtc, drmmode_crtc->vrr.pending_enabled);
+            return drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
+                                     data);
         }
         else if (with_cursor && ret != -EBUSY && !ms_cursor_test(crtc)) {
             ms_cursor_rejected(crtc, ret);
@@ -3366,11 +3386,11 @@ drmmode_crtc_reset_vrr(xf86CrtcPtr crtc)
 
     for (i = 0; i < drm_props->count_props; i++) {
         if (drm_props->props[i] == drmmode->vrr_prop_id)
-            drmmode_crtc->vrr_enabled = drm_props->prop_values[i] != 0;
+            drmmode_crtc->vrr.enabled = drm_props->prop_values[i] != 0;
     }
     drmModeFreeObjectProperties(drm_props);
 
-    if (drmmode_crtc->vrr_enabled)
+    if (drmmode_crtc->vrr.enabled)
         xf86DrvMsg(crtc->scrn->scrnIndex, X_INFO,
                    "Disabling VRR left enabled on CRTC %u\n",
                    drmmode_crtc->mode_crtc->crtc_id);
@@ -5776,13 +5796,31 @@ drmmode_crtc_set_vrr(xf86CrtcPtr crtc, Bool enabled)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_ptr drmmode = drmmode_crtc->drmmode;
 
-    if (drmmode->vrr_prop_id && drmmode_crtc->vrr_enabled != enabled &&
+    if (drmmode->vrr_prop_id && drmmode_crtc->vrr.enabled != enabled &&
         drmModeObjectSetProperty(ms->fd,
                                  drmmode_crtc->mode_crtc->crtc_id,
                                  DRM_MODE_OBJECT_CRTC,
                                  drmmode->vrr_prop_id,
                                  enabled) == 0)
-        drmmode_crtc->vrr_enabled = enabled;
+        drmmode_crtc->vrr.enabled = enabled;
+}
+
+/* A separate commit for VRR blocks or fails while flips are in flight, so a
+ * constantly flipping crtc changes it together with a flip.
+ */
+void
+drmmode_crtc_set_vrr_with_next_flip(xf86CrtcPtr crtc, Bool enabled)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (!modesettingPTR(crtc->scrn)->atomic_modeset) {
+        drmmode_crtc_set_vrr(crtc, enabled);
+        return;
+    }
+
+    drmmode_crtc->vrr.pending = drmmode_crtc->drmmode->vrr_prop_id &&
+        enabled != drmmode_crtc->vrr.enabled;
+    drmmode_crtc->vrr.pending_enabled = enabled;
 }
 
 static const enum drmmode_connector_property hdr_connector_props[] = {
