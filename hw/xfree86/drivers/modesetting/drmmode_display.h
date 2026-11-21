@@ -190,6 +190,7 @@ typedef struct {
     Bool identity_color_tables;
     Bool overlay_src_offsets;
     Bool overlay_offscreen;
+    Bool reactivate_dark_panels;
     Bool plane_color_pipeline;
 
     Bool hdr_default;

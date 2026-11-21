@@ -5060,6 +5060,10 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
      * and the kernel clips the part that is off the CRTC.
      */
     drmmode->overlay_offscreen = drmmode_driver_is(drmmode->fd, "amdgpu");
+    /* nvidia-drm doesn't power up a panel that went dark while its CRTC stayed
+     * active, and a modeset to the same mode doesn't enable the CRTC again.
+     */
+    drmmode->reactivate_dark_panels = drmmode_driver_is(drmmode->fd, "nvidia-drm");
 #ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
     /* amdgpu flickers whenever the CRTC colour tables change, so SDR content
      * on HDR monitors is converted by the plane instead.
@@ -5137,6 +5141,58 @@ drmmode_adjust_frame(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int x, int y)
     }
 }
 
+static Bool
+drmmode_crtc_kernel_active(xf86CrtcPtr crtc)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmModeObjectPropertiesPtr props =
+        drmModeObjectGetProperties(drmmode_crtc->drmmode->fd,
+                                   drmmode_crtc->mode_crtc->crtc_id,
+                                   DRM_MODE_OBJECT_CRTC);
+    Bool active = FALSE;
+    uint32_t i;
+
+    for (i = 0; props && i < props->count_props; i++) {
+        if (props->props[i] == drmmode_crtc->props[DRMMODE_CRTC_ACTIVE].prop_id)
+            active = props->prop_values[i] != 0;
+    }
+    drmModeFreeObjectProperties(props);
+    return active;
+}
+
+static Bool
+drmmode_output_is_panel(xf86OutputPtr output)
+{
+    drmmode_output_private_ptr drmmode_output = output->driver_private;
+    uint32_t type;
+
+    if (!drmmode_output->mode_output)
+        return FALSE;
+
+    type = drmmode_output->mode_output->connector_type;
+    return type == DRM_MODE_CONNECTOR_eDP || type == DRM_MODE_CONNECTOR_LVDS ||
+        type == DRM_MODE_CONNECTOR_DSI;
+}
+
+static void
+drmmode_crtc_deactivate_panel(xf86CrtcPtr crtc, xf86OutputPtr output)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmModeAtomicReq *req;
+
+    if (!ms->drmmode.reactivate_dark_panels || !ms->atomic_modeset ||
+        !drmmode_output_is_panel(output) || !drmmode_crtc_kernel_active(crtc))
+        return;
+
+    req = drmModeAtomicAlloc();
+    if (!req)
+        return;
+
+    if (crtc_add_prop(req, crtc->driver_private, DRMMODE_CRTC_ACTIVE, 0) == 0)
+        drmModeAtomicCommit(ms->fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+    drmModeAtomicFree(req);
+}
+
 Bool
 drmmode_set_desired_modes(ScrnInfoPtr pScrn, drmmode_ptr drmmode, Bool set_hw,
                           Bool ign_err)
@@ -5190,6 +5246,7 @@ drmmode_set_desired_modes(ScrnInfoPtr pScrn, drmmode_ptr drmmode, Bool set_hw,
         }
 
         if (set_hw) {
+            drmmode_crtc_deactivate_panel(crtc, output);
             if (!crtc->funcs->
                 set_mode_major(crtc, &crtc->desiredMode, crtc->desiredRotation,
                                crtc->desiredX, crtc->desiredY)) {
