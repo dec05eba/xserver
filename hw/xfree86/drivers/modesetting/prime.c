@@ -299,14 +299,6 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr damage,
     return back->fb_id;
 }
 
-static uint64_t
-ms_prime_frame_period(xf86CrtcPtr crtc)
-{
-    double refresh = xf86ModeVRefresh(&crtc->mode);
-
-    return refresh > 0.0 ? 1000000.0 / refresh : 0;
-}
-
 #define MS_PRIME_COMMIT_SLACK_USEC 1000
 #define MS_PRIME_COMMIT_MAX_EXTRA_USEC 3000
 #define MS_PRIME_COMMIT_RETRY_USEC 1000
@@ -333,7 +325,7 @@ ms_prime_commit_adapt(xf86CrtcPtr crtc, uint64_t vblank, uint64_t done)
     drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
     uint64_t wanted = vblank - min(vblank, ms_prime_base_margin(crtc));
     uint64_t limit = min(MS_PRIME_COMMIT_MAX_EXTRA_USEC,
-                         ms_prime_frame_period(crtc) / 2);
+                         ms_crtc_frame_usec(crtc) / 2);
     uint64_t extra = commit->extra_margin;
 
     if (done > wanted)
@@ -418,7 +410,7 @@ ms_prime_commit_schedule(xf86CrtcPtr crtc, uint64_t after)
     drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
     drmmode_prime_deadline_rec *deadline = &commit->deadline;
     uint64_t now = GetTimeInMicros();
-    uint64_t period = ms_prime_frame_period(crtc);
+    uint64_t period = ms_crtc_frame_usec(crtc);
     uint64_t from = max(now, after);
     uint64_t vblank, msc, due;
 
@@ -604,7 +596,7 @@ ms_prime_commit_queue(xf86CrtcPtr crtc, uint32_t seq, uint32_t fb_id,
 static uint64_t
 ms_prime_vblank_after(xf86CrtcPtr crtc, uint64_t when)
 {
-    uint64_t period = ms_prime_frame_period(crtc), ust, msc;
+    uint64_t period = ms_crtc_frame_usec(crtc), ust, msc;
 
     if (!period || ms_get_crtc_ust_msc(crtc, &ust, &msc) != Success || !ust)
         return 0;

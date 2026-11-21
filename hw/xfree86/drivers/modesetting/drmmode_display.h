@@ -255,6 +255,7 @@ typedef struct {
     PixmapPtr failed_pixmap;
     uint32_t fb_id;
     uint32_t flip_fb_id;
+    uint64_t flip_target;
     drmmode_flip_fb_cache_rec fb_cache;
     Bool async;
     Bool covered;

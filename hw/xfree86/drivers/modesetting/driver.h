@@ -248,6 +248,7 @@ void ms_dri2_close_screen(ScreenPtr screen);
 Bool ms_vblank_screen_init(ScreenPtr screen);
 void ms_vblank_close_screen(ScreenPtr screen);
 void ms_vblank_crtc_fini(xf86CrtcPtr crtc);
+uint64_t ms_crtc_frame_usec(xf86CrtcPtr crtc);
 uint64_t ms_crtc_vblank_usec(xf86CrtcPtr crtc);
 void ms_vblank_emul_committed(xf86CrtcPtr crtc, uint32_t seq, uint64_t start,
                               uint64_t returned, uint64_t target);
@@ -285,6 +286,7 @@ Bool ms_tearfree_dri_cancel(ScrnInfoPtr scrn,
                             void *match_data);
 
 Bool ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout);
+Bool ms_tearfree_direct_flip_due(xf86CrtcPtr crtc, void *timeout);
 
 Bool ms_do_tearfree_flip(ScreenPtr screen, xf86CrtcPtr crtc);
 

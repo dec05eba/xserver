@@ -186,6 +186,18 @@ ms_pageflip_abort(void *data)
     ms_pageflip_free(flip);
 }
 
+static void
+ms_flip_committed(xf86CrtcPtr crtc, uint32_t seq, uint64_t start)
+{
+    uint64_t target = 0;
+
+    if (!modesettingPTR(crtc->scrn)->emulate_vblank)
+        return;
+
+    ms_tearfree_next_vblank(crtc, start, &target, NULL);
+    ms_vblank_emul_committed(crtc, seq, start, GetTimeInMicros(), target);
+}
+
 Bool
 do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
                       uint32_t seq, uint32_t fb_id, int x, int y,
@@ -193,6 +205,7 @@ do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
+    uint64_t start = GetTimeInMicros();
 
     while (drmmode_crtc_flip(crtc, fb_id, x, y, flags, in_fence_fd,
                              (void *)(long)seq)) {
@@ -213,8 +226,10 @@ do_queue_flip_on_crtc(ScreenPtr screen, xf86CrtcPtr crtc, uint32_t flags,
 
         /* We flushed some events, so try again. */
         xf86DrvMsg(crtc->scrn->scrnIndex, X_WARNING, "flip queue retry\n");
+        start = GetTimeInMicros();
     }
 
+    ms_flip_committed(crtc, seq, start);
     return FALSE;
 }
 
@@ -1229,6 +1244,7 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     drmmode_tearfree_ptr trf = &drmmode_crtc->tearfree;
     uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT;
     uint32_t fb_id, seq;
+    uint64_t target = 0;
 
     ms->glamor.block_handler(screen);
 
@@ -1246,12 +1262,14 @@ ms_do_direct_flip(ScreenPtr screen, xf86CrtcPtr crtc, WindowPtr window,
     if (async && ms->drmmode.can_async_flip)
         flags |= DRM_MODE_PAGE_FLIP_ASYNC;
 
+    ms_tearfree_next_vblank(crtc, GetTimeInMicros(), &target, NULL);
     if (do_queue_flip_on_crtc(screen, crtc, flags, seq, fb_id, 0, 0, -1)) {
         ms_flip_fb_cache_release(crtc, fb_id);
         return FALSE;
     }
 
     trf->flip_seq = seq;
+    trf->scanout.flip_target = target;
     trf->scanout.flip_fb_id = fb_id;
     trf->scanout.window = window;
     trf->scanout.pixmap = pixmap;

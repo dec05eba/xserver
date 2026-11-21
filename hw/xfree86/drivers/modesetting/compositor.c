@@ -1117,7 +1117,17 @@ ms_compositor_update_output_mode(xf86CrtcPtr crtc, WindowPtr window)
 }
 
 static Bool
-ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
+ms_compositor_direct_flip_waits(xf86CrtcPtr crtc, Bool async, void *timeout)
+{
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    return !async && !drmmode_crtc->vrr.enabled &&
+        modesettingPTR(crtc->scrn)->emulate_vblank &&
+        !ms_tearfree_direct_flip_due(crtc, timeout);
+}
+
+static Bool
+ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async, void *timeout)
 {
     ScrnInfoPtr scrn = crtc->scrn;
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
@@ -1139,6 +1149,9 @@ ms_compositor_flip_window(xf86CrtcPtr crtc, Bool async)
             !drmmode_crtc_has_pending_hdr(crtc)) {
             ms_overlay_clear_next(crtc);
             ms_tearfree_dri_complete_at_vblank(crtc);
+            flipped = TRUE;
+        } else if (!covered &&
+                   ms_compositor_direct_flip_waits(crtc, async, timeout)) {
             flipped = TRUE;
         } else {
             (*scrn->pScreen->SourceValidate) (&pixmap->drawable, 0, 0,
@@ -1176,7 +1189,7 @@ ms_compositor_direct_flip(xf86CrtcPtr crtc, void *timeout)
             return TRUE;
 
         scanout->async = FALSE;
-        if (ms_compositor_flip_window(crtc, async))
+        if (ms_compositor_flip_window(crtc, async, timeout))
             return TRUE;
     }
 

@@ -269,6 +269,14 @@ ms_crtc_frame_period_ns(xf86CrtcPtr crtc)
 }
 
 uint64_t
+ms_crtc_frame_usec(xf86CrtcPtr crtc)
+{
+    double refresh = xf86ModeVRefresh(&crtc->mode);
+
+    return refresh > 0.0 ? 1000000.0 / refresh : 0;
+}
+
+uint64_t
 ms_crtc_vblank_usec(xf86CrtcPtr crtc)
 {
     DisplayModePtr mode = &crtc->mode;

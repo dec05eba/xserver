@@ -32,6 +32,7 @@
 
 #define MS_TEARFREE_COMPOSE_SLACK_USEC 2000
 #define MS_TEARFREE_LATE_USEC 1500
+#define MS_TEARFREE_DIRECT_FLIP_SLACK_USEC 1500
 #define MS_COMPOSE_HOLD_USEC 10000000
 #define MS_COMPOSE_ESTIMATE_DECAY 16
 
@@ -260,20 +261,45 @@ ms_tearfree_wake_at(xf86CrtcPtr crtc, uint64_t at)
         ms_timer_set(trf->deadline.fd, &trf->deadline.at, at);
 }
 
-Bool
-ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
+static Bool
+ms_tearfree_due_before_vblank(xf86CrtcPtr crtc, uint64_t from, uint64_t margin,
+                              void *timeout)
 {
     uint64_t now = GetTimeInMicros();
-    uint64_t margin = ms_compose_margin(&ms_tearfree(crtc)->compose, now);
     uint64_t next;
 
-    if (!ms_tearfree_next_vblank(crtc, now, &next, NULL) ||
+    if (!ms_tearfree_next_vblank(crtc, max(now, from), &next, NULL) ||
         next - now <= margin)
         return TRUE;
 
     AdjustWaitForDelay(timeout, (next - margin - now + 999) / 1000);
     ms_tearfree_wake_at(crtc, next - margin);
     return FALSE;
+}
+
+Bool
+ms_tearfree_compose_due(xf86CrtcPtr crtc, void *timeout)
+{
+    uint64_t margin = ms_compose_margin(&ms_tearfree(crtc)->compose,
+                                        GetTimeInMicros());
+
+    return ms_tearfree_due_before_vblank(crtc, 0, margin, timeout);
+}
+
+/* nvidia-drm sometimes completes a flip as soon as it's committed. Committing
+ * shortly before the targeted vblank, like PRIME commits, keeps such a
+ * completion in the targeted frame, and a vblank gets at most one commit.
+ */
+Bool
+ms_tearfree_direct_flip_due(xf86CrtcPtr crtc, void *timeout)
+{
+    drmmode_scanout_rec *scanout = &ms_tearfree(crtc)->scanout;
+    uint64_t period = ms_crtc_frame_usec(crtc);
+    uint64_t margin = min(ms_crtc_vblank_usec(crtc) +
+                          MS_TEARFREE_DIRECT_FLIP_SLACK_USEC, period / 3);
+    uint64_t from = scanout->flip_target ? scanout->flip_target + period / 2 : 0;
+
+    return ms_tearfree_due_before_vblank(crtc, from, margin, timeout);
 }
 
 Bool
