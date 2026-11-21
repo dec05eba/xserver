@@ -440,6 +440,17 @@ typedef struct glamor_pixmap_clipped_regions {
     RegionPtr region;
 } glamor_pixmap_clipped_regions;
 
+#ifdef HAVE_GBM
+typedef struct glamor_egl_image_info {
+    uint64_t id;
+    Bool has_dmabuf_fd;
+    int dmabuf_fd;
+    Bool has_format;
+    uint32_t format;
+    uint64_t modifier;
+} glamor_egl_image_info;
+#endif
+
 typedef struct glamor_pixmap_private {
     glamor_pixmap_type_t type;
     enum glamor_fbo_state gl_fbo;
@@ -458,6 +469,7 @@ typedef struct glamor_pixmap_private {
 #ifdef HAVE_GBM
     EGLImageKHR image;
     Bool used_modifiers;
+    glamor_egl_image_info image_info;
 #endif
     GLenum linear_image_format;
     /** block width of this large pixmap. */

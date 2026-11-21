@@ -202,6 +202,18 @@ glamor_egl_linear_image_format(struct gbm_bo *bo, uint32_t format)
     }
 }
 
+static uint64_t glamor_egl_last_image_id;
+
+static void
+glamor_egl_forget_image_info(struct glamor_pixmap_private *pixmap_priv)
+{
+    glamor_egl_image_info *info = &pixmap_priv->image_info;
+
+    if (info->has_dmabuf_fd)
+        close(info->dmabuf_fd);
+    *info = (glamor_egl_image_info) { 0 };
+}
+
 static void
 glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
                             Bool used_modifiers, GLenum linear_image_format)
@@ -218,7 +230,9 @@ glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
 
         glamor_egl_destroy_image(glamor_egl, old);
     }
+    glamor_egl_forget_image_info(pixmap_priv);
     pixmap_priv->image = image;
+    pixmap_priv->image_info.id = image ? ++glamor_egl_last_image_id : 0;
     pixmap_priv->used_modifiers = used_modifiers;
     pixmap_priv->linear_image_format = linear_image_format;
 }
@@ -1228,6 +1242,69 @@ glamor_egl_create_fence_fd(ScreenPtr screen)
     return fd;
 }
 
+uint64_t
+glamor_egl_pixmap_image_id(PixmapPtr pixmap)
+{
+    return glamor_get_pixmap_private(pixmap)->image_info.id;
+}
+
+/* Importing the EGLImage into GBM can block for many ms in nvidia's driver
+ * while the GPU is busy, so what's needed from the import is looked up once
+ * per image.
+ */
+Bool
+glamor_egl_pixmap_format(PixmapPtr pixmap, uint32_t *format, uint64_t *modifier)
+{
+    glamor_egl_image_info *info = &glamor_get_pixmap_private(pixmap)->image_info;
+
+    if (!info->has_format) {
+        struct gbm_bo *bo =
+            glamor_gbm_bo_from_pixmap_internal(pixmap->drawable.pScreen, pixmap);
+
+        if (!bo)
+            return FALSE;
+
+        info->format = gbm_bo_get_format(bo);
+#ifdef GBM_BO_WITH_MODIFIERS
+        info->modifier = gbm_bo_get_modifier(bo);
+#else
+        info->modifier = DRM_FORMAT_MOD_INVALID;
+#endif
+        gbm_bo_destroy(bo);
+        info->has_format = TRUE;
+    }
+
+    *format = info->format;
+    *modifier = info->modifier;
+    return TRUE;
+}
+
+#ifdef DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+static int
+glamor_egl_pixmap_dmabuf_fd(PixmapPtr pixmap)
+{
+    glamor_egl_image_info *info = &glamor_get_pixmap_private(pixmap)->image_info;
+    struct gbm_bo *bo;
+    int fd;
+
+    if (info->has_dmabuf_fd)
+        return info->dmabuf_fd;
+
+    bo = glamor_gbm_bo_from_pixmap_internal(pixmap->drawable.pScreen, pixmap);
+    if (!bo)
+        return -1;
+
+    fd = gbm_bo_get_fd(bo);
+    gbm_bo_destroy(bo);
+    if (fd < 0)
+        return -1;
+
+    info->dmabuf_fd = fd;
+    info->has_dmabuf_fd = TRUE;
+    return fd;
+}
+#endif
+
 int
 glamor_egl_pixmap_rendering_fd(PixmapPtr pixmap)
 {
@@ -1237,21 +1314,13 @@ glamor_egl_pixmap_rendering_fd(PixmapPtr pixmap)
         .fd = -1,
     };
     struct pollfd pfd = { .events = POLLIN };
-    struct gbm_bo *bo;
-    int dmabuf_fd;
+    int dmabuf_fd = glamor_egl_pixmap_dmabuf_fd(pixmap);
 
-    bo = glamor_gbm_bo_from_pixmap_internal(pixmap->drawable.pScreen, pixmap);
-    if (!bo)
-        return -1;
-
-    dmabuf_fd = gbm_bo_get_fd(bo);
-    gbm_bo_destroy(bo);
     if (dmabuf_fd < 0)
         return -1;
 
     if (drmIoctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &args) != 0)
         args.fd = -1;
-    close(dmabuf_fd);
 
     pfd.fd = args.fd;
     if (args.fd >= 0 && poll(&pfd, 1, 0) != 0) {
@@ -1279,6 +1348,7 @@ glamor_egl_destroy_pixmap(PixmapPtr pixmap)
 
         if (pixmap_priv->image)
             glamor_egl_destroy_image(glamor_egl, pixmap_priv->image);
+        glamor_egl_forget_image_info(pixmap_priv);
     }
 
     screen->DestroyPixmap = glamor_egl->saved_destroy_pixmap;
@@ -1294,6 +1364,7 @@ glamor_egl_exchange_buffers(PixmapPtr front, PixmapPtr back)
 {
     EGLImageKHR temp_img;
     Bool temp_mod;
+    glamor_egl_image_info temp_info;
     GLenum temp_linear_image_format;
     struct glamor_pixmap_private *front_priv =
         glamor_get_pixmap_private(front);
@@ -1312,6 +1383,10 @@ glamor_egl_exchange_buffers(PixmapPtr front, PixmapPtr back)
     temp_linear_image_format = back_priv->linear_image_format;
     back_priv->linear_image_format = front_priv->linear_image_format;
     front_priv->linear_image_format = temp_linear_image_format;
+
+    temp_info = back_priv->image_info;
+    back_priv->image_info = front_priv->image_info;
+    front_priv->image_info = temp_info;
 
     glamor_set_pixmap_type(front, GLAMOR_TEXTURE_DRM);
     glamor_set_pixmap_type(back, GLAMOR_TEXTURE_DRM);
@@ -1332,6 +1407,7 @@ glamor_egl_close_screen(ScreenPtr screen)
 
     glamor_egl_destroy_image(glamor_egl, pixmap_priv->image);
     pixmap_priv->image = NULL;
+    glamor_egl_forget_image_info(pixmap_priv);
 
     screen->CloseScreen = glamor_egl->saved_close_screen;
 

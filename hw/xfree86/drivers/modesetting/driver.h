@@ -198,6 +198,7 @@ typedef struct _modesettingRec {
         const char *(*egl_get_driver_name)(ScreenPtr);
         int (*egl_create_fence_fd)(ScreenPtr);
         int (*egl_pixmap_rendering_fd)(PixmapPtr);
+        Bool (*egl_pixmap_format)(PixmapPtr, uint32_t *, uint64_t *);
         Bool (*convert_color)(PixmapPtr, PixmapPtr, RegionPtr, int, int, Bool,
                               CARD16, const glamor_color_conversion *);
     } glamor;

@@ -593,6 +593,10 @@ ms_pixmap_scanout_format_supported(ScreenPtr screen, PixmapPtr pixmap)
         return FALSE;
 
     /* Check if buffer format/modifier is supported by all active CRTCs */
+    if (ms->glamor.egl_pixmap_format &&
+        ms->glamor.egl_pixmap_format(pixmap, &format, &modifier))
+        return drmmode_is_format_supported(scrn, format, modifier);
+
     gbm = ms->glamor.gbm_bo_from_pixmap(screen, pixmap);
     if (!gbm)
         return TRUE;

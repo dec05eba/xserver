@@ -1155,6 +1155,7 @@ load_glamor(ScrnInfoPtr pScrn)
     ms->glamor.egl_get_driver_name = LoaderSymbolFromModule(mod, "glamor_egl_get_driver_name");
     ms->glamor.egl_create_fence_fd = LoaderSymbolFromModule(mod, "glamor_egl_create_fence_fd");
     ms->glamor.egl_pixmap_rendering_fd = LoaderSymbolFromModule(mod, "glamor_egl_pixmap_rendering_fd");
+    ms->glamor.egl_pixmap_format = LoaderSymbolFromModule(mod, "glamor_egl_pixmap_format");
     ms->glamor.convert_color = LoaderSymbolFromModule(mod, "glamor_convert_color");
 
     return TRUE;
