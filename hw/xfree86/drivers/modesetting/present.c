@@ -592,10 +592,8 @@ ms_present_window_unflip(ScreenPtr screen, WindowPtr toplevel,
 static Bool
 ms_present_flip_suboptimal(WindowPtr window, PixmapPtr pixmap)
 {
-    xf86CrtcPtr crtc = ms_compositor_prime_output_for_window(window);
-
-    if (crtc)
-        return !ms_prime_import(crtc, pixmap);
+    if (ms_compositor_prime_output_for_window(window))
+        return FALSE;
     return ms_overlay_presented_suboptimal(window, pixmap);
 }
 
