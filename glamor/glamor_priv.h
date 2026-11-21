@@ -258,6 +258,14 @@ typedef struct glamor_fbo_cache {
     glamor_fbo_pool large;
 } glamor_fbo_cache;
 
+typedef struct glamor_linear_copy_program {
+    GLuint prog;
+    GLint group_width;
+    GLint dst_box_uniform;
+    GLint src_box_uniform;
+    Bool failed;
+} glamor_linear_copy_program;
+
 typedef struct glamor_screen_private {
     Bool is_gles;
     int glsl_version;
@@ -278,6 +286,7 @@ typedef struct glamor_screen_private {
     Bool has_rg;
     Bool is_core_profile;
     Bool can_copyplane;
+    Bool has_compute_copy;
     Bool use_gpu_shader4;
     int max_fbo_size;
     Bool enable_gradient_shader;
@@ -292,6 +301,9 @@ typedef struct glamor_screen_private {
 
     /* glamor point shader */
     glamor_program point_prog;
+
+    glamor_linear_copy_program linear_copy_rgba8;
+    glamor_linear_copy_program linear_copy_rgb10_a2;
 
     /* glamor spans shaders */
     glamor_program_fill fill_spans_program;
@@ -447,6 +459,7 @@ typedef struct glamor_pixmap_private {
     EGLImageKHR image;
     Bool used_modifiers;
 #endif
+    GLenum linear_image_format;
     /** block width of this large pixmap. */
     int block_w;
     /** block height of this large pixmap. */
@@ -933,6 +946,10 @@ glamor_poly_segment(DrawablePtr drawable, GCPtr gc,
                     int nseg, xSegment *segs);
 
 /* glamor_copy.c */
+Bool
+glamor_copy_to_linear(DrawablePtr src, DrawablePtr dst, BoxPtr box, int nbox,
+                      int dx, int dy);
+
 void
 glamor_copy(DrawablePtr src,
             DrawablePtr dst,

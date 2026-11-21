@@ -183,9 +183,28 @@ glamor_egl_destroy_image(struct glamor_egl_screen_private *glamor_egl,
     eglDestroyImageKHR(glamor_egl->display, image);
 }
 
+/* Mesa gives images without alpha an RGB texture, which can't be bound as a
+ * shader image, so only formats with alpha can be written by compute shaders.
+ */
+static GLenum
+glamor_egl_linear_image_format(struct gbm_bo *bo, uint32_t format)
+{
+    if (gbm_bo_get_modifier(bo) != DRM_FORMAT_MOD_LINEAR)
+        return 0;
+
+    switch (format) {
+    case DRM_FORMAT_ARGB8888:
+        return GL_RGBA8;
+    case DRM_FORMAT_ARGB2101010:
+        return GL_RGB10_A2;
+    default:
+        return 0;
+    }
+}
+
 static void
 glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
-                            Bool used_modifiers)
+                            Bool used_modifiers, GLenum linear_image_format)
 {
     struct glamor_pixmap_private *pixmap_priv =
         glamor_get_pixmap_private(pixmap);
@@ -201,6 +220,7 @@ glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
     }
     pixmap_priv->image = image;
     pixmap_priv->used_modifiers = used_modifiers;
+    pixmap_priv->linear_image_format = linear_image_format;
 }
 
 Bool
@@ -596,7 +616,8 @@ glamor_egl_create_textured_pixmap_from_gbm_bo(PixmapPtr pixmap,
         return FALSE;
     }
 
-    glamor_egl_set_pixmap_image(pixmap, image, used_modifiers);
+    glamor_egl_set_pixmap_image(pixmap, image, used_modifiers,
+                                glamor_egl_linear_image_format(bo, format));
     return TRUE;
 }
 
@@ -1273,6 +1294,7 @@ glamor_egl_exchange_buffers(PixmapPtr front, PixmapPtr back)
 {
     EGLImageKHR temp_img;
     Bool temp_mod;
+    GLenum temp_linear_image_format;
     struct glamor_pixmap_private *front_priv =
         glamor_get_pixmap_private(front);
     struct glamor_pixmap_private *back_priv =
@@ -1286,6 +1308,10 @@ glamor_egl_exchange_buffers(PixmapPtr front, PixmapPtr back)
     back_priv->used_modifiers = front_priv->used_modifiers;
     front_priv->image = temp_img;
     front_priv->used_modifiers = temp_mod;
+
+    temp_linear_image_format = back_priv->linear_image_format;
+    back_priv->linear_image_format = front_priv->linear_image_format;
+    front_priv->linear_image_format = temp_linear_image_format;
 
     glamor_set_pixmap_type(front, GLAMOR_TEXTURE_DRM);
     glamor_set_pixmap_type(back, GLAMOR_TEXTURE_DRM);

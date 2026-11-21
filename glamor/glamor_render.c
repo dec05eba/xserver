@@ -1551,6 +1551,35 @@ glamor_composite_external_copy(CARD8 op, PicturePtr source, PicturePtr mask,
                                 src_dy);
 }
 
+static Bool
+glamor_composite_copy_to_linear(CARD8 op, PicturePtr source, PicturePtr mask,
+                                PicturePtr dest, PixmapPtr source_pixmap,
+                                PixmapPtr dest_pixmap, RegionPtr region,
+                                int x_source, int y_source, int x_dest,
+                                int y_dest)
+{
+    BoxPtr extent = RegionExtents(region);
+    Bool opaque_source = !PICT_FORMAT_A(source->format);
+
+    if (!(op == PictOpSrc || (op == PictOpOver && opaque_source)) ||
+        mask || !source_pixmap || source->alphaMap || dest->alphaMap ||
+        source->transform ||
+        source->format != glamor_format_for_pixmap(source_pixmap)->render_format ||
+        dest->format != glamor_format_for_pixmap(dest_pixmap)->render_format ||
+        (PICT_FORMAT_A(dest->format) && opaque_source) ||
+        x_source < 0 || y_source < 0 ||
+        x_source + extent->x2 - extent->x1 > source->pDrawable->width ||
+        y_source + extent->y2 - extent->y1 > source->pDrawable->height)
+        return FALSE;
+
+    return glamor_copy_to_linear(source->pDrawable, dest->pDrawable,
+                                 RegionRects(region), RegionNumRects(region),
+                                 x_source + source->pDrawable->x -
+                                 (x_dest + dest->pDrawable->x),
+                                 y_source + source->pDrawable->y -
+                                 (y_dest + dest->pDrawable->y));
+}
+
 Bool
 glamor_composite_clipped_region(CARD8 op,
                                 PicturePtr source,
@@ -1604,6 +1633,13 @@ glamor_composite_clipped_region(CARD8 op,
     if (glamor_composite_external_copy(op, source, mask, dest, source_pixmap,
                                        dest_pixmap, region, x_source, y_source,
                                        x_dest, y_dest)) {
+        ok = TRUE;
+        goto out;
+    }
+
+    if (glamor_composite_copy_to_linear(op, source, mask, dest, source_pixmap,
+                                        dest_pixmap, region, x_source, y_source,
+                                        x_dest, y_dest)) {
         ok = TRUE;
         goto out;
     }

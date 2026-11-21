@@ -787,6 +787,7 @@ glamor_init(ScreenPtr screen, unsigned int flags)
         epoxy_has_gl_extension("GL_ARB_texture_rg");
 
     glamor_priv->can_copyplane = (gl_version >= 30);
+    glamor_priv->has_compute_copy = !glamor_priv->is_gles && gl_version >= 43;
 
     glamor_setup_debug_output(screen);
 

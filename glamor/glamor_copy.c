@@ -696,6 +696,181 @@ glamor_copy_needs_temp(DrawablePtr src,
     return FALSE;
 }
 
+static GLuint
+glamor_compile_linear_copy_shader(const char *image_format)
+{
+    /* GL has no BGRA image formats: RGBA image views store the channels in
+     * memory order, so swizzle to get ARGB8888 and ARGB2101010 pixels.
+     * Both uniforms are ivec4 because an extra ivec2 uniform made Mesa's
+     * Intel compiler add a per-thread constant read that halved throughput.
+     */
+    char source[1024];
+    const char *sources[] = { source };
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    GLint compiled = GL_FALSE;
+
+    snprintf(source, sizeof(source),
+             "#version 430\n"
+             "layout(local_size_x = 128) in;\n"
+             "layout(binding = 0) uniform sampler2D src;\n"
+             "layout(%s, binding = 0) writeonly uniform image2D dst;\n"
+             "uniform ivec4 dst_box;\n"
+             "uniform ivec4 src_box;\n"
+             "void main() {\n"
+             "    ivec2 offset = ivec2(gl_GlobalInvocationID.xy);\n"
+             "    if (offset.x >= dst_box.z - dst_box.x)\n"
+             "        return;\n"
+             "    imageStore(dst, dst_box.xy + offset,\n"
+             "               texelFetch(src, src_box.xy + offset, 0).bgra);\n"
+             "}\n",
+             image_format);
+    glShaderSource(shader, 1, sources, NULL);
+    glCompileShader(shader);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static glamor_linear_copy_program *
+glamor_use_linear_copy_program(glamor_screen_private *glamor_priv,
+                               GLenum image_format)
+{
+    glamor_linear_copy_program *copy;
+    const char *format_name;
+    GLuint shader;
+    GLint linked = GL_FALSE;
+    GLint group_size[3];
+
+    switch (image_format) {
+    case GL_RGBA8:
+        copy = &glamor_priv->linear_copy_rgba8;
+        format_name = "rgba8";
+        break;
+    case GL_RGB10_A2:
+        copy = &glamor_priv->linear_copy_rgb10_a2;
+        format_name = "rgb10_a2";
+        break;
+    default:
+        return NULL;
+    }
+
+    if (copy->failed)
+        return NULL;
+
+    if (!copy->prog) {
+        shader = glamor_compile_linear_copy_shader(format_name);
+        if (!shader) {
+            copy->failed = TRUE;
+            return NULL;
+        }
+
+        copy->prog = glCreateProgram();
+        glAttachShader(copy->prog, shader);
+        glLinkProgram(copy->prog);
+        glDeleteShader(shader);
+        glGetProgramiv(copy->prog, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            glDeleteProgram(copy->prog);
+            copy->prog = 0;
+            copy->failed = TRUE;
+            return NULL;
+        }
+
+        glGetProgramiv(copy->prog, GL_COMPUTE_WORK_GROUP_SIZE, group_size);
+        copy->group_width = group_size[0];
+        copy->dst_box_uniform = glGetUniformLocation(copy->prog, "dst_box");
+        copy->src_box_uniform = glGetUniformLocation(copy->prog, "src_box");
+    }
+
+    glUseProgram(copy->prog);
+    return copy;
+}
+
+static Bool
+glamor_can_copy_to_linear(PixmapPtr src_pixmap, PixmapPtr dst_pixmap)
+{
+    glamor_screen_private *glamor_priv =
+        glamor_get_screen_private(dst_pixmap->drawable.pScreen);
+    glamor_pixmap_private *src_priv = glamor_get_pixmap_private(src_pixmap);
+    glamor_pixmap_private *dst_priv = glamor_get_pixmap_private(dst_pixmap);
+
+    return glamor_priv->has_compute_copy &&
+        dst_priv->linear_image_format &&
+        src_pixmap != dst_pixmap &&
+        GLAMOR_PIXMAP_PRIV_HAS_FBO(src_priv) &&
+        GLAMOR_PIXMAP_PRIV_HAS_FBO(dst_priv) &&
+        src_pixmap->drawable.bitsPerPixel == 32 &&
+        !glamor_pixmap_priv_is_large(src_priv) &&
+        !glamor_pixmap_priv_is_large(dst_priv) &&
+        !glamor_pixmap_is_external(src_pixmap);
+}
+
+/*
+ * Intel GPUs write linear memory much faster from compute shaders with wide
+ * work groups than from the 3D pipeline, which matters for the linear buffers
+ * shared with PRIME secondary GPUs. The source is sampled, so it may have a
+ * different 32 bpp format than the destination.
+ */
+Bool
+glamor_copy_to_linear(DrawablePtr src, DrawablePtr dst, BoxPtr box, int nbox,
+                      int dx, int dy)
+{
+    ScreenPtr screen = dst->pScreen;
+    glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
+    PixmapPtr src_pixmap = glamor_get_drawable_pixmap(src);
+    PixmapPtr dst_pixmap = glamor_get_drawable_pixmap(dst);
+    glamor_pixmap_private *dst_priv = glamor_get_pixmap_private(dst_pixmap);
+    glamor_linear_copy_program *copy;
+    glamor_pixmap_fbo *src_fbo, *dst_fbo;
+    int src_off_x, src_off_y, dst_off_x, dst_off_y;
+    int n;
+
+    if (!glamor_can_copy_to_linear(src_pixmap, dst_pixmap))
+        return FALSE;
+
+    glamor_make_current(glamor_priv);
+    copy = glamor_use_linear_copy_program(glamor_priv,
+                                          dst_priv->linear_image_format);
+    if (!copy)
+        return FALSE;
+
+    src_fbo = glamor_pixmap_fbo_at(glamor_get_pixmap_private(src_pixmap), 0);
+    dst_fbo = glamor_pixmap_fbo_at(dst_priv, 0);
+    glamor_get_drawable_deltas(src, src_pixmap, &src_off_x, &src_off_y);
+    glamor_get_drawable_deltas(dst, dst_pixmap, &dst_off_x, &dst_off_y);
+
+    glamor_bind_texture(glamor_priv, GL_TEXTURE0, src_fbo, FALSE);
+    glamor_priv->flush.shared_pending |= dst_fbo->shared;
+    glBindImageTexture(0, dst_fbo->tex, 0, GL_FALSE, 0, GL_WRITE_ONLY,
+                       dst_priv->linear_image_format);
+
+    for (n = 0; n < nbox; n++) {
+        int x1 = max(box[n].x1 + dst_off_x, 0);
+        int y1 = max(box[n].y1 + dst_off_y, 0);
+        int x2 = min(box[n].x2 + dst_off_x, dst_pixmap->drawable.width);
+        int y2 = min(box[n].y2 + dst_off_y, dst_pixmap->drawable.height);
+        int src_x = x1 - dst_off_x + dx + src_off_x;
+        int src_y = y1 - dst_off_y + dy + src_off_y;
+
+        if (x1 >= x2 || y1 >= y2)
+            continue;
+
+        glUniform4i(copy->dst_box_uniform, x1, y1, x2, y2);
+        glUniform4i(copy->src_box_uniform, src_x, src_y,
+                    src_x + x2 - x1, src_y + y2 - y1);
+        glDispatchCompute((x2 - x1 + copy->group_width - 1) / copy->group_width,
+                          y2 - y1, 1);
+    }
+
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY,
+                       dst_priv->linear_image_format);
+    return TRUE;
+}
+
 static Bool
 glamor_copy_gl(DrawablePtr src,
                DrawablePtr dst,
@@ -716,6 +891,11 @@ glamor_copy_gl(DrawablePtr src,
 
     if (GLAMOR_PIXMAP_PRIV_HAS_FBO(dst_priv)) {
         if (GLAMOR_PIXMAP_PRIV_HAS_FBO(src_priv)) {
+            if (!bitplane &&
+                (!gc || (gc->alu == GXcopy &&
+                         glamor_pm_is_solid(gc->depth, gc->planemask))) &&
+                glamor_copy_to_linear(src, dst, box, nbox, dx, dy))
+                return TRUE;
             if (glamor_copy_needs_temp(src, dst, box, nbox, dx, dy))
                 return glamor_copy_fbo_fbo_temp(src, dst, gc, box, nbox, dx, dy,
                                                 reverse, upsidedown, bitplane, closure);
