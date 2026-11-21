@@ -1474,6 +1474,7 @@ present_scmd_flip_destroy(ScreenPtr screen)
 {
     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
     present_flip_slot_ptr       slot, next;
+    present_vblank_ptr          vblank, tmp;
 
     xorg_list_for_each_entry_safe(slot, next, &screen_priv->flip_slots, entry) {
         /* Reset window pixmaps back to the screen pixmap */
@@ -1486,6 +1487,14 @@ present_scmd_flip_destroy(ScreenPtr screen)
 
         xorg_list_del(&slot->entry);
         free(slot);
+    }
+
+    /* Flips in flight are off their window's list, so destroying the window
+     * didn't free them, and the driver completes them while closing the screen
+     * after their slots are gone */
+    xorg_list_for_each_entry_safe(vblank, tmp, &present_flip_queue, event_queue) {
+        if (vblank->screen == screen)
+            present_vblank_destroy(vblank);
     }
 }
 
