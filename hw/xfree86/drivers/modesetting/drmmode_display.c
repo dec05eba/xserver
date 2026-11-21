@@ -1126,6 +1126,22 @@ drmmode_set_ctm(xf86CrtcPtr crtc, const struct drm_color_ctm *ctm)
     drmModeDestroyPropertyBlob(drmmode->fd, blob_id);
 }
 
+/* For the DRM master GETFB2 also creates new GEM handles for the frame buffer's
+ * buffers, which keep the buffers alive until the handles are closed.
+ */
+static void
+drmmode_close_fb2_handles(int fd, drmModeFB2Ptr fb)
+{
+    int i, j;
+
+    for (i = 0; i < ARRAY_SIZE(fb->handles); i++) {
+        for (j = 0; j < i && fb->handles[j] != fb->handles[i]; j++)
+            ;
+        if (fb->handles[i] && j == i)
+            drmCloseBufferHandle(fd, fb->handles[i]);
+    }
+}
+
 static drmmode_fb_layout_rec
 drmmode_fb_get_layout(int fd, uint32_t fb_id)
 {
@@ -1137,6 +1153,7 @@ drmmode_fb_get_layout(int fd, uint32_t fb_id)
         if (fb->flags & DRM_MODE_FB_MODIFIERS)
             layout.modifier = fb->modifier;
         layout.pitch = fb->pitches[0];
+        drmmode_close_fb2_handles(fd, fb);
         drmModeFreeFB2(fb);
     }
     return layout;
@@ -2178,6 +2195,8 @@ create_pixmap_for_fbcon(drmmode_ptr drmmode, ScrnInfoPtr pScrn, int fbcon_id)
 
     drmmode->fbcon_pixmap = pixmap;
 out_free_fb:
+    if (fbcon->handle)
+        drmCloseBufferHandle(drmmode->fd, fbcon->handle);
     drmModeFreeFB(fbcon);
     return pixmap;
 }
