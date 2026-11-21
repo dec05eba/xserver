@@ -747,6 +747,28 @@ ms_compositor_take_prime_damage(ScreenPtr screen, xf86CrtcPtr crtc)
     return damaged;
 }
 
+static Bool
+ms_compositor_take_prime_rect_damage(ScreenPtr screen, xf86CrtcPtr crtc,
+                                     BoxPtr rect)
+{
+    PixmapDirtyUpdatePtr dirty;
+    Bool damaged = FALSE;
+    RegionRec window;
+
+    RegionInit(&window, rect, 1);
+    xorg_list_for_each_entry(dirty, &screen->pixmap_dirty_list, ent) {
+        if (!ms_compositor_dirty_on_crtc(dirty, crtc))
+            continue;
+
+        damaged |= RegionContainsRect(DamageRegion(dirty->damage), rect) !=
+            rgnOUT;
+        RegionSubtract(DamageRegion(dirty->damage), DamageRegion(dirty->damage),
+                       &window);
+    }
+    RegionUninit(&window);
+    return damaged;
+}
+
 void
 ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
 {
@@ -1236,8 +1258,42 @@ ms_compositor_prime_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
     return window;
 }
 
-xf86CrtcPtr
-ms_compositor_prime_output_for_window(WindowPtr window)
+static WindowPtr
+ms_compositor_prime_partial_candidate(PixmapDirtyUpdatePtr dirty,
+                                      xf86CrtcPtr crtc, BoxPtr box, BoxPtr rect)
+{
+    ScreenPtr screen = dirty->src->pScreen;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+    if (!ms_compositor_prime_output_usable(dirty, crtc, box) ||
+        drmmode_crtc->prime_scanout.composition.pq ||
+        CompositeServerHdrWindow(screen, box))
+        return NULL;
+
+    return CompositeServerPartialScanoutWindow(screen, box, rect);
+}
+
+static WindowPtr
+ms_compositor_prime_partial_window(PixmapDirtyUpdatePtr dirty, xf86CrtcPtr crtc,
+                                   BoxPtr box, PixmapPtr *pixmap, BoxPtr rect)
+{
+    WindowPtr window = ms_compositor_prime_partial_candidate(dirty, crtc, box,
+                                                             rect);
+
+    if (!window)
+        return NULL;
+
+    *pixmap = present_window_flip_pixmap(window);
+    if (!*pixmap || (*pixmap)->drawable.depth != 24 ||
+        (*pixmap)->drawable.width != rect->x2 - rect->x1 ||
+        (*pixmap)->drawable.height != rect->y2 - rect->y1)
+        return NULL;
+
+    return window;
+}
+
+static xf86CrtcPtr
+ms_compositor_prime_output_showing(WindowPtr window, Bool partial)
 {
     PixmapDirtyUpdatePtr dirty;
 
@@ -1245,7 +1301,7 @@ ms_compositor_prime_output_for_window(WindowPtr window)
                              ent) {
         xf86CrtcPtr crtc = ms_prime_crtc(dirty->secondary_dst);
         RegionRec cover;
-        BoxRec box;
+        BoxRec box, rect;
         Bool covers;
 
         if (!crtc)
@@ -1256,10 +1312,19 @@ ms_compositor_prime_output_for_window(WindowPtr window)
         covers = ms_compositor_prime_output_usable(dirty, crtc, &box) &&
             CompositeServerCanScanoutWindow(window, &box, &cover);
         RegionUninit(&cover);
+        if (!covers && partial)
+            covers = ms_compositor_prime_partial_candidate(dirty, crtc, &box,
+                                                           &rect) == window;
         if (covers)
             return crtc;
     }
     return NULL;
+}
+
+xf86CrtcPtr
+ms_compositor_prime_output_for_window(WindowPtr window)
+{
+    return ms_compositor_prime_output_showing(window, TRUE);
 }
 
 Bool
@@ -1270,7 +1335,7 @@ ms_compositor_can_scanout_prime(ScreenPtr secondary, WindowPtr window)
     if (window->drawable.depth != 24 && window->drawable.depth != 30)
         return FALSE;
 
-    crtc = ms_compositor_prime_output_for_window(window);
+    crtc = ms_compositor_prime_output_showing(window, FALSE);
     return crtc && xf86ScrnToScreen(crtc->scrn) == secondary &&
         ((drmmode_crtc_private_ptr) crtc->driver_private)->overlay_plane.plane_id;
 }
@@ -1287,7 +1352,15 @@ ms_compositor_prime_update_vrr(ScreenPtr primary, xf86CrtcPtr crtc, WindowPtr fu
     drmmode_crtc_set_vrr_with_next_flip(crtc, enabled);
 }
 
-Bool
+static Bool
+ms_compositor_prime_direct_area_changed(const drmmode_prime_direct_rec *direct, Bool partial,
+                                        const BoxRec *rect)
+{
+    return direct->window &&
+        (direct->partial != partial || memcmp(&direct->rect, rect, sizeof(*rect)));
+}
+
+ms_prime_direct_mode
 ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
 {
     ScreenPtr screen = dirty->src->pScreen;
@@ -1297,12 +1370,12 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
     const struct hdr_output_metadata *metadata = NULL;
     PixmapPtr pixmap = NULL, imported = NULL;
     WindowPtr window, hdr_window;
-    Bool was_direct, native, scanout_source, covered;
-    BoxRec box, cover_box;
+    Bool was_direct, native, scanout_source, covered, damaged, partial = FALSE;
+    BoxRec box, cover_box, rect = { 0 }, output_rect = { 0 };
     RegionRec cover;
 
     if (!crtc)
-        return FALSE;
+        return MS_PRIME_DIRECT_NONE;
 
     prime_scanout = &((drmmode_crtc_private_ptr) crtc->driver_private)->prime_scanout;
     direct = &prime_scanout->direct;
@@ -1310,11 +1383,23 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
     RegionNull(&cover);
     window = ms_compositor_prime_window(dirty, crtc, &box, &pixmap, &cover);
     ms_compositor_prime_update_vrr(screen, crtc, window);
+    if (!window) {
+        RegionEmpty(&cover);
+        window = ms_compositor_prime_partial_window(dirty, crtc, &box, &pixmap,
+                                                    &rect);
+        partial = window != NULL;
+        output_rect = (BoxRec) {
+            .x1 = rect.x1 - box.x1,
+            .y1 = rect.y1 - box.y1,
+            .x2 = rect.x2 - box.x1,
+            .y2 = rect.y2 - box.y1,
+        };
+    }
     if (window)
         imported = ms_prime_import(crtc, pixmap);
 
     native = imported && imported == ms_offload_native_pixmap(pixmap);
-    scanout_source = native &&
+    scanout_source = !partial && native &&
         ms_pixmap_scanout_format_supported(xf86ScrnToScreen(crtc->scrn),
                                            imported);
     hdr_window = CompositeServerHdrWindow(screen, &box);
@@ -1331,7 +1416,7 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
         ms_prime_clear_direct(crtc);
         if (was_direct)
             ms_compositor_damage_prime(screen, crtc);
-        return FALSE;
+        return MS_PRIME_DIRECT_NONE;
     }
 
     if (!native)
@@ -1339,8 +1424,12 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
                                    pixmap->drawable.width,
                                    pixmap->drawable.height, IncludeInferiors);
 
-    *new_frame = ms_compositor_take_prime_damage(screen, crtc) ||
-        pixmap != direct->pixmap;
+    if (ms_compositor_prime_direct_area_changed(direct, partial, &output_rect))
+        ms_compositor_damage_prime(screen, crtc);
+
+    damaged = partial ? ms_compositor_take_prime_rect_damage(screen, crtc, &rect) :
+        ms_compositor_take_prime_damage(screen, crtc);
+    *new_frame = damaged || pixmap != direct->pixmap;
 
     if (hdr_window)
         metadata = ms_hdr_window_metadata(hdr_window);
@@ -1349,6 +1438,8 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
     direct->pixmap = pixmap;
     direct->source = imported;
     direct->scanout_source = scanout_source;
+    direct->partial = partial;
+    direct->rect = output_rect;
     direct->covered = covered;
     direct->cover_box = (BoxRec) {
         .x1 = cover_box.x1 - box.x1,
@@ -1360,7 +1451,7 @@ ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame)
     direct->has_metadata = metadata != NULL;
     if (metadata)
         direct->metadata = *metadata;
-    return TRUE;
+    return partial ? MS_PRIME_DIRECT_PARTIAL : MS_PRIME_DIRECT_WHOLE;
 }
 #endif
 

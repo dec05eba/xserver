@@ -1212,6 +1212,90 @@ CompositeServerCanScanoutWindow(WindowPtr pWin, BoxPtr pBox, RegionPtr pCover)
                                 compServerToplevel(pWin), pCover) == pWin;
 }
 
+static void
+compServerInteriorBox(WindowPtr pWin, BoxPtr pBox)
+{
+    pBox->x1 = pWin->drawable.x;
+    pBox->y1 = pWin->drawable.y;
+    pBox->x2 = pWin->drawable.x + pWin->drawable.width;
+    pBox->y2 = pWin->drawable.y + pWin->drawable.height;
+}
+
+static Bool
+compServerBoxCoversMostOf(BoxPtr pRect, BoxPtr pBox)
+{
+    int64_t area = (int64_t) (pRect->x2 - pRect->x1) * (pRect->y2 - pRect->y1);
+    int64_t total = (int64_t) (pBox->x2 - pBox->x1) * (pBox->y2 - pBox->y1);
+
+    return pRect->x1 >= pBox->x1 && pRect->y1 >= pBox->y1 &&
+        pRect->x2 <= pBox->x2 && pRect->y2 <= pBox->y2 &&
+        area * 10 > total * 6;
+}
+
+static WindowPtr
+compServerChildCoveringMostOf(WindowPtr pParent, BoxPtr pBox)
+{
+    WindowPtr pChild;
+    BoxRec rect;
+
+    for (pChild = pParent->firstChild; pChild; pChild = pChild->nextSib) {
+        if (!pChild->viewable || pChild->drawable.class != InputOutput)
+            continue;
+        compServerInteriorBox(pChild, &rect);
+        if (compServerBoxCoversMostOf(&rect, pBox))
+            return pChild;
+    }
+    return NULL;
+}
+
+WindowPtr
+CompositeServerPartialScanoutWindow(ScreenPtr pScreen, BoxPtr pBox, BoxPtr pRect)
+{
+    CompServerPtr server = compServerGet(pScreen);
+    WindowPtr pWin, pChild, pScanout = NULL;
+    RegionRec above;
+    BoxRec rect;
+
+    if (!server || !server->compositing)
+        return NULL;
+
+    RegionNull(&above);
+    for (pWin = pScreen->root->firstChild; pWin; pWin = pWin->nextSib) {
+        if (!compServerPaintsWindow(pWin) ||
+            RegionContainsRect(&pWin->borderSize, pBox) == rgnOUT)
+            continue;
+
+        compServerInteriorBox(pWin, &rect);
+        if (compServerBoxCoversMostOf(&rect, pBox)) {
+            if (!compServerWindowHeld(pWin) &&
+                compServerWindowOpacity(server, pWin) == COMP_SERVER_OPAQUE)
+                pScanout = pWin;
+            break;
+        }
+        RegionUnion(&above, &above, &pWin->borderSize);
+    }
+
+    while (pScanout && (pChild = compServerChildCoveringMostOf(pScanout, pBox))) {
+        compServerInteriorBox(pChild, &rect);
+        pScanout = compServerTopmostChild(pScanout, &rect) == pChild ? pChild : NULL;
+    }
+
+    if (pScanout) {
+        compServerInteriorBox(pScanout, &rect);
+        if (pScanout->redirectDraw != RedirectDrawAutomatic ||
+            compServerWindowHasAlpha(pScanout) ||
+            compServerTopmostChild(pScanout, &rect) ||
+            RegionContainsRect(&pScanout->winSize, &rect) != rgnIN ||
+            RegionContainsRect(&above, &rect) != rgnOUT)
+            pScanout = NULL;
+    }
+    RegionUninit(&above);
+
+    if (pScanout)
+        *pRect = rect;
+    return pScanout;
+}
+
 static PixmapPtr
 compServerComposeImage(ScreenPtr pScreen, int x, int y, int w, int h)
 {

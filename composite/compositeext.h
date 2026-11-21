@@ -87,6 +87,10 @@ extern _X_EXPORT Bool CompositeServerCanScanoutWindow(WindowPtr pWin,
                                                       BoxPtr pBox,
                                                       RegionPtr pCover);
 
+extern _X_EXPORT WindowPtr CompositeServerPartialScanoutWindow(ScreenPtr pScreen,
+                                                               BoxPtr pBox,
+                                                               BoxPtr pRect);
+
 extern _X_EXPORT uint64_t CompositeServerCoverSerial(WindowPtr pWin,
                                                     RegionPtr pRegion);
 

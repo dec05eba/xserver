@@ -1929,21 +1929,28 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
     msPixmapPrivPtr ppriv = msGetPixmapPriv(&ms->drmmode, secondary_dst->primary_pixmap);
 
     RegionPtr region;
-    Bool painted;
+    Bool painted, window_changed = FALSE;
 
 #ifdef HAVE_GBM
     if (ms->drmmode.tearfree_enable) {
         Bool new_frame;
 
         ms_compositor_update_prime(ppriv->dirty);
-        if (ms_compositor_prime_direct(ppriv->dirty, &new_frame))
+        switch (ms_compositor_prime_direct(ppriv->dirty, &new_frame)) {
+        case MS_PRIME_DIRECT_WHOLE:
             return new_frame;
+        case MS_PRIME_DIRECT_PARTIAL:
+            window_changed = new_frame;
+            break;
+        case MS_PRIME_DIRECT_NONE:
+            break;
+        }
     }
 #endif
 
     region = DamageRegion(ppriv->dirty->damage);
     if (!RegionNotEmpty(region))
-        return FALSE;
+        return window_changed;
 
     painted = ms_dirty_paint(ppriv->dirty);
     if (painted) {
@@ -1951,7 +1958,7 @@ msPresentSharedPixmap(PixmapPtr secondary_dst)
         ms_fence_dmabuf(pScreen, ppriv->dmabuf_fd);
     }
     DamageEmpty(ppriv->dirty->damage);
-    return painted;
+    return painted || window_changed;
 }
 
 static int

@@ -387,6 +387,8 @@ typedef struct {
     PixmapPtr pixmap;
     PixmapPtr source;
     Bool scanout_source;
+    Bool partial;
+    BoxRec rect;
     Bool covered;
     BoxRec cover_box;
     Bool pq;

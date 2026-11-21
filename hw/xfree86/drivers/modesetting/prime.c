@@ -27,6 +27,10 @@
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#ifdef __linux__
+#include <linux/sync_file.h>
+#endif
 #include <xf86.h>
 #include <xf86Crtc.h>
 
@@ -207,7 +211,7 @@ ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_direct_rec *direct = &prime_scanout->direct;
 
-    if (direct->source)
+    if (direct->source && !direct->partial)
         drmmode_crtc_set_scanout_content(crtc, direct->pq,
                                          direct->has_metadata ?
                                          &direct->metadata : NULL,
@@ -259,36 +263,73 @@ ms_prime_back_damage(xf86CrtcPtr crtc, PixmapPtr ppix, Bool shared)
     return &back->dmg;
 }
 
+static Bool
+ms_prime_copy_region_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr region,
+                             int src_origin_x, int src_origin_y)
+{
+    ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
+    BoxPtr extents = RegionExtents(region);
+    GCPtr gc;
+
+    if (!RegionNotEmpty(region))
+        return TRUE;
+
+    gc = GetScratchGC(back->px->drawable.depth, screen);
+    if (!gc)
+        return FALSE;
+
+    gc->funcs->ChangeClip(gc, CT_REGION, RegionDuplicate(region), 0);
+    ValidateGC(&back->px->drawable, gc);
+    gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc,
+                      extents->x1 - src_origin_x, extents->y1 - src_origin_y,
+                      extents->x2 - extents->x1, extents->y2 - extents->y1,
+                      extents->x1, extents->y1);
+    FreeScratchGC(gc);
+    return TRUE;
+}
+
 static uint32_t
-ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr damage,
-                      int *fence_fd)
+ms_prime_back_copied(xf86CrtcPtr crtc, int *fence_fd)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
     modesettingPtr ms = modesettingPTR(crtc->scrn);
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
-    drmmode_shadow_fb_ptr back = &prime_scanout->buf[prime_scanout->back_idx];
-    BoxPtr extents = RegionExtents(damage);
-    GCPtr gc;
-
-    gc = GetScratchGC(back->px->drawable.depth, screen);
-    if (!gc)
-        return 0;
-
-    if (RegionNotEmpty(damage)) {
-        gc->funcs->ChangeClip(gc, CT_REGION, RegionDuplicate(damage), 0);
-        ValidateGC(&back->px->drawable, gc);
-        gc->ops->CopyArea(&src->drawable, &back->px->drawable, gc,
-                          extents->x1, extents->y1, extents->x2 - extents->x1,
-                          extents->y2 - extents->y1, extents->x1, extents->y1);
-    }
-    FreeScratchGC(gc);
-    RegionEmpty(damage);
 
     if (drmmode_crtc_can_fence_flip(crtc))
         *fence_fd = ms->glamor.egl_create_fence_fd(screen);
     if (*fence_fd < 0)
         ms->glamor.finish(screen);
-    return back->fb_id;
+    return prime_scanout->buf[prime_scanout->back_idx].fb_id;
+}
+
+static uint32_t
+ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr src, RegionPtr damage,
+                      int *fence_fd)
+{
+    Bool copied = ms_prime_copy_region_to_back(crtc, src, damage, 0, 0);
+
+    RegionEmpty(damage);
+    return copied ? ms_prime_back_copied(crtc, fence_fd) : 0;
+}
+
+static uint32_t
+ms_prime_copy_window_to_back(xf86CrtcPtr crtc, PixmapPtr staging,
+                             PixmapPtr window, BoxPtr rect, int *fence_fd)
+{
+    RegionPtr damage = ms_prime_back_damage(crtc, staging, TRUE);
+    RegionRec window_region;
+    Bool copied;
+
+    RegionInit(&window_region, rect, 1);
+    RegionSubtract(damage, damage, &window_region);
+    copied = ms_prime_copy_region_to_back(crtc, staging, damage, 0, 0) &&
+        ms_prime_copy_region_to_back(crtc, window, &window_region,
+                                     rect->x1, rect->y1);
+    RegionUninit(&window_region);
+    RegionEmpty(damage);
+    return copied ? ms_prime_back_copied(crtc, fence_fd) : 0;
 }
 
 #define MS_PRIME_COMMIT_SLACK_USEC 1000
@@ -932,7 +973,7 @@ ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_direct_rec *direct = &prime_scanout->direct;
-    PixmapPtr src = direct->source ? direct->source : ppix;
+    PixmapPtr src = direct->source && !direct->partial ? direct->source : ppix;
     drmmode_prime_fb_rec fb = { 0 };
     uint32_t fb_id;
     int buf_idx = -1;
@@ -946,10 +987,14 @@ ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     } else {
         ms_prime_release_fb(crtc, &fb);
         buf_idx = prime_scanout->back_idx;
-        fb_id = ms_prime_copy_to_back(crtc, src,
-                                      ms_prime_back_damage(crtc, ppix,
-                                                           !direct->source),
-                                      &fence_fd);
+        if (direct->partial)
+            fb_id = ms_prime_copy_window_to_back(crtc, ppix, direct->source,
+                                                 &direct->rect, &fence_fd);
+        else
+            fb_id = ms_prime_copy_to_back(crtc, src,
+                                          ms_prime_back_damage(crtc, ppix,
+                                                               !direct->source),
+                                          &fence_fd);
         if (!fb_id) {
             ms_overlay_flip_failed(crtc);
             return FALSE;
@@ -991,27 +1036,64 @@ ms_prime_source_signaled(int fd, int ready, void *data)
 }
 
 static int
-ms_prime_source_fence(xf86CrtcPtr crtc, PixmapPtr ppix)
+ms_prime_staging_fence(PixmapPtr ppix)
 {
-    drmmode_prime_direct_rec *direct = &ms_prime_scanout(crtc)->direct;
-    msPixmapPrivPtr ppriv;
-    ScrnInfoPtr scrn;
+    msPixmapPrivPtr ppriv = ms_prime_source_priv(ppix);
+
+    return ppriv ? ms_dmabuf_writer_fence(ppriv->dmabuf_fd) : -1;
+}
+
+static int
+ms_prime_client_fence(const drmmode_prime_direct_rec *direct)
+{
+    ScrnInfoPtr scrn = xf86ScreenToScrn(direct->pixmap->drawable.pScreen);
     modesettingPtr ms;
 
-    if (!direct->source) {
-        ppriv = ms_prime_source_priv(ppix);
-        return ppriv ? ms_dmabuf_writer_fence(ppriv->dmabuf_fd) : -1;
-    }
-    if (direct->scanout_source || !direct->pixmap)
-        return -1;
-
-    scrn = xf86ScreenToScrn(direct->pixmap->drawable.pScreen);
     if (!ms_scrn_is_modesetting(scrn))
         return -1;
 
     ms = modesettingPTR(scrn);
     return ms->glamor.egl_pixmap_rendering_fd ?
         ms->glamor.egl_pixmap_rendering_fd(direct->pixmap) : -1;
+}
+
+static int
+ms_prime_merge_fences(int a, int b)
+{
+#ifdef SYNC_IOC_MERGE
+    struct sync_merge_data merge = { .name = "PRIME source", .fd2 = b };
+
+    if (a < 0)
+        return b;
+    if (b < 0)
+        return a;
+    if (ioctl(a, SYNC_IOC_MERGE, &merge) < 0) {
+        close(b);
+        return a;
+    }
+    close(a);
+    close(b);
+    return merge.fence;
+#else
+    if (b >= 0)
+        close(b);
+    return a;
+#endif
+}
+
+static int
+ms_prime_source_fence(xf86CrtcPtr crtc, PixmapPtr ppix)
+{
+    drmmode_prime_direct_rec *direct = &ms_prime_scanout(crtc)->direct;
+
+    if (!direct->source)
+        return ms_prime_staging_fence(ppix);
+    if (direct->scanout_source || !direct->pixmap)
+        return -1;
+    if (direct->partial)
+        return ms_prime_merge_fences(ms_prime_client_fence(direct),
+                                     ms_prime_staging_fence(ppix));
+    return ms_prime_client_fence(direct);
 }
 
 /* An nvidia copy from a buffer another GPU is still rendering finishes about

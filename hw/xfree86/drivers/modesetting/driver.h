@@ -330,7 +330,14 @@ Bool ms_import_flip_fb(ScreenPtr screen, PixmapPtr pixmap, uint32_t *fb_id,
 
 Bool ms_compositor_direct_flip(xf86CrtcPtr crtc, void *timeout);
 void ms_compositor_update_composed_output_mode(xf86CrtcPtr crtc);
-Bool ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty, Bool *new_frame);
+typedef enum {
+    MS_PRIME_DIRECT_NONE,
+    MS_PRIME_DIRECT_WHOLE,
+    MS_PRIME_DIRECT_PARTIAL,
+} ms_prime_direct_mode;
+
+ms_prime_direct_mode ms_compositor_prime_direct(PixmapDirtyUpdatePtr dirty,
+                                                Bool *new_frame);
 
 Bool ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix);
 void ms_prime_destroy_scanout(xf86CrtcPtr crtc);
