@@ -870,6 +870,7 @@ Bool drmmode_crtc_set_scanout_content(xf86CrtcPtr crtc, Bool pq,
                                       Bool composed, Bool with_next_flip);
 Bool drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
+Bool drmmode_crtc_can_convert_sdr_to_pq(xf86CrtcPtr crtc);
 void drmmode_close_fb(int fd, uint32_t fb_id);
 Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);
 Bool drmmode_crtc_can_show_pq(xf86CrtcPtr crtc);

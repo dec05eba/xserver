@@ -6279,6 +6279,13 @@ drmmode_crtc_supports_color_conversion(xf86CrtcPtr crtc)
 }
 
 Bool
+drmmode_crtc_can_convert_sdr_to_pq(xf86CrtcPtr crtc)
+{
+    return drmmode_plane_color_supported(crtc) ||
+        drmmode_crtc_supports_color_conversion(crtc);
+}
+
+Bool
 drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc)
 {
     xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);

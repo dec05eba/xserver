@@ -758,20 +758,22 @@ ms_compositor_update_prime(PixmapDirtyUpdatePtr dirty)
     drmmode_crtc_private_ptr drmmode_crtc;
     WindowPtr hdr_window;
     BoxRec box;
-    Bool pq;
+    Bool can_compose_pq, pq;
 
     if (!crtc)
         return;
 
     drmmode_crtc = crtc->driver_private;
     prime_scanout = &drmmode_crtc->prime_scanout;
-    pq = ms->glamor.convert_color && dirty->rotation == RR_Rotate_0 &&
+    can_compose_pq = ms->glamor.convert_color && dirty->rotation == RR_Rotate_0 &&
         !dirty->dst_x && !dirty->dst_y &&
         ms_compositor_dirty_dst(dirty)->drawable.depth == 30 &&
         drmmode_crtc_hdr_enabled(crtc);
 
     ms_compositor_dirty_box(dirty, &box);
-    hdr_window = pq ? CompositeServerHdrWindow(screen, &box) : NULL;
+    hdr_window = can_compose_pq ? CompositeServerHdrWindow(screen, &box) : NULL;
+    pq = can_compose_pq &&
+        (hdr_window || !drmmode_crtc_can_convert_sdr_to_pq(crtc));
     metadata = hdr_window ? ms_hdr_window_metadata(hdr_window) : NULL;
     prime_scanout->composition_has_metadata = metadata != NULL;
     if (metadata)
