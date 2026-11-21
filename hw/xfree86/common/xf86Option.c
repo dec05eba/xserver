@@ -68,6 +68,26 @@ static Bool ParseOptionValue(int scrnIndex, XF86OptionPtr options,
  *   extraOpts, display, confScreen, monitor, device, outputClassOptions
  */
 
+/* A Device section is claimed by the first device it matches, so GPU screens
+ * usually don't get one of their own */
+static GDevPtr
+xf86GPUScreenSharedDevice(ScrnInfoPtr pScrn)
+{
+    GDevPtr device;
+
+    if (!pScrn->is_gpu || !pScrn->confScreen || !pScrn->drv)
+        return NULL;
+
+    device = pScrn->confScreen->device;
+    if (!device || !device->driver ||
+        xf86NameCmp(device->driver, pScrn->drv->driverName) != 0 ||
+        (device->busID && *device->busID) ||
+        xf86FindOptionValue(device->options, "kmsdev"))
+        return NULL;
+
+    return device;
+}
+
 void
 xf86CollectOptions(ScrnInfoPtr pScrn, XF86OptionPtr extraOpts)
 {
@@ -84,6 +104,8 @@ xf86CollectOptions(ScrnInfoPtr pScrn, XF86OptionPtr extraOpts)
 
         device = xf86GetDevFromEntity(pScrn->entityList[i],
                                       pScrn->entityInstanceList[i]);
+        if (!device)
+            device = xf86GPUScreenSharedDevice(pScrn);
         if (device && device->options) {
             tmp = xf86optionListDup(device->options);
             if (pScrn->options)

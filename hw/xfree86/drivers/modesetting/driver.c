@@ -1543,9 +1543,18 @@ PreInit(ScrnInfoPtr pScrn, int flags)
                ms->drmmode.sdr_white_level_default);
 
     if (pScrn->is_gpu) {
-        xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-                   "Compositing disabled on PRIME secondary GPU; "
-                   "use 'PRIME Synchronization' instead\n");
+        Bool compositing_explicitly_enabled =
+            (xf86IsOptionSet(ms->drmmode.Options, OPTION_COMPOSITING) ||
+             xf86IsOptionSet(ms->drmmode.Options, OPTION_TEARFREE)) &&
+            msCompositingOption(pScrn, ms);
+
+        xf86DrvMsg(pScrn->scrnIndex,
+                   compositing_explicitly_enabled ? X_WARNING : X_INFO,
+                   "Compositing: done by the primary GPU for monitors on "
+                   "this PRIME secondary GPU%s\n",
+                   compositing_explicitly_enabled ?
+                   "; use 'PRIME Synchronization' to avoid tearing on them" :
+                   "");
     } else if (!ms->drmmode.glamor) {
         xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
                    "Per-monitor framebuffers require Glamor acceleration; "
