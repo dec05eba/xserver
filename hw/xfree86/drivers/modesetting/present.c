@@ -66,6 +66,19 @@ ms_present_get_crtc(WindowPtr window)
     return ms_randr_crtc_covering_drawable(&window->drawable);
 }
 
+#ifdef HAVE_GBM
+/* With window flips Present passes CRTCs of output sink GPUs too, and drivers
+ * with their own RandR implementation like NVIDIA's don't store an xf86CrtcPtr
+ * in devPrivate */
+static xf86CrtcPtr
+ms_present_xf86_crtc(RRCrtcPtr crtc)
+{
+    if (!ms_scrn_is_modesetting(xf86ScreenToScrn(crtc->pScreen)))
+        return NULL;
+    return crtc->devPrivate;
+}
+#endif
+
 static int
 ms_present_get_ust_msc(RRCrtcPtr crtc, CARD64 *ust, CARD64 *msc)
 {
@@ -185,10 +198,10 @@ ms_present_abort_vblank(RRCrtcPtr crtc, uint64_t event_id, uint64_t msc)
     ScreenPtr screen = crtc->pScreen;
     ScrnInfoPtr scrn = xf86ScreenToScrn(screen);
 #ifdef HAVE_GBM
-    xf86CrtcPtr xf86_crtc = crtc->devPrivate;
+    xf86CrtcPtr xf86_crtc = ms_present_xf86_crtc(crtc);
 
     /* Check if this is a fake flip routed through TearFree and abort it */
-    if (ms_scrn_is_modesetting(xf86_crtc->scrn) &&
+    if (xf86_crtc &&
         ms_tearfree_dri_abort(xf86_crtc, ms_present_event_match, &event_id))
         return;
 #endif
@@ -377,6 +390,9 @@ ms_present_check_flip(RRCrtcPtr crtc,
     if (reason)
         *reason = PRESENT_FLIP_REASON_UNKNOWN;
 
+    if (!ms_present_xf86_crtc(crtc))
+        return FALSE;
+
     if (ms->drmmode.tearfree_enable)
         return ms_present_check_window_flip(crtc, window, pixmap, reason);
 
@@ -528,6 +544,9 @@ ms_present_window_flip(RRCrtcPtr crtc,
 {
     struct ms_present_vblank_event *event;
 
+    if (!ms_present_xf86_crtc(crtc))
+        return FALSE;
+
     event = calloc(1, sizeof(struct ms_present_vblank_event));
     if (!event)
         return FALSE;
@@ -600,9 +619,9 @@ ms_present_window_on_tearfree_crtc(WindowPtr window)
 static Bool
 ms_present_cancel_window_flip(RRCrtcPtr crtc, uint64_t event_id)
 {
-    xf86CrtcPtr xf86_crtc = crtc->devPrivate;
+    xf86CrtcPtr xf86_crtc = ms_present_xf86_crtc(crtc);
 
-    return ms_scrn_is_modesetting(xf86_crtc->scrn) &&
+    return xf86_crtc &&
         ms_tearfree_dri_cancel(xf86_crtc->scrn, ms_present_event_match,
                                &event_id);
 }

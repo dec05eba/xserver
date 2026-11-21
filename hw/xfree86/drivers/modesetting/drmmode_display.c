@@ -3819,10 +3819,16 @@ drmmode_output_can_enable_hdr(xf86OutputPtr output)
 Bool
 drmmode_prime_output_supports_hdr(RROutputPtr randr_output)
 {
-    xf86OutputPtr output = randr_output->devPrivate;
+    ScrnInfoPtr scrn = xf86ScreenToScrn(randr_output->pScreen);
+    xf86OutputPtr output;
 
-    return output && ms_scrn_is_modesetting(output->scrn) &&
-        output->scrn->is_gpu && drmmode_output_can_enable_hdr(output);
+    /* Drivers with their own RandR implementation like NVIDIA's don't store an
+     * xf86OutputPtr in devPrivate */
+    if (!ms_scrn_is_modesetting(scrn) || !scrn->is_gpu)
+        return FALSE;
+
+    output = randr_output->devPrivate;
+    return output && drmmode_output_can_enable_hdr(output);
 }
 
 static void
