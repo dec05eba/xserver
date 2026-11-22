@@ -53,6 +53,8 @@ static void ms_prime_source_wait_cancel(xf86CrtcPtr crtc);
 static void ms_prime_deadline_fired(int fd, int ready, void *data);
 static void ms_prime_staging_forget_copy(drmmode_prime_staging_rec *staging);
 static void ms_prime_copy_cancel(xf86CrtcPtr crtc);
+static Bool ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc,
+                                       uint32_t seq);
 
 static void
 ms_prime_release_import(drmmode_prime_import_rec *import)
@@ -209,21 +211,36 @@ ms_prime_create_scanout(xf86CrtcPtr crtc, PixmapPtr ppix)
 }
 
 static void
-ms_prime_set_scanout_content(xf86CrtcPtr crtc, Bool with_next_flip)
+ms_prime_frame_capture(xf86CrtcPtr crtc, drmmode_prime_frame_rec *frame)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_direct_rec *direct = &prime_scanout->direct;
 
     if (direct->source && !direct->partial)
-        drmmode_crtc_set_scanout_content(crtc, direct->pq,
-                                         direct->has_metadata ?
-                                         &direct->metadata : NULL,
-                                         FALSE, with_next_flip);
+        *frame = (drmmode_prime_frame_rec) {
+            .pq = direct->pq,
+            .has_metadata = direct->has_metadata,
+            .metadata = direct->metadata,
+        };
     else
-        drmmode_crtc_set_scanout_content(crtc, prime_scanout->composition.pq,
-                                         prime_scanout->composition_has_metadata ?
-                                         &prime_scanout->composition_metadata : NULL,
-                                         TRUE, with_next_flip);
+        *frame = (drmmode_prime_frame_rec) {
+            .pq = prime_scanout->composition.pq,
+            .composed = TRUE,
+            .has_metadata = prime_scanout->composition_has_metadata,
+            .metadata = prime_scanout->composition_metadata,
+        };
+    frame->reads_client = direct->source != NULL;
+    frame->compose_start = prime_scanout->commit.compose_start;
+}
+
+static void
+ms_prime_set_scanout_content(xf86CrtcPtr crtc,
+                             const drmmode_prime_frame_rec *frame,
+                             Bool with_next_flip)
+{
+    drmmode_crtc_set_scanout_content(crtc, frame->pq,
+                                     frame->has_metadata ? &frame->metadata : NULL,
+                                     frame->composed, with_next_flip);
 }
 
 static msPixmapPrivPtr
@@ -441,6 +458,10 @@ ms_prime_staging_idle(xf86CrtcPtr crtc, int idx)
 
     if (prime_scanout->copy.pending &&
         prime_scanout->copy.staging == ms_prime_staging_pixmap(crtc, idx))
+        return FALSE;
+
+    if (prime_scanout->copy_wait.seq &&
+        prime_scanout->copy_wait.pixmap == ms_prime_staging_pixmap(crtc, idx))
         return FALSE;
 
     if (staging->copy_pending) {
@@ -668,7 +689,8 @@ ms_prime_commit_fence_signaled(int fd, int ready, void *data)
 
 static void
 ms_prime_commit_queue(xf86CrtcPtr crtc, uint32_t seq, uint32_t fb_id,
-                      int buf_idx, int fence_fd, Bool ticked)
+                      int buf_idx, int fence_fd,
+                      const drmmode_prime_frame_rec *frame)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_commit_rec *commit = &prime_scanout->commit;
@@ -688,9 +710,9 @@ ms_prime_commit_queue(xf86CrtcPtr crtc, uint32_t seq, uint32_t fb_id,
         .fb_id = fb_id,
         .buf_idx = buf_idx,
         .fence_fd = fence_fd,
-        .reads_client = prime_scanout->direct.source != NULL,
-        .ticked = ticked,
-        .compose_start = commit->compose_start,
+        .reads_client = frame->reads_client,
+        .ticked = frame->ticked,
+        .compose_start = frame->compose_start,
     };
     if (buf_idx >= 0)
         prime_scanout->back_idx = (buf_idx + 1) %
@@ -999,22 +1021,24 @@ ms_prime_presented(xf86CrtcPtr crtc)
 
 static void
 ms_prime_queue_frame(xf86CrtcPtr crtc, uint32_t seq, drmmode_prime_fb_rec fb,
-                     uint32_t fb_id, int buf_idx, int fence_fd, Bool ticked)
+                     uint32_t fb_id, int buf_idx, int fence_fd,
+                     const drmmode_prime_frame_rec *frame)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
 
-    ms_prime_set_scanout_content(crtc, TRUE);
+    ms_prime_set_scanout_content(crtc, frame, TRUE);
 
     prime_scanout->direct_fbs.pending = fb;
-    if (!ticked)
+    if (!frame->ticked)
         drmmode_crtc->tearfree.flip_seq = seq;
-    ms_prime_commit_queue(crtc, seq, fb_id, buf_idx, fence_fd, ticked);
+    ms_prime_commit_queue(crtc, seq, fb_id, buf_idx, fence_fd, frame);
 }
 
 static void
 ms_prime_back_copied(xf86CrtcPtr crtc, uint32_t seq, int buf_idx,
-                     PixmapPtr staging, int fence_fd, Bool ticked)
+                     PixmapPtr staging, int fence_fd,
+                     const drmmode_prime_frame_rec *frame)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
 
@@ -1022,7 +1046,7 @@ ms_prime_back_copied(xf86CrtcPtr crtc, uint32_t seq, int buf_idx,
         ms_prime_staging_copied(crtc, staging, fence_fd);
     ms_prime_queue_frame(crtc, seq, (drmmode_prime_fb_rec) { 0 },
                          prime_scanout->buf[buf_idx].fb_id, buf_idx, fence_fd,
-                         ticked);
+                         frame);
 }
 
 static void
@@ -1047,16 +1071,14 @@ ms_prime_wait_for_fence(int fence_fd)
 }
 
 static void
-ms_prime_copy_done(int fence_fd, Bool copied, void *data)
+ms_prime_copy_finish(xf86CrtcPtr crtc, const drmmode_prime_copy_rec *copy,
+                     int fence_fd, Bool copied)
 {
-    xf86CrtcPtr crtc = data;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
-    drmmode_prime_copy_rec copy = prime_scanout->copy;
 
-    prime_scanout->copy = (drmmode_prime_copy_rec) { 0 };
-    if (copied && copy.seq) {
-        ms_prime_back_copied(crtc, copy.seq, copy.buf_idx, copy.staging,
-                             fence_fd, copy.ticked);
+    if (copied && copy->seq) {
+        ms_prime_back_copied(crtc, copy->seq, copy->buf_idx, copy->staging,
+                             fence_fd, &copy->frame);
         return;
     }
 
@@ -1064,11 +1086,37 @@ ms_prime_copy_done(int fence_fd, Bool copied, void *data)
     if (copied)
         return;
 
-    ms_prime_damage_buffer(&prime_scanout->buf[copy.buf_idx]);
-    if (copy.seq) {
+    ms_prime_damage_buffer(&prime_scanout->buf[copy->buf_idx]);
+    if (copy->seq) {
         ms_overlay_flip_failed(crtc);
-        ms_prime_flip_retry(crtc, copy.seq);
+        ms_prime_flip_retry(crtc, copy->seq);
     }
+}
+
+static void
+ms_prime_copy_wait_done(xf86CrtcPtr crtc)
+{
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_copy_wait_rec wait = prime_scanout->copy_wait;
+
+    if (!wait.seq)
+        return;
+
+    prime_scanout->copy_wait = (drmmode_prime_copy_wait_rec) { 0 };
+    if (!ms_prime_flip_source_ready(wait.pixmap, crtc, wait.seq))
+        ms_prime_flip_retry(crtc, wait.seq);
+}
+
+static void
+ms_prime_copy_done(int fence_fd, Bool copied, void *data)
+{
+    xf86CrtcPtr crtc = data;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_copy_rec copy = prime_scanout->copy;
+
+    prime_scanout->copy = (drmmode_prime_copy_rec) { 0 };
+    ms_prime_copy_finish(crtc, &copy, fence_fd, copied);
+    ms_prime_copy_wait_done(crtc);
 }
 
 static Bool
@@ -1092,9 +1140,10 @@ ms_prime_copy_async(xf86CrtcPtr crtc, const glamor_egl_copy_op *ops, int nops,
         .buf_idx = buf_idx,
         .staging = staging,
     };
+    ms_prime_frame_capture(crtc, &prime_scanout->copy.frame);
     drmmode_crtc->tearfree.flip_seq = seq;
-    if (!prime_scanout->direct.source)
-        prime_scanout->copy.ticked = ms_prime_tick_ahead(crtc, seq);
+    if (!prime_scanout->copy.frame.reads_client)
+        prime_scanout->copy.frame.ticked = ms_prime_tick_ahead(crtc, seq);
     return TRUE;
 }
 
@@ -1107,6 +1156,7 @@ ms_prime_copy_cancel(xf86CrtcPtr crtc)
     if (prime_scanout->copy.pending)
         ms->glamor.egl_copy_async_cancel(xf86ScrnToScreen(crtc->scrn), crtc);
     prime_scanout->copy = (drmmode_prime_copy_rec) { 0 };
+    prime_scanout->copy_wait = (drmmode_prime_copy_wait_rec) { 0 };
 }
 
 static Bool
@@ -1132,9 +1182,13 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr ppix, PixmapPtr src,
         ms_overlay_flip_failed(crtc);
         return FALSE;
     }
-    if (!queued)
+    if (!queued) {
+        drmmode_prime_frame_rec frame;
+
+        ms_prime_frame_capture(crtc, &frame);
         ms_prime_back_copied(crtc, seq, buf_idx, staging,
-                             ms_prime_back_fence(crtc), FALSE);
+                             ms_prime_back_fence(crtc), &frame);
+    }
     return TRUE;
 }
 
@@ -1142,16 +1196,32 @@ static Bool
 ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
 {
     ScreenPtr screen = xf86ScrnToScreen(crtc->scrn);
-    drmmode_prime_direct_rec *direct = &ms_prime_scanout(crtc)->direct;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
+    drmmode_prime_direct_rec *direct = &prime_scanout->direct;
     PixmapPtr src = direct->source && !direct->partial ? direct->source : ppix;
     drmmode_prime_fb_rec fb = { .pixmap = src };
+    drmmode_prime_frame_rec frame;
+
+    if (prime_scanout->copy.pending) {
+        prime_scanout->copy_wait = (drmmode_prime_copy_wait_rec) {
+            .pixmap = ppix,
+            .seq = seq,
+        };
+        drmmode_crtc->tearfree.flip_seq = seq;
+        return TRUE;
+    }
+
+    if (direct->covered)
+        ms_prime_overlay_prepare(crtc);
 
     if (!direct->scanout_source ||
         !ms_import_flip_fb(screen, src, &fb.fb_id, "PRIME direct-scanout"))
         return ms_prime_copy_to_back(crtc, ppix, src, seq);
 
     src->refcnt++;
-    ms_prime_queue_frame(crtc, seq, fb, fb.fb_id, -1, -1, FALSE);
+    ms_prime_frame_capture(crtc, &frame);
+    ms_prime_queue_frame(crtc, seq, fb, fb.fb_id, -1, -1, &frame);
     return TRUE;
 }
 
@@ -1250,9 +1320,6 @@ ms_prime_flip(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     int fence_fd;
 
-    if (prime_scanout->direct.covered)
-        ms_prime_overlay_prepare(crtc);
-
     fence_fd = ms_prime_source_fence(crtc, ppix);
     if (fence_fd < 0)
         return ms_prime_flip_source_ready(ppix, crtc, seq);
@@ -1313,6 +1380,11 @@ ms_prime_flip_aborted(xf86CrtcPtr crtc, uint32_t seq)
 
     if (seq == prime_scanout->copy.seq) {
         prime_scanout->copy.seq = 0;
+        matched = TRUE;
+    }
+
+    if (seq == prime_scanout->copy_wait.seq) {
+        prime_scanout->copy_wait = (drmmode_prime_copy_wait_rec) { 0 };
         matched = TRUE;
     }
 
@@ -1429,19 +1501,25 @@ ms_prime_present(xf86CrtcPtr crtc)
         idle->wait_for_damage = TRUE;
 }
 
-/* The copy needs a buffer that is neither on screen nor committed or queued,
- * and the shared pixmap painted next must not still be read by an earlier
- * copy.
+/* The copy needs a buffer that is neither on screen nor committed, queued or
+ * being copied into, and the shared pixmap painted next must not still be read
+ * by an earlier copy.
  */
 static Bool
 ms_prime_can_compose(xf86CrtcPtr crtc)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_commit_rec *commit = &prime_scanout->commit;
+    drmmode_prime_copy_rec *copy = &prime_scanout->copy;
     int back = prime_scanout->back_idx, i;
 
-    if (prime_scanout->copy.pending ||
-        !ms_prime_staging_idle(crtc, prime_scanout->staging_idx))
+    if (copy->pending) {
+        if (!copy->frame.ticked || prime_scanout->copy_wait.seq)
+            return FALSE;
+        back = (copy->buf_idx + 1) % ARRAY_SIZE(prime_scanout->buf);
+    }
+
+    if (!ms_prime_staging_idle(crtc, prime_scanout->staging_idx))
         return FALSE;
 
     if (back == prime_scanout->front_idx ||
@@ -1505,13 +1583,16 @@ ms_prime_flush_kicks(ScreenPtr screen, void *timeout)
 static Bool
 ms_prime_crtc_update_output_mode(xf86CrtcPtr crtc)
 {
+    drmmode_prime_frame_rec frame;
+
     if (!ms_prime_crtc_flipping(crtc))
         return TRUE;
 
     if (!ms_prime_idle(crtc))
         return FALSE;
 
-    ms_prime_set_scanout_content(crtc, FALSE);
+    ms_prime_frame_capture(crtc, &frame);
+    ms_prime_set_scanout_content(crtc, &frame, FALSE);
     ms_prime_kick(crtc);
     return TRUE;
 }

@@ -476,12 +476,27 @@ typedef struct {
 } drmmode_prime_source_wait_rec;
 
 typedef struct {
-    Bool pending;
+    Bool pq;
+    Bool composed;
+    Bool has_metadata;
+    struct hdr_output_metadata metadata;
+    Bool reads_client;
     Bool ticked;
+    uint64_t compose_start;
+} drmmode_prime_frame_rec;
+
+typedef struct {
+    Bool pending;
     uint32_t seq;
     int buf_idx;
     PixmapPtr staging;
+    drmmode_prime_frame_rec frame;
 } drmmode_prime_copy_rec;
+
+typedef struct {
+    PixmapPtr pixmap;
+    uint32_t seq;
+} drmmode_prime_copy_wait_rec;
 
 typedef struct {
     Bool copy_pending;
@@ -502,6 +517,7 @@ typedef struct {
     drmmode_prime_overlay_rec overlay;
     drmmode_prime_source_wait_rec source_wait;
     drmmode_prime_copy_rec copy;
+    drmmode_prime_copy_wait_rec copy_wait;
     drmmode_prime_commit_rec commit;
     drmmode_prime_presenters_rec presenters;
     Bool kick;
