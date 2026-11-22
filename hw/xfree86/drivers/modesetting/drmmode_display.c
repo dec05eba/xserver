@@ -749,6 +749,61 @@ drm_mode_ensure_blob(xf86CrtcPtr crtc, const drmModeModeInfo* mode_info)
     return ret;
 }
 
+static Bool
+drmmode_output_is_panel(drmmode_output_private_ptr drmmode_output)
+{
+    uint32_t type;
+
+    if (!drmmode_output->mode_output)
+        return FALSE;
+
+    type = drmmode_output->mode_output->connector_type;
+    return type == DRM_MODE_CONNECTOR_eDP || type == DRM_MODE_CONNECTOR_LVDS ||
+        type == DRM_MODE_CONNECTOR_DSI;
+}
+
+static void
+drmmode_output_powered_off(drmmode_output_private_ptr drmmode_output)
+{
+    if (drmmode_output_is_panel(drmmode_output))
+        drmmode_output->panel_off_at = GetTimeInMicros();
+}
+
+static void
+drmmode_crtc_outputs_powered_off(xf86CrtcPtr crtc)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    int i;
+
+    for (i = 0; i < config->num_output; i++) {
+        drmmode_output_private_ptr drmmode_output = config->output[i]->driver_private;
+
+        if (config->output[i]->crtc == crtc || drmmode_output->current_crtc == crtc)
+            drmmode_output_powered_off(drmmode_output);
+    }
+}
+
+static void
+drmmode_crtc_wait_for_panel_power_off(xf86CrtcPtr crtc)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint64_t min_off = drmmode_crtc->drmmode->panel_min_off_usec;
+    int i;
+
+    for (i = 0; min_off && i < config->num_output; i++) {
+        drmmode_output_private_ptr drmmode_output = config->output[i]->driver_private;
+        uint64_t on_at, now;
+
+        if (config->output[i]->crtc != crtc || !drmmode_output->panel_off_at)
+            continue;
+
+        on_at = drmmode_output->panel_off_at + min_off;
+        while ((now = GetTimeInMicros()) < on_at)
+            usleep(on_at - now);
+    }
+}
+
 static int
 crtc_add_dpms_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                     int new_dpms, Bool *active)
@@ -767,6 +822,7 @@ crtc_add_dpms_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
             if (drmmode_output->current_crtc == crtc) {
                 ret |= connector_add_prop(req, drmmode_output,
                                           DRMMODE_CONNECTOR_CRTC_ID, 0);
+                drmmode_output_powered_off(drmmode_output);
             }
             continue;
         }
@@ -776,6 +832,8 @@ crtc_add_dpms_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
 
         if (new_dpms == DPMSModeOn)
             crtc_active = TRUE;
+        else
+            drmmode_output_powered_off(drmmode_output);
 
         ret |= connector_add_prop(req, drmmode_output,
                                   DRMMODE_CONNECTOR_CRTC_ID,
@@ -923,6 +981,8 @@ drmmode_set_dpms(ScrnInfoPtr scrn, int dpms, int flags)
         drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
         Bool active = FALSE;
 
+        if (dpms == DPMSModeOn)
+            drmmode_crtc_wait_for_panel_power_off(crtc);
         ret |= crtc_add_dpms_props(req, crtc, dpms, &active);
 
         if (dpms == DPMSModeOn && active && drmmode_crtc->need_modeset) {
@@ -993,6 +1053,7 @@ drmmode_crtc_disable(xf86CrtcPtr crtc)
                          DRMMODE_CRTC_ACTIVE, 0);
     ret |= crtc_add_prop(req, drmmode_crtc,
                          DRMMODE_CRTC_MODE_ID, 0);
+    drmmode_crtc_outputs_powered_off(crtc);
 
     if (ret == 0)
         ret = drmModeAtomicCommit(ms->fd, req, flags, NULL);
@@ -1179,10 +1240,14 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
 #endif
 
     if (ms->atomic_modeset) {
-        drmModeAtomicReq *req = drmModeAtomicAlloc();
+        drmModeAtomicReq *req;
         Bool active;
         uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
 
+        if (!test_only)
+            drmmode_crtc_wait_for_panel_power_off(crtc);
+
+        req = drmModeAtomicAlloc();
         if (!req)
             return 1;
 
@@ -5073,10 +5138,13 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
      * and the kernel clips the part that is off the CRTC.
      */
     drmmode->overlay_offscreen = drmmode_driver_is(drmmode->fd, "amdgpu");
-    /* nvidia-drm doesn't power up a panel that went dark while its CRTC stayed
-     * active, and a modeset to the same mode doesn't enable the CRTC again.
+    /* nvidia-drm can power a laptop panel up again sooner after powering it
+     * down than the panel allows, which leaves it black until it's powered
+     * down and up again. A modeset to the same mode doesn't do that, so a
+     * panel that's already on when X starts is turned off first.
      */
-    drmmode->reactivate_dark_panels = drmmode_driver_is(drmmode->fd, "nvidia-drm");
+    drmmode->turn_off_inherited_panels = drmmode_driver_is(drmmode->fd, "nvidia-drm");
+    drmmode->panel_min_off_usec = drmmode->turn_off_inherited_panels ? 1000000 : 0;
 #ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
     /* amdgpu flickers whenever the CRTC colour tables change, so SDR content
      * on HDR monitors is converted by the plane instead.
@@ -5154,56 +5222,125 @@ drmmode_adjust_frame(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int x, int y)
     }
 }
 
-static Bool
-drmmode_crtc_kernel_active(xf86CrtcPtr crtc)
+static uint64_t
+drmmode_kernel_prop_value(int fd, uint32_t object_id, uint32_t object_type, uint32_t prop_id)
 {
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmModeObjectPropertiesPtr props =
-        drmModeObjectGetProperties(drmmode_crtc->drmmode->fd,
-                                   drmmode_crtc->mode_crtc->crtc_id,
-                                   DRM_MODE_OBJECT_CRTC);
-    Bool active = FALSE;
+    drmModeObjectPropertiesPtr props = drmModeObjectGetProperties(fd, object_id, object_type);
+    uint64_t value = 0;
     uint32_t i;
 
     for (i = 0; props && i < props->count_props; i++) {
-        if (props->props[i] == drmmode_crtc->props[DRMMODE_CRTC_ACTIVE].prop_id)
-            active = props->prop_values[i] != 0;
+        if (props->props[i] == prop_id)
+            value = props->prop_values[i];
     }
     drmModeFreeObjectProperties(props);
-    return active;
+    return value;
 }
 
 static Bool
-drmmode_output_is_panel(xf86OutputPtr output)
+drmmode_output_kernel_on_crtc(drmmode_output_private_ptr drmmode_output, xf86CrtcPtr crtc)
 {
-    drmmode_output_private_ptr drmmode_output = output->driver_private;
-    uint32_t type;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint32_t prop_id = drmmode_output->props_connector[DRMMODE_CONNECTOR_CRTC_ID].prop_id;
 
-    if (!drmmode_output->mode_output)
-        return FALSE;
-
-    type = drmmode_output->mode_output->connector_type;
-    return type == DRM_MODE_CONNECTOR_eDP || type == DRM_MODE_CONNECTOR_LVDS ||
-        type == DRM_MODE_CONNECTOR_DSI;
+    return drmmode_output->output_id != -1 &&
+        drmmode_kernel_prop_value(drmmode_crtc->drmmode->fd, drmmode_output->output_id,
+                                  DRM_MODE_OBJECT_CONNECTOR, prop_id) == drmmode_crtc->mode_crtc->crtc_id;
 }
 
-static void
-drmmode_crtc_deactivate_panel(xf86CrtcPtr crtc, xf86OutputPtr output)
+static Bool
+drmmode_crtc_kernel_shows_panel(xf86CrtcPtr crtc)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    uint32_t active_prop_id = drmmode_crtc->props[DRMMODE_CRTC_ACTIVE].prop_id;
+    int i;
+
+    if (!drmmode_kernel_prop_value(drmmode_crtc->drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
+                                   DRM_MODE_OBJECT_CRTC, active_prop_id))
+        return FALSE;
+
+    for (i = 0; i < config->num_output; i++) {
+        drmmode_output_private_ptr drmmode_output = config->output[i]->driver_private;
+
+        if (drmmode_output_is_panel(drmmode_output) && drmmode_output_kernel_on_crtc(drmmode_output, crtc))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static int
+drmmode_crtc_add_kernel_connectors_off(drmModeAtomicReq *req, xf86CrtcPtr crtc)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+    int ret = 0, i;
+
+    for (i = 0; i < config->num_output; i++) {
+        drmmode_output_private_ptr drmmode_output = config->output[i]->driver_private;
+
+        if (drmmode_output_kernel_on_crtc(drmmode_output, crtc)) {
+            ret |= connector_add_prop(req, drmmode_output, DRMMODE_CONNECTOR_CRTC_ID, 0);
+            drmmode_output_powered_off(drmmode_output);
+        }
+    }
+    return ret;
+}
+
+static int
+drmmode_crtc_commit_primary_off(xf86CrtcPtr crtc)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
-    drmModeAtomicReq *req;
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    int ret;
 
-    if (!ms->drmmode.reactivate_dark_panels || !ms->atomic_modeset ||
-        !drmmode_output_is_panel(output) || !drmmode_crtc_kernel_active(crtc))
-        return;
-
-    req = drmModeAtomicAlloc();
     if (!req)
+        return -ENOMEM;
+
+    ret = plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_FB_ID, 0);
+    ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_CRTC_ID, 0);
+    if (ret == 0)
+        ret = drmModeAtomicCommit(ms->fd, req, 0, NULL);
+    drmModeAtomicFree(req);
+    return ret;
+}
+
+static int
+drmmode_crtc_commit_off_with_connectors(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    int ret;
+
+    if (!req)
+        return -ENOMEM;
+
+    ret = drmmode_crtc_add_kernel_connectors_off(req, crtc);
+    ret |= crtc_add_prop(req, drmmode_crtc, DRMMODE_CRTC_ACTIVE, 0);
+    ret |= crtc_add_prop(req, drmmode_crtc, DRMMODE_CRTC_MODE_ID, 0);
+    if (ret == 0)
+        ret = drmModeAtomicCommit(ms->fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+    drmModeAtomicFree(req);
+    return ret;
+}
+
+/* A blocking commit that turns off a CRTC waits up to 3 seconds in nvidia-drm
+ * for flip events from the planes that showed a frame buffer, which don't come
+ * when the CRTC also loses its connectors, so the primary plane is turned off
+ * first.
+ */
+static void
+drmmode_crtc_turn_off_inherited_panel(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+
+    if (!ms->drmmode.turn_off_inherited_panels || !ms->atomic_modeset ||
+        !drmmode_crtc_kernel_shows_panel(crtc))
         return;
 
-    if (crtc_add_prop(req, crtc->driver_private, DRMMODE_CRTC_ACTIVE, 0) == 0)
-        drmModeAtomicCommit(ms->fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
-    drmModeAtomicFree(req);
+    drmmode_crtc_commit_primary_off(crtc);
+    drmmode_crtc_commit_off_with_connectors(crtc);
 }
 
 Bool
@@ -5215,6 +5352,11 @@ drmmode_set_desired_modes(ScrnInfoPtr pScrn, drmmode_ptr drmmode, Bool set_hw,
     int c;
 
     drmmmode_prepare_modeset(pScrn);
+
+    for (c = 0; set_hw && c < config->num_crtc; c++) {
+        if (config->crtc[c]->enabled)
+            drmmode_crtc_turn_off_inherited_panel(config->crtc[c]);
+    }
 
     for (c = 0; c < config->num_crtc; c++) {
         xf86CrtcPtr crtc = config->crtc[c];
@@ -5259,7 +5401,6 @@ drmmode_set_desired_modes(ScrnInfoPtr pScrn, drmmode_ptr drmmode, Bool set_hw,
         }
 
         if (set_hw) {
-            drmmode_crtc_deactivate_panel(crtc, output);
             if (!crtc->funcs->
                 set_mode_major(crtc, &crtc->desiredMode, crtc->desiredRotation,
                                crtc->desiredX, crtc->desiredY)) {

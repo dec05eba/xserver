@@ -190,7 +190,8 @@ typedef struct {
     Bool identity_color_tables;
     Bool overlay_src_offsets;
     Bool overlay_offscreen;
-    Bool reactivate_dark_panels;
+    Bool turn_off_inherited_panels;
+    uint64_t panel_min_off_usec;
     Bool plane_color_pipeline;
 
     Bool hdr_default;
@@ -736,6 +737,7 @@ typedef struct {
     int enc_mask;
     int enc_clone_mask;
     xf86CrtcPtr current_crtc;
+    uint64_t panel_off_at;
     Atom ctm_atom;
     struct drm_color_ctm ctm;
     Bool vrr_capable;
