@@ -192,6 +192,7 @@ typedef struct {
     Bool overlay_offscreen;
     Bool turn_off_inherited_panels;
     uint64_t panel_min_off_usec;
+    Bool release_primary_for_modeset;
     Bool plane_color_pipeline;
 
     Bool hdr_default;
@@ -883,6 +884,7 @@ Bool drmmode_crtc_has_pending_hdr(xf86CrtcPtr crtc);
 void drmmode_crtc_disable_hdr(xf86CrtcPtr crtc);
 Bool drmmode_crtc_can_convert_sdr_to_pq(xf86CrtcPtr crtc);
 void drmmode_close_fb(int fd, uint32_t fb_id);
+void drmmode_release_primaries(ScrnInfoPtr scrn);
 Bool drmmode_crtc_hdr_enabled(xf86CrtcPtr crtc);
 Bool drmmode_crtc_can_show_pq(xf86CrtcPtr crtc);
 int drmmode_crtc_sdr_white_level(xf86CrtcPtr crtc);

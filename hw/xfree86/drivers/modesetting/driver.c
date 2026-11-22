@@ -2551,6 +2551,7 @@ LeaveVT(ScrnInfoPtr pScrn)
 
     ms_hdr_disable(pScrn);
     drmmode_forget_applied_gamma(pScrn);
+    drmmode_release_primaries(pScrn);
 
     pScrn->vtSema = FALSE;
 

@@ -805,6 +805,71 @@ drmmode_crtc_wait_for_panel_power_off(xf86CrtcPtr crtc)
 }
 
 static int
+drmmode_crtc_commit_primary_off(xf86CrtcPtr crtc)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    int ret;
+
+    if (!req)
+        return -ENOMEM;
+
+    ret = plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_FB_ID, 0);
+    ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_CRTC_ID, 0);
+    if (ret == 0)
+        ret = drmModeAtomicCommit(ms->fd, req, 0, NULL);
+    drmModeAtomicFree(req);
+    return ret;
+}
+
+static Bool
+drmmode_kmode_timing_equal(const drmModeModeInfo *a, const drmModeModeInfo *b)
+{
+    return a->clock == b->clock && a->flags == b->flags &&
+        a->hdisplay == b->hdisplay && a->hsync_start == b->hsync_start &&
+        a->hsync_end == b->hsync_end && a->htotal == b->htotal && a->hskew == b->hskew &&
+        a->vdisplay == b->vdisplay && a->vsync_start == b->vsync_start &&
+        a->vsync_end == b->vsync_end && a->vtotal == b->vtotal && a->vscan == b->vscan;
+}
+
+/* A blocking commit that turns off a CRTC or changes its mode waits up to 3
+ * seconds in nvidia-drm for flip events from the planes that showed a frame
+ * buffer, which don't come, so the primary plane is turned off in a commit of
+ * its own first.
+ */
+static Bool
+drmmode_crtc_release_primary(xf86CrtcPtr crtc, const drmModeModeInfo *new_mode)
+{
+    modesettingPtr ms = modesettingPTR(crtc->scrn);
+    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+    drmModeCrtcPtr kcrtc;
+    Bool shows_fb, keeps_mode;
+
+    if (!ms->drmmode.release_primary_for_modeset || !ms->atomic_modeset)
+        return FALSE;
+
+    kcrtc = drmModeGetCrtc(ms->fd, drmmode_crtc->mode_crtc->crtc_id);
+    if (!kcrtc)
+        return FALSE;
+
+    shows_fb = kcrtc->mode_valid && kcrtc->buffer_id;
+    keeps_mode = new_mode && drmmode_kmode_timing_equal(&kcrtc->mode, new_mode);
+    drmModeFreeCrtc(kcrtc);
+    return shows_fb && !keeps_mode && drmmode_crtc_commit_primary_off(crtc) == 0;
+}
+
+void
+drmmode_release_primaries(ScrnInfoPtr scrn)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+    int i;
+
+    for (i = 0; i < config->num_crtc; i++)
+        drmmode_crtc_release_primary(config->crtc[i], NULL);
+}
+
+static int
 crtc_add_dpms_props(drmModeAtomicReq *req, xf86CrtcPtr crtc,
                     int new_dpms, Bool *active)
 {
@@ -983,6 +1048,8 @@ drmmode_set_dpms(ScrnInfoPtr scrn, int dpms, int flags)
 
         if (dpms == DPMSModeOn)
             drmmode_crtc_wait_for_panel_power_off(crtc);
+        else if (drmmode_crtc_release_primary(crtc, NULL))
+            drmmode_crtc->need_modeset = TRUE;
         ret |= crtc_add_dpms_props(req, crtc, dpms, &active);
 
         if (dpms == DPMSModeOn && active && drmmode_crtc->need_modeset) {
@@ -1022,8 +1089,10 @@ drmmode_output_disable(xf86OutputPtr output)
 
     ret |= connector_add_prop(req, drmmode_output,
                               DRMMODE_CONNECTOR_CRTC_ID, 0);
-    if (crtc)
+    if (crtc) {
+        drmmode_crtc_release_primary(crtc, NULL);
         ret |= crtc_add_dpms_props(req, crtc, DPMSModeOff, NULL);
+    }
 
     if (ret == 0)
         ret = drmModeAtomicCommit(ms->fd, req, flags, NULL);
@@ -1049,6 +1118,7 @@ drmmode_crtc_disable(xf86CrtcPtr crtc)
     if (!req)
         return 1;
 
+    drmmode_crtc_release_primary(crtc, NULL);
     ret |= crtc_add_prop(req, drmmode_crtc,
                          DRMMODE_CRTC_ACTIVE, 0);
     ret |= crtc_add_prop(req, drmmode_crtc,
@@ -1244,8 +1314,11 @@ drmmode_crtc_set_mode(xf86CrtcPtr crtc, Bool test_only)
         Bool active;
         uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
 
-        if (!test_only)
+        if (!test_only) {
+            drmmode_ConvertToKMode(crtc->scrn, &kmode, &crtc->mode);
+            drmmode_crtc_release_primary(crtc, &kmode);
             drmmode_crtc_wait_for_panel_power_off(crtc);
+        }
 
         req = drmModeAtomicAlloc();
         if (!req)
@@ -5145,6 +5218,7 @@ drmmode_pre_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int cpp)
      */
     drmmode->turn_off_inherited_panels = drmmode_driver_is(drmmode->fd, "nvidia-drm");
     drmmode->panel_min_off_usec = drmmode->turn_off_inherited_panels ? 1000000 : 0;
+    drmmode->release_primary_for_modeset = drmmode_driver_is(drmmode->fd, "nvidia-drm");
 #ifdef DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE
     /* amdgpu flickers whenever the CRTC colour tables change, so SDR content
      * on HDR monitors is converted by the plane instead.
@@ -5287,25 +5361,6 @@ drmmode_crtc_add_kernel_connectors_off(drmModeAtomicReq *req, xf86CrtcPtr crtc)
 }
 
 static int
-drmmode_crtc_commit_primary_off(xf86CrtcPtr crtc)
-{
-    modesettingPtr ms = modesettingPTR(crtc->scrn);
-    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
-    drmModeAtomicReq *req = drmModeAtomicAlloc();
-    int ret;
-
-    if (!req)
-        return -ENOMEM;
-
-    ret = plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_FB_ID, 0);
-    ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_CRTC_ID, 0);
-    if (ret == 0)
-        ret = drmModeAtomicCommit(ms->fd, req, 0, NULL);
-    drmModeAtomicFree(req);
-    return ret;
-}
-
-static int
 drmmode_crtc_commit_off_with_connectors(xf86CrtcPtr crtc)
 {
     modesettingPtr ms = modesettingPTR(crtc->scrn);
@@ -5325,11 +5380,6 @@ drmmode_crtc_commit_off_with_connectors(xf86CrtcPtr crtc)
     return ret;
 }
 
-/* A blocking commit that turns off a CRTC waits up to 3 seconds in nvidia-drm
- * for flip events from the planes that showed a frame buffer, which don't come
- * when the CRTC also loses its connectors, so the primary plane is turned off
- * first.
- */
 static void
 drmmode_crtc_turn_off_inherited_panel(xf86CrtcPtr crtc)
 {
@@ -5339,7 +5389,7 @@ drmmode_crtc_turn_off_inherited_panel(xf86CrtcPtr crtc)
         !drmmode_crtc_kernel_shows_panel(crtc))
         return;
 
-    drmmode_crtc_commit_primary_off(crtc);
+    drmmode_crtc_release_primary(crtc, NULL);
     drmmode_crtc_commit_off_with_connectors(crtc);
 }
 
