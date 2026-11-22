@@ -49,6 +49,7 @@
 #include "glamor.h"
 #include "glamor_priv.h"
 #include "glamor_egl_external.h"
+#include "glamor_egl_copy_thread.h"
 #include "glamor_egl_nvidia.h"
 #include "glamor_glx_provider.h"
 #include "dri3.h"
@@ -74,6 +75,11 @@ struct glamor_egl_screen_private {
         struct glamor_egl_external_context *context;
         Bool tried;
     } external;
+
+    struct {
+        struct glamor_egl_copy_thread *thread;
+        Bool tried;
+    } copy;
 
     CloseScreenProcPtr saved_close_screen;
     DestroyPixmapProcPtr saved_destroy_pixmap;
@@ -177,10 +183,14 @@ glamor_egl_create_textured_screen(ScreenPtr screen, int handle, int stride)
 
 static void
 glamor_egl_destroy_image(struct glamor_egl_screen_private *glamor_egl,
-                         EGLImageKHR image)
+                         struct glamor_pixmap_private *pixmap_priv)
 {
-    glamor_egl_external_forget_image(glamor_egl->external.context, image);
-    eglDestroyImageKHR(glamor_egl->display, image);
+    glamor_egl_external_forget_image(glamor_egl->external.context,
+                                     pixmap_priv->image);
+    if (glamor_egl->copy.thread)
+        glamor_egl_copy_thread_forget_image(glamor_egl->copy.thread,
+                                            pixmap_priv->image_info.id);
+    eglDestroyImageKHR(glamor_egl->display, pixmap_priv->image);
 }
 
 /* Mesa gives images without alpha an RGB texture, which can't be bound as a
@@ -220,15 +230,13 @@ glamor_egl_set_pixmap_image(PixmapPtr pixmap, EGLImageKHR image,
 {
     struct glamor_pixmap_private *pixmap_priv =
         glamor_get_pixmap_private(pixmap);
-    EGLImageKHR old;
 
-    old = pixmap_priv->image;
-    if (old) {
+    if (pixmap_priv->image) {
         ScreenPtr                               screen = pixmap->drawable.pScreen;
         ScrnInfoPtr                             scrn = xf86ScreenToScrn(screen);
         struct glamor_egl_screen_private        *glamor_egl = glamor_egl_get_screen_private(scrn);
 
-        glamor_egl_destroy_image(glamor_egl, old);
+        glamor_egl_destroy_image(glamor_egl, pixmap_priv);
     }
     glamor_egl_forget_image_info(pixmap_priv);
     pixmap_priv->image = image;
@@ -1248,6 +1256,81 @@ glamor_egl_pixmap_image_id(PixmapPtr pixmap)
     return glamor_get_pixmap_private(pixmap)->image_info.id;
 }
 
+static struct glamor_egl_copy_thread *
+glamor_egl_get_copy_thread(ScrnInfoPtr scrn)
+{
+    struct glamor_egl_screen_private *glamor_egl =
+        glamor_egl_get_screen_private(scrn);
+
+    if (!glamor_egl->copy.tried) {
+        glamor_egl->copy.tried = TRUE;
+        glamor_egl->copy.thread =
+            glamor_egl_copy_thread_create(glamor_egl->display);
+        if (!glamor_egl->copy.thread)
+            xf86DrvMsg(scrn->scrnIndex, X_WARNING,
+                       "glamor: Failed to start the copy thread\n");
+    }
+    return glamor_egl->copy.thread;
+}
+
+static void
+glamor_egl_destroy_copy_thread(struct glamor_egl_screen_private *glamor_egl)
+{
+    struct glamor_egl_copy_thread *thread = glamor_egl->copy.thread;
+
+    glamor_egl->copy.thread = NULL;
+    glamor_egl->copy.tried = FALSE;
+    if (thread)
+        glamor_egl_copy_thread_destroy(thread);
+}
+
+static int
+glamor_egl_copy_thread_sync_fence(ScreenPtr screen)
+{
+    glamor_screen_private *glamor_priv = glamor_get_screen_private(screen);
+    int fence_fd;
+
+    if (!glamor_priv->flush.copy_thread_unsynced)
+        return -1;
+
+    fence_fd = glamor_egl_create_fence_fd(screen);
+    if (fence_fd < 0)
+        glamor_finish(screen);
+    glamor_priv->flush.copy_thread_unsynced = FALSE;
+    return fence_fd;
+}
+
+Bool
+glamor_egl_copy_async(PixmapPtr dst, const glamor_egl_copy_op *ops, int nops,
+                      Bool fence, glamor_egl_copy_done_proc done, void *data)
+{
+    ScreenPtr screen = dst->drawable.pScreen;
+    struct glamor_egl_copy_thread *thread =
+        glamor_egl_get_copy_thread(xf86ScreenToScrn(screen));
+    struct glamor_egl_copy_job *job;
+
+    if (!thread)
+        return FALSE;
+
+    job = glamor_egl_copy_job_create(thread, dst, ops, nops, fence, done, data);
+    if (!job)
+        return FALSE;
+
+    glamor_egl_copy_thread_queue(thread, job,
+                                 glamor_egl_copy_thread_sync_fence(screen));
+    return TRUE;
+}
+
+void
+glamor_egl_copy_async_cancel(ScreenPtr screen, void *data)
+{
+    struct glamor_egl_screen_private *glamor_egl =
+        glamor_egl_get_screen_private(xf86ScreenToScrn(screen));
+
+    if (glamor_egl->copy.thread)
+        glamor_egl_copy_thread_cancel(glamor_egl->copy.thread, data);
+}
+
 /* Importing the EGLImage into GBM can block for many ms in nvidia's driver
  * while the GPU is busy, so what's needed from the import is looked up once
  * per image.
@@ -1347,7 +1430,7 @@ glamor_egl_destroy_pixmap(PixmapPtr pixmap)
             glamor_get_pixmap_private(pixmap);
 
         if (pixmap_priv->image)
-            glamor_egl_destroy_image(glamor_egl, pixmap_priv->image);
+            glamor_egl_destroy_image(glamor_egl, pixmap_priv);
         glamor_egl_forget_image_info(pixmap_priv);
     }
 
@@ -1405,7 +1488,8 @@ glamor_egl_close_screen(ScreenPtr screen)
     screen_pixmap = screen->GetScreenPixmap(screen);
     pixmap_priv = glamor_get_pixmap_private(screen_pixmap);
 
-    glamor_egl_destroy_image(glamor_egl, pixmap_priv->image);
+    glamor_egl_destroy_copy_thread(glamor_egl);
+    glamor_egl_destroy_image(glamor_egl, pixmap_priv);
     pixmap_priv->image = NULL;
     glamor_egl_forget_image_info(pixmap_priv);
 

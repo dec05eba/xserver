@@ -1157,6 +1157,8 @@ load_glamor(ScrnInfoPtr pScrn)
     ms->glamor.egl_pixmap_rendering_fd = LoaderSymbolFromModule(mod, "glamor_egl_pixmap_rendering_fd");
     ms->glamor.egl_pixmap_format = LoaderSymbolFromModule(mod, "glamor_egl_pixmap_format");
     ms->glamor.egl_pixmap_image_id = LoaderSymbolFromModule(mod, "glamor_egl_pixmap_image_id");
+    ms->glamor.egl_copy_async = LoaderSymbolFromModule(mod, "glamor_egl_copy_async");
+    ms->glamor.egl_copy_async_cancel = LoaderSymbolFromModule(mod, "glamor_egl_copy_async_cancel");
     ms->glamor.convert_color = LoaderSymbolFromModule(mod, "glamor_convert_color");
 
     return TRUE;

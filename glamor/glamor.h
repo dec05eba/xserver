@@ -418,6 +418,24 @@ extern _X_EXPORT Bool glamor_egl_pixmap_format(PixmapPtr pixmap,
                                                uint32_t *format,
                                                uint64_t *modifier);
 
+typedef struct glamor_egl_copy_op {
+    PixmapPtr src;
+    RegionPtr region;
+    int src_origin_x;
+    int src_origin_y;
+} glamor_egl_copy_op;
+
+typedef void (*glamor_egl_copy_done_proc)(int fence_fd, Bool copied,
+                                          void *data);
+
+extern _X_EXPORT Bool glamor_egl_copy_async(PixmapPtr dst,
+                                            const glamor_egl_copy_op *ops,
+                                            int nops, Bool fence,
+                                            glamor_egl_copy_done_proc done,
+                                            void *data);
+extern _X_EXPORT void glamor_egl_copy_async_cancel(ScreenPtr screen,
+                                                   void *data);
+
 #endif
 
 extern _X_EXPORT void glamor_egl_screen_init(ScreenPtr screen,

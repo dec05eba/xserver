@@ -243,6 +243,7 @@ typedef struct glamor_flush_state {
     Bool pending;
     Bool shared_pending;
     Bool unshared_on_idle;
+    Bool copy_thread_unsynced;
 } glamor_flush_state;
 
 typedef struct glamor_fbo_pool {

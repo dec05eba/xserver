@@ -673,6 +673,7 @@ glamor_make_current(glamor_screen_private *glamor_priv)
         glamor_priv->ctx.make_current(&glamor_priv->ctx);
     }
     glamor_priv->flush.pending = TRUE;
+    glamor_priv->flush.copy_thread_unsynced = TRUE;
 }
 
 static inline void

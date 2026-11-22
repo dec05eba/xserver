@@ -200,6 +200,9 @@ typedef struct _modesettingRec {
         int (*egl_pixmap_rendering_fd)(PixmapPtr);
         Bool (*egl_pixmap_format)(PixmapPtr, uint32_t *, uint64_t *);
         uint64_t (*egl_pixmap_image_id)(PixmapPtr);
+        Bool (*egl_copy_async)(PixmapPtr, const glamor_egl_copy_op *, int, Bool,
+                               glamor_egl_copy_done_proc, void *);
+        void (*egl_copy_async_cancel)(ScreenPtr, void *);
         Bool (*convert_color)(PixmapPtr, PixmapPtr, RegionPtr, int, int, Bool,
                               CARD16, const glamor_color_conversion *);
     } glamor;
