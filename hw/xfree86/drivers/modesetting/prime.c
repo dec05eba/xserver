@@ -622,23 +622,32 @@ ms_prime_commit_cancel(xf86CrtcPtr crtc)
  * the next frame is composed while this one waits for its vblank. A copy of a
  * client's own buffer reads it until it is done, so its clients go on then.
  */
-static void
-ms_prime_tick_early(xf86CrtcPtr crtc, drmmode_prime_content_rec *content)
+static Bool
+ms_prime_tick_ahead(xf86CrtcPtr crtc, uint32_t seq)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_commit_rec *commit = &ms_prime_scanout(crtc)->commit;
     drmmode_overlay_plane_rec *overlay = &drmmode_crtc->overlay_plane;
     uint64_t vblank, msc;
 
-    if (!commit->triple.active || content->ticked || content->buf_idx < 0 ||
-        commit->tick_seq || overlay->fb_id || overlay->buffers.pending ||
-        (content->reads_client && !ms_prime_fence_signaled(content->fence_fd)) ||
+    if (!commit->triple.active || commit->tick_seq || overlay->fb_id ||
+        overlay->buffers.pending ||
         !ms_tearfree_next_vblank(crtc, GetTimeInMicros(), &vblank, &msc))
+        return FALSE;
+
+    commit->tick_seq = seq;
+    ms_prime_frame_tick(crtc, msc, vblank);
+    return TRUE;
+}
+
+static void
+ms_prime_tick_early(xf86CrtcPtr crtc, drmmode_prime_content_rec *content)
+{
+    if (content->ticked || content->buf_idx < 0 ||
+        (content->reads_client && !ms_prime_fence_signaled(content->fence_fd)))
         return;
 
-    content->ticked = TRUE;
-    commit->tick_seq = content->seq;
-    ms_prime_frame_tick(crtc, msc, vblank);
+    content->ticked = ms_prime_tick_ahead(crtc, content->seq);
 }
 
 static void
@@ -659,7 +668,7 @@ ms_prime_commit_fence_signaled(int fd, int ready, void *data)
 
 static void
 ms_prime_commit_queue(xf86CrtcPtr crtc, uint32_t seq, uint32_t fb_id,
-                      int buf_idx, int fence_fd)
+                      int buf_idx, int fence_fd, Bool ticked)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
     drmmode_prime_commit_rec *commit = &prime_scanout->commit;
@@ -680,6 +689,7 @@ ms_prime_commit_queue(xf86CrtcPtr crtc, uint32_t seq, uint32_t fb_id,
         .buf_idx = buf_idx,
         .fence_fd = fence_fd,
         .reads_client = prime_scanout->direct.source != NULL,
+        .ticked = ticked,
         .compose_start = commit->compose_start,
     };
     if (buf_idx >= 0)
@@ -989,7 +999,7 @@ ms_prime_presented(xf86CrtcPtr crtc)
 
 static void
 ms_prime_queue_frame(xf86CrtcPtr crtc, uint32_t seq, drmmode_prime_fb_rec fb,
-                     uint32_t fb_id, int buf_idx, int fence_fd)
+                     uint32_t fb_id, int buf_idx, int fence_fd, Bool ticked)
 {
     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
@@ -997,20 +1007,22 @@ ms_prime_queue_frame(xf86CrtcPtr crtc, uint32_t seq, drmmode_prime_fb_rec fb,
     ms_prime_set_scanout_content(crtc, TRUE);
 
     prime_scanout->direct_fbs.pending = fb;
-    drmmode_crtc->tearfree.flip_seq = seq;
-    ms_prime_commit_queue(crtc, seq, fb_id, buf_idx, fence_fd);
+    if (!ticked)
+        drmmode_crtc->tearfree.flip_seq = seq;
+    ms_prime_commit_queue(crtc, seq, fb_id, buf_idx, fence_fd, ticked);
 }
 
 static void
 ms_prime_back_copied(xf86CrtcPtr crtc, uint32_t seq, int buf_idx,
-                     PixmapPtr staging, int fence_fd)
+                     PixmapPtr staging, int fence_fd, Bool ticked)
 {
     drmmode_prime_scanout_rec *prime_scanout = ms_prime_scanout(crtc);
 
     if (staging)
         ms_prime_staging_copied(crtc, staging, fence_fd);
     ms_prime_queue_frame(crtc, seq, (drmmode_prime_fb_rec) { 0 },
-                         prime_scanout->buf[buf_idx].fb_id, buf_idx, fence_fd);
+                         prime_scanout->buf[buf_idx].fb_id, buf_idx, fence_fd,
+                         ticked);
 }
 
 static void
@@ -1044,7 +1056,7 @@ ms_prime_copy_done(int fence_fd, Bool copied, void *data)
     prime_scanout->copy = (drmmode_prime_copy_rec) { 0 };
     if (copied && copy.seq) {
         ms_prime_back_copied(crtc, copy.seq, copy.buf_idx, copy.staging,
-                             fence_fd);
+                             fence_fd, copy.ticked);
         return;
     }
 
@@ -1081,6 +1093,8 @@ ms_prime_copy_async(xf86CrtcPtr crtc, const glamor_egl_copy_op *ops, int nops,
         .staging = staging,
     };
     drmmode_crtc->tearfree.flip_seq = seq;
+    if (!prime_scanout->direct.source)
+        prime_scanout->copy.ticked = ms_prime_tick_ahead(crtc, seq);
     return TRUE;
 }
 
@@ -1120,7 +1134,7 @@ ms_prime_copy_to_back(xf86CrtcPtr crtc, PixmapPtr ppix, PixmapPtr src,
     }
     if (!queued)
         ms_prime_back_copied(crtc, seq, buf_idx, staging,
-                             ms_prime_back_fence(crtc));
+                             ms_prime_back_fence(crtc), FALSE);
     return TRUE;
 }
 
@@ -1137,7 +1151,7 @@ ms_prime_flip_source_ready(PixmapPtr ppix, xf86CrtcPtr crtc, uint32_t seq)
         return ms_prime_copy_to_back(crtc, ppix, src, seq);
 
     src->refcnt++;
-    ms_prime_queue_frame(crtc, seq, fb, fb.fb_id, -1, -1);
+    ms_prime_queue_frame(crtc, seq, fb, fb.fb_id, -1, -1, FALSE);
     return TRUE;
 }
 

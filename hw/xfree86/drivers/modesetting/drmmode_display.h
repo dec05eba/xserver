@@ -477,6 +477,7 @@ typedef struct {
 
 typedef struct {
     Bool pending;
+    Bool ticked;
     uint32_t seq;
     int buf_idx;
     PixmapPtr staging;
